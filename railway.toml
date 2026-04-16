@@ -7,6 +7,7 @@ dockerfilePath = "Dockerfile"
 # Runs before the new container starts. Link Postgres and set DATABASE_URL on this service first.
 preDeployCommand = "sh -c 'if [ -z \"$DATABASE_URL\" ]; then echo \"preDeploy: skip (no DATABASE_URL)\"; exit 0; fi; python -m harness_analytics init --db-url \"$DATABASE_URL\"'"
 healthcheckPath = "/health"
-healthcheckTimeout = 60
+# Cold start imports SQLAlchemy + FastAPI; allow headroom before first successful GET /health
+healthcheckTimeout = 180
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10

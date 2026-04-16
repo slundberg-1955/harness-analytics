@@ -25,7 +25,6 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 from harness_analytics.db import get_db
-from harness_analytics.excel_builder import build_excel_workbook, workbook_to_bytesio
 from harness_analytics.models import Application, ApplicationAnalytics, FileWrapperDocument, ProsecutionEvent
 
 router = APIRouter(prefix="/portal", tags=["portal"])
@@ -274,6 +273,9 @@ def matter_lookup(q: str) -> RedirectResponse:
 
 @router.get("/report.xlsx")
 def download_report(db: Session = Depends(get_db)) -> StreamingResponse:
+    # Lazy import: pandas/openpyxl are heavy; keep app import fast for Railway healthchecks.
+    from harness_analytics.excel_builder import build_excel_workbook, workbook_to_bytesio
+
     wb = build_excel_workbook(db)
     buf = workbook_to_bytesio(wb)
     data = buf.getvalue()
