@@ -170,13 +170,16 @@ def _application_field_pairs(app: Application) -> list[tuple[str, object]]:
         ("Examiner", f"{app.examiner_first_name or ''} {app.examiner_last_name or ''}".strip() or None),
         ("Examiner phone", app.examiner_phone),
         ("Assignee", app.assignee_name),
-        ("Child of prior US application (non-PCT parent)", app.continuity_child_of_prior_us),
+        (
+            "Is continuation (prior US parent)",
+            "Yes" if app.continuity_child_of_prior_us else "No",
+        ),
         ("Imported at", _format_value(app.imported_at)),
     ]
     return [
         (k, v)
         for k, v in pairs
-        if v is not None or k in ("Application number",) or k.startswith("Child of prior")
+        if v is not None or k in ("Application number", "Is continuation (prior US parent)")
     ]
 
 
@@ -192,7 +195,7 @@ def _analytics_field_pairs(aa: ApplicationAnalytics) -> list[tuple[str, object]]
         ("Had examiner interview", aa.had_examiner_interview),
         ("Interview count", aa.interview_count),
         ("IFW A.NE count", aa.ifw_a_ne_count),
-        ("IFW CTRS count", aa.ifw_ctrs_count),
+        (ANALYTICS_REPORT_HEADER_LABELS["ifw_ctrs_count"], aa.ifw_ctrs_count),
         ("Interview before NOA", aa.interview_before_noa),
         (ANALYTICS_REPORT_HEADER_LABELS["interview_led_to_noa"], aa.interview_led_to_noa),
         (ANALYTICS_REPORT_HEADER_LABELS["days_interview_to_noa"], aa.days_interview_to_noa),
@@ -208,6 +211,15 @@ def _analytics_field_pairs(aa: ApplicationAnalytics) -> list[tuple[str, object]]
         ("Updated at", _format_value(aa.updated_at)),
     ]
     return pairs
+
+
+def _matter_analytics_field_pairs(app: Application, aa: ApplicationAnalytics) -> list[tuple[str, object]]:
+    """Matter page: lead with continuation / restriction so they are not buried in the list."""
+    ctrs = aa.ifw_ctrs_count or 0
+    summary = [
+        ("Has restriction (CTRS in IFW)", "Yes" if ctrs > 0 else "No"),
+    ]
+    return summary + _analytics_field_pairs(aa)
 
 
 def _normalize_lookup_key(raw: str) -> str:
@@ -411,7 +423,7 @@ def matter_detail(
             "spreadsheet_headers": spreadsheet_headers,
             "spreadsheet_values": spreadsheet_values,
             "app_fields": _application_field_pairs(app),
-            "analytics_fields": _analytics_field_pairs(aa) if aa else [],
+            "analytics_fields": _matter_analytics_field_pairs(app, aa) if aa else [],
             "events": events,
             "events_truncated": events_truncated,
             "documents": documents,
