@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from sqlalchemy import create_engine, text
 
 from harness_analytics.portal import install_portal_security, router as portal_router
+from harness_analytics.schema_migrations import ensure_application_analytics_schema
 
 
 def _normalize_db_url(url: str) -> str:
@@ -17,8 +19,14 @@ def _normalize_db_url(url: str) -> str:
     return url
 
 
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    ensure_application_analytics_schema()
+    yield
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title="harness-analytics", version="0.1.0")
+    app = FastAPI(title="harness-analytics", version="0.1.0", lifespan=_lifespan)
     app.include_router(portal_router)
     install_portal_security(app)
 
