@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 ANALYTICS_REPORT_HEADER_LABELS: dict[str, str] = {
     "interview_led_to_noa": "NOA WITHIN 90 DAYS OF INTERVIEW",
     "days_interview_to_noa": "DAYS LAST INTERVIEW TO NOA",
+    "ifw_a_ne_count": "IFW A.NE COUNT",
 }
 
 
@@ -85,7 +86,8 @@ SELECT
     aa.billing_attorney_reg,
     aa.billing_attorney_name,
     aa.is_jac,
-    aa.office_name
+    aa.office_name,
+    aa.ifw_a_ne_count
 FROM applications a
 JOIN application_analytics aa ON aa.application_id = a.id
 WHERE a.application_number = :application_number

@@ -10,7 +10,7 @@ from typing import Any, Optional
 
 from sqlalchemy.orm import Session
 
-from harness_analytics.classifier import ifw_document_suggests_interview
+from harness_analytics.classifier import IFW_A_NE_DOC_CODE, ifw_document_suggests_interview
 from harness_analytics.models import (
     Application,
     ApplicationAnalytics,
@@ -235,6 +235,7 @@ def compute_analytics_for_application(
     existing.billing_attorney_name = billing_name or None
     existing.is_jac = is_jac
     existing.office_name = office_name
+    existing.ifw_a_ne_count = _count_ifw_doc_code(ifw_docs, IFW_A_NE_DOC_CODE)
 
 
 def compute_analytics(

@@ -186,6 +186,7 @@ def _analytics_field_pairs(aa: ApplicationAnalytics) -> list[tuple[str, object]]
         ("First NOA date", _format_value(aa.first_noa_date)),
         ("Had examiner interview", aa.had_examiner_interview),
         ("Interview count", aa.interview_count),
+        ("IFW A.NE count", aa.ifw_a_ne_count),
         ("Interview before NOA", aa.interview_before_noa),
         (ANALYTICS_REPORT_HEADER_LABELS["interview_led_to_noa"], aa.interview_led_to_noa),
         (ANALYTICS_REPORT_HEADER_LABELS["days_interview_to_noa"], aa.days_interview_to_noa),

@@ -3,6 +3,7 @@
 import pytest
 
 from harness_analytics.classifier import (
+    IFW_A_NE_DOC_CODE,
     classify_event,
     classify_event_with_ifw_fallback,
     ifw_document_suggests_interview,
@@ -39,6 +40,10 @@ def test_ifw_fallback_nonfinal_code() -> None:
         )
         == "NONFINAL_OA"
     )
+
+
+def test_ifw_a_ne_doc_code_constant() -> None:
+    assert IFW_A_NE_DOC_CODE == "A.NE"
 
 
 def test_ifw_fallback_mctnf_is_other() -> None:
