@@ -86,7 +86,24 @@ python3 -m harness_analytics all \
 python3 -m pytest tests/ -v
 ```
 
-CI runs the same suite on every push to `main` / `master` and on pull requests (see [.github/workflows/ci.yml](.github/workflows/ci.yml)).
+Optional GitHub Actions CI is not committed by default because some `gh` OAuth tokens cannot push workflow files without the `workflow` scope. To enable it, run `gh auth refresh -s workflow`, restore `.github/workflows/ci.yml` from the template below, commit, and push.
+
+```yaml
+# .github/workflows/ci.yml
+name: CI
+on:
+  push: { branches: [main, master] }
+  pull_request: { branches: [main, master] }
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -e ".[dev]"
+      - run: python -m pytest tests/ -v
+```
 
 ## GitHub
 
