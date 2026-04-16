@@ -63,7 +63,7 @@ def _area_code_from_phone(phone: Optional[str]) -> Optional[str]:
 
 def _resolve_office_name(
     customer_number: Optional[str],
-    billing_phone: Optional[str],
+    phone_for_area_code: Optional[str],
     office_cfg: dict[str, Any],
 ) -> str:
     cmap: dict[str, str] = office_cfg.get("uspto_customer_number_to_office", {})
@@ -72,7 +72,7 @@ def _resolve_office_name(
         key = str(customer_number).strip()
         if key in cmap:
             return cmap[key]
-    ac = _area_code_from_phone(billing_phone)
+    ac = _area_code_from_phone(phone_for_area_code)
     if ac and ac in amap:
         return amap[ac]
     return "UNKNOWN"
@@ -200,7 +200,7 @@ def compute_analytics_for_application(
         days_int_to_noa = (first_noa_date - last_interview_before_noa).days
         interview_led_to_noa = days_int_to_noa <= interview_window_days
 
-    billing_atty = (
+    first_poa = (
         db.query(ApplicationAttorney)
         .filter(
             ApplicationAttorney.application_id == app.id,
@@ -209,16 +209,11 @@ def compute_analytics_for_application(
         )
         .first()
     )
-    billing_reg = billing_atty.registration_number if billing_atty else None
-    billing_name = (
-        f"{billing_atty.first_name or ''} {billing_atty.last_name or ''}".strip()
-        if billing_atty
-        else None
-    )
-    billing_phone = billing_atty.phone if billing_atty else None
-    is_jac = billing_reg == JAC_REG
+    poa_reg = first_poa.registration_number if first_poa else None
+    poa_phone = first_poa.phone if first_poa else None
+    is_jac = poa_reg == JAC_REG
 
-    office_name = _resolve_office_name(app.customer_number, billing_phone, office_cfg)
+    office_name = _resolve_office_name(app.customer_number, poa_phone, office_cfg)
 
     existing = db.query(ApplicationAnalytics).filter_by(application_id=app.id).first()
     if not existing:
@@ -242,8 +237,6 @@ def compute_analytics_for_application(
     existing.days_filing_to_first_oa = _days_between(app.filing_date, first_oa_date)
     existing.days_filing_to_noa = _days_between(app.filing_date, first_noa_date)
     existing.days_filing_to_issue = _days_between(app.filing_date, app.issue_date)
-    existing.billing_attorney_reg = billing_reg
-    existing.billing_attorney_name = billing_name or None
     existing.is_jac = is_jac
     existing.office_name = office_name
     existing.ifw_a_ne_count = _count_ifw_doc_code(ifw_docs, IFW_A_NE_DOC_CODE)

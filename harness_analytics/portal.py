@@ -204,8 +204,6 @@ def _analytics_field_pairs(aa: ApplicationAnalytics) -> list[tuple[str, object]]
         ("Days filing → first OA", aa.days_filing_to_first_oa),
         ("Days filing → NOA", aa.days_filing_to_noa),
         ("Days filing → issue", aa.days_filing_to_issue),
-        ("Billing attorney reg", aa.billing_attorney_reg),
-        ("Billing attorney name", aa.billing_attorney_name),
         ("Is JAC", aa.is_jac),
         ("Office name", aa.office_name),
         ("Updated at", _format_value(aa.updated_at)),

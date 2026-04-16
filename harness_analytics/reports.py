@@ -52,8 +52,6 @@ SELECT
     aa.days_filing_to_first_oa,
     aa.days_filing_to_noa,
     aa.days_filing_to_issue,
-    aa.billing_attorney_reg,
-    aa.billing_attorney_name,
     aa.is_jac,
     aa.office_name
 FROM applications a

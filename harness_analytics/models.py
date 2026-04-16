@@ -169,8 +169,6 @@ class ApplicationAnalytics(Base):
     days_filing_to_first_oa: Mapped[Optional[int]] = mapped_column(Integer)
     days_filing_to_noa: Mapped[Optional[int]] = mapped_column(Integer)
     days_filing_to_issue: Mapped[Optional[int]] = mapped_column(Integer)
-    billing_attorney_reg: Mapped[Optional[str]] = mapped_column(Text)
-    billing_attorney_name: Mapped[Optional[str]] = mapped_column(Text)
     is_jac: Mapped[bool] = mapped_column(Boolean, default=False)
     office_name: Mapped[Optional[str]] = mapped_column(Text)
     ifw_a_ne_count: Mapped[int] = mapped_column(Integer, default=0)

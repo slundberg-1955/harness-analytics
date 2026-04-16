@@ -11,6 +11,19 @@ from harness_analytics.db import get_database_url
 logger = logging.getLogger(__name__)
 
 
+def _drop_column_if_exists(engine, table: str, column: str) -> None:
+    insp = inspect(engine)
+    if not insp.has_table(table):
+        return
+    col_names = {c["name"] for c in insp.get_columns(table)}
+    if column not in col_names:
+        return
+    stmt = text(f"ALTER TABLE {table} DROP COLUMN {column}")
+    with engine.begin() as conn:
+        conn.execute(stmt)
+    logger.info("Dropped column %s.%s", table, column)
+
+
 def _add_column_if_missing(engine, table: str, column: str, ddl_suffix: str) -> None:
     insp = inspect(engine)
     if not insp.has_table(table):
@@ -36,6 +49,8 @@ def ensure_schema_migrations() -> None:
 
     engine = create_engine(url, pool_pre_ping=True)
     try:
+        _drop_column_if_exists(engine, "application_analytics", "billing_attorney_reg")
+        _drop_column_if_exists(engine, "application_analytics", "billing_attorney_name")
         _add_column_if_missing(
             engine,
             "application_analytics",
