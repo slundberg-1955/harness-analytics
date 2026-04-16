@@ -92,6 +92,30 @@ def _ifw_doc_code(d: FileWrapperDocument) -> str:
     return (d.document_code or "").strip().upper()
 
 
+def _ifw_doc_code_matches_canonical(document_code: Optional[str], canonical: str) -> bool:
+    """Match stored IFW ``document_code`` to a canonical code (e.g. A.NE).
+
+    Patent Center exports sometimes use a middle dot or odd spacing where PAIR shows ``A.NE``.
+    """
+    want = re.sub(r"\s+", "", canonical.strip().upper())
+    raw = (document_code or "").strip().upper()
+    if not raw:
+        return False
+    for ch in ("\u00b7", "\u2219", "\u2022", "\u2024", "\u00a0"):
+        raw = raw.replace(ch, ".")
+    raw = re.sub(r"\s+", "", raw)
+    return raw == want
+
+
+def _count_ifw_doc_code(ifw_docs: list[FileWrapperDocument], doc_code: str) -> int:
+    want = doc_code.strip().upper()
+    if want == IFW_A_NE_DOC_CODE.strip().upper():
+        return sum(
+            1 for d in ifw_docs if _ifw_doc_code_matches_canonical(d.document_code, IFW_A_NE_DOC_CODE)
+        )
+    return sum(1 for d in ifw_docs if _ifw_doc_code(d) == want)
+
+
 def _first_noa_date_from_ifw(ifw_docs: list[FileWrapperDocument]) -> Optional[date]:
     dates: list[date] = []
     for d in ifw_docs:
