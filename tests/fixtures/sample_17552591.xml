@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<PatentCenterApplication>
+  <ApplicationBibliographicData>
+    <ApplicationNumber>17552591</ApplicationNumber>
+    <FilingDate>2022-01-15T00:00:00</FilingDate>
+    <IssueDate>2025-03-01T00:00:00</IssueDate>
+    <PatentNumber>US12000000</PatentNumber>
+    <ApplicationStatusCode>150</ApplicationStatusCode>
+    <ApplicationStatusText>Patented Case</ApplicationStatusText>
+    <ApplicationStatusDate>2025-03-01T00:00:00</ApplicationStatusDate>
+    <InventionTitle>Sample Invention</InventionTitle>
+    <CustomerNumber>15639</CustomerNumber>
+    <AttorneyDocketNumber>DOCKET-1</AttorneyDocketNumber>
+    <ConfirmationNumber>1234</ConfirmationNumber>
+    <GroupArtUnit>2100</GroupArtUnit>
+    <PatentClass>606</PatentClass>
+    <PatentSubclass>001</PatentSubclass>
+    <ExaminerName>
+      <FirstName>Jane</FirstName>
+      <LastName>Examiner</LastName>
+    </ExaminerName>
+  </ApplicationBibliographicData>
+  <POAInfo>
+    <POAInfo>
+      <Attorneys>
+        <Attorney>
+          <RegistrationNumber>35094</RegistrationNumber>
+          <AttorneyName>
+            <FirstName>John</FirstName>
+            <LastName>Castellano</LastName>
+          </AttorneyName>
+          <AgentStatus>ACTIVE</AgentStatus>
+          <AttorneyContacts>
+            <AttorneyContact>
+              <TelecommunicationNumber>703-555-0100</TelecommunicationNumber>
+            </AttorneyContact>
+          </AttorneyContacts>
+        </Attorney>
+      </Attorneys>
+    </POAInfo>
+  </POAInfo>
+  <FileContentHistories>
+    <FileContentHistory>
+      <TransactionDate>2023-06-01T00:00:00</TransactionDate>
+      <TransactionDescription>Mail Non-Final Rejection</TransactionDescription>
+      <StatusNumber>101</StatusNumber>
+      <StatusDescription>Non-Final</StatusDescription>
+    </FileContentHistory>
+    <FileContentHistory>
+      <TransactionDate>2024-01-10T00:00:00</TransactionDate>
+      <TransactionDescription>Mail Final Rejection</TransactionDescription>
+      <StatusNumber>102</StatusNumber>
+      <StatusDescription>Final</StatusDescription>
+    </FileContentHistory>
+    <FileContentHistory>
+      <TransactionDate>2024-02-01T00:00:00</TransactionDate>
+      <TransactionDescription>Examiner Interview Summary</TransactionDescription>
+      <StatusNumber>0</StatusNumber>
+      <StatusDescription>Interview</StatusDescription>
+    </FileContentHistory>
+    <FileContentHistory>
+      <TransactionDate>2024-04-01T00:00:00</TransactionDate>
+      <TransactionDescription>Mail Notice of Allowance</TransactionDescription>
+      <StatusNumber>150</StatusNumber>
+      <StatusDescription>NOA</StatusDescription>
+    </FileContentHistory>
+  </FileContentHistories>
+  <ImageFileWrapperList>
+    <ImageFileWrapperDocument>
+      <FileWrapperDocumentCode>CTNF</FileWrapperDocumentCode>
+      <DocumentDescription>Non-Final Office Action</DocumentDescription>
+      <MailRoomDate>2023-06-02T12:00:00</MailRoomDate>
+      <PageQuantity>10</PageQuantity>
+      <DocumentCategory>1</DocumentCategory>
+    </ImageFileWrapperDocument>
+    <ImageFileWrapperDocument>
+      <FileWrapperDocumentCode>INTSUM</FileWrapperDocumentCode>
+      <DocumentDescription>Interview Summary</DocumentDescription>
+      <MailRoomDate>2024-02-02T12:00:00</MailRoomDate>
+      <PageQuantity>2</PageQuantity>
+      <DocumentCategory>1</DocumentCategory>
+    </ImageFileWrapperDocument>
+  </ImageFileWrapperList>
+  <Inventors>
+    <Inventor>
+      <InventorName>
+        <FirstName>Alice</FirstName>
+        <LastName>Inventor</LastName>
+      </InventorName>
+      <City>Austin</City>
+      <CountryCode>US</CountryCode>
+    </Inventor>
+  </Inventors>
+</PatentCenterApplication>

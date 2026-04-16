@@ -1,0 +1,9 @@
+{
+  "uspto_customer_number_to_office": {
+    "_comment": "Map USPTO CustomerNumber (from XML) to office short name, e.g. \"30594\": \"DC\""
+  },
+  "area_code_to_office": {
+    "703": "DC",
+    "571": "DC"
+  }
+}
