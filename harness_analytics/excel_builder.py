@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from io import BytesIO
+
 import pandas as pd
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
@@ -117,8 +119,8 @@ def _write_summary_tab(ws, df: pd.DataFrame) -> None:
                 cell.fill = HEADER_FILL
 
 
-def build_excel_report(db: Session, output_path: str) -> None:
-    """Build the full multi-tab Excel workbook."""
+def build_excel_workbook(db: Session) -> Workbook:
+    """Build the full multi-tab Excel workbook in memory (same sheets as CLI report)."""
     wb = Workbook()
     wb.remove(wb.active)
 
@@ -147,4 +149,17 @@ def build_excel_report(db: Session, output_path: str) -> None:
     ws6 = wb.create_sheet("Summary Statistics")
     _write_summary_tab(ws6, df_all)
 
+    return wb
+
+
+def workbook_to_bytesio(wb: Workbook) -> BytesIO:
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+
+def build_excel_report(db: Session, output_path: str) -> None:
+    """Build the full multi-tab Excel workbook and save to disk."""
+    wb = build_excel_workbook(db)
     wb.save(output_path)

@@ -142,7 +142,9 @@ This repo includes a **Dockerfile** and [railway.toml](railway.toml) so Railway 
 
 ### CLI against Railway Postgres
 
-From your **laptop**, use the Postgres plugin’s **`DATABASE_PUBLIC_URL`** (or the TCP proxy URL shown in the Postgres service). The internal `postgres.railway.internal` URL only works **inside** Railway’s network.
+**Ingest** still runs from your laptop and needs the Postgres plugin’s **`DATABASE_PUBLIC_URL`** (the internal `postgres.railway.internal` URL only works inside Railway’s network).
+
+**Analytics** (`scripts/run_railway_analytics.py`) defaults to **`railway ssh`** into the app service so `python -m harness_analytics analytics` uses the container’s **`DATABASE_URL`** (internal). Use **`--local`** on that script if you want the old behavior (local Python + public URL). **`--foreground`** / **`-f`** streams logs over SSH instead of detaching with **`/usr/bin/nohup`** and **`/app/analytics_run.log`**.
 
 With the [Railway CLI](https://docs.railway.com/develop/cli) linked to this repo (`railway link`), you can run the helpers (no copy-paste of credentials):
 
@@ -150,7 +152,7 @@ With the [Railway CLI](https://docs.railway.com/develop/cli) linked to this repo
 cd harness-analytics
 # Bulk load (skips analytics during load; run analytics after — much faster for large folders)
 PYTHONUNBUFFERED=1 python3 scripts/run_railway_ingest.py
-python3 scripts/run_railway_analytics.py
+python3 scripts/run_railway_analytics.py          # optional: --foreground, or --local for laptop+public URL
 python3 scripts/run_railway_report.py   # writes harness_railway_report.xlsx in repo root
 ```
 
@@ -163,6 +165,26 @@ python3 -m harness_analytics report --output report.xlsx
 ```
 
 Omit `--db-url` when `DATABASE_URL` is set.
+
+### Web portal (download + per-matter browser)
+
+The same FastAPI service exposes a **password-protected portal** under **`/portal/`**. Nothing under `/portal` (except the sign-in page) is available until you authenticate.
+
+1. Set **`PORTAL_PASSWORD`** on the app service to a strong secret.
+2. Set **`SECRET_KEY`** to a long random string (used to sign session cookies). If you omit it, the app falls back to `PORTAL_PASSWORD` for signing (works, but rotating the password will log everyone out).
+3. Optional: **`PORTAL_USER`** — sign-in username (default **`viewer`**).
+
+**Sign in:** open `https://<your-railway-host>/portal/login` (or `/portal/` — browsers asking for HTML are redirected to the login page). Use the HTML form, or use **HTTP Basic** with the same username and password (for scripts and `curl`).
+
+After sign-in, the browser keeps a **signed session cookie** until you click **Sign out** or the cookie expires. **`GET /portal/report.xlsx`** and matter pages require that session (or Basic) on every request.
+
+What you get:
+
+- **`GET /portal/report.xlsx`** — same multi-sheet Excel workbook as the CLI `report` command (link on the home page after login).
+- **`GET /portal/matter/<application_number>`** — HTML summary for one matter: application fields, analytics row, prosecution events and file-wrapper tables (first 500 rows each if larger), and a link to raw XML when `xml_raw` was stored at ingest.
+- **`GET /portal/matter/<application_number>/xml`** — raw Biblio XML (`inline` display; large payloads).
+
+`/health` stays **unauthenticated** for Railway probes. If `PORTAL_PASSWORD` is unset, `/portal` routes (except `/portal/login`, which explains the situation) return **503**. Treat this portal as **sensitive**: it can expose client data and full XML.
 
 ### Optional checks
 

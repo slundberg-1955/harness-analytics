@@ -17,12 +17,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest"]
-web = ["fastapi", "uvicorn[standard]"]
+dev = ["pytest", "httpx>=0.27"]
+web = ["fastapi>=0.115", "uvicorn[standard]", "jinja2"]
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["harness_analytics*"]
+
+[tool.setuptools.package-data]
+harness_analytics = ["templates/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

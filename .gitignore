@@ -18,3 +18,10 @@ htmlcov/
 *.xlsx
 .DS_Store
 .railway/
+# Local ingest / Railway run artifacts (do not commit)
+ingest_errors.jsonl
+ingest_railway_errors.jsonl
+ingest_railway_run.log
+ingest_run.log
+ingest_run.pid
+railway_analytics_run.log

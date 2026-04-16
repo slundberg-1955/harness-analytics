@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Portal — Harness analytics{% endblock %}
+{% block extra_head %}<meta name="robots" content="noindex,nofollow">{% endblock %}
+{% block content %}
+<div class="card">
+  <h1>Portal</h1>
+  <p class="muted">Download the Excel report (same workbook as the CLI <code>report</code> command) or open a matter by application number.</p>
+  <p><a class="btn" href="/portal/report.xlsx">Download report (.xlsx)</a></p>
+</div>
+<div class="card">
+  <h2>Open matter</h2>
+  <form method="get" action="/portal/matter/lookup">
+    <label for="q">Application number</label><br>
+    <input id="q" name="q" type="text" placeholder="e.g. 16123456" required>
+    <button type="submit">View</button>
+  </form>
+</div>
+{% endblock %}

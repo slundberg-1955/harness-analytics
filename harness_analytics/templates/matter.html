@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}Matter {{ app.application_number }} — Harness analytics{% endblock %}
+{% block content %}
+<div class="card">
+  <h1>{{ app.application_number }}</h1>
+  <p class="muted">{{ app.invention_title or "No title" }}</p>
+  {% if has_xml %}
+  <p><a class="btn secondary" href="{{ xml_url }}">Raw XML</a></p>
+  {% else %}
+  <p class="muted">Raw XML was not stored for this application (ingest may have used <code>--no-xml-raw</code>).</p>
+  {% endif %}
+</div>
+
+<div class="card" id="application">
+  <h2>Application</h2>
+  <dl class="grid2">
+    {% for label, value in app_fields %}
+    <dt>{{ label }}</dt><dd>{{ value if value is not none else "—" }}</dd>
+    {% endfor %}
+  </dl>
+</div>
+
+<div class="card" id="analytics">
+  <h2>Analytics</h2>
+  {% if analytics_fields %}
+  <dl class="grid2">
+    {% for label, value in analytics_fields %}
+    <dt>{{ label }}</dt><dd>{{ value if value is not none else "—" }}</dd>
+    {% endfor %}
+  </dl>
+  {% else %}
+  <p class="muted">No analytics row for this application yet.</p>
+  {% endif %}
+</div>
+
+<div class="card" id="events">
+  <h2>Prosecution events</h2>
+  {% if events_truncated %}
+  <p class="muted">Showing first {{ events|length }} rows (more exist in the database).</p>
+  {% endif %}
+  {% if events %}
+  <table>
+    <thead><tr><th>Date</th><th>Description</th><th>Type</th><th>Status</th></tr></thead>
+    <tbody>
+      {% for e in events %}
+      <tr>
+        <td>{{ e.transaction_date }}</td>
+        <td>{{ e.transaction_description }}</td>
+        <td>{{ e.event_type or "—" }}</td>
+        <td>{{ e.status_description or e.status_number or "—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No prosecution events.</p>
+  {% endif %}
+</div>
+
+<div class="card" id="ifw">
+  <h2>File wrapper (IFW)</h2>
+  {% if docs_truncated %}
+  <p class="muted">Showing first {{ documents|length }} documents (more exist).</p>
+  {% endif %}
+  {% if documents %}
+  <table>
+    <thead><tr><th>Code</th><th>Description</th><th>Mail room</th><th>Pages</th></tr></thead>
+    <tbody>
+      {% for d in documents %}
+      <tr>
+        <td>{{ d.document_code or "—" }}</td>
+        <td>{{ d.document_description or "—" }}</td>
+        <td>{{ d.mail_room_date or "—" }}</td>
+        <td>{{ d.page_quantity if d.page_quantity is not none else "—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No file wrapper rows.</p>
+  {% endif %}
+</div>
+{% endblock %}
