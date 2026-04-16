@@ -25,10 +25,12 @@ EVENT_TYPE_MAP: dict[str, str] = {
 }
 
 # IFW document codes (Part 9) — used to supplement history-based classification.
-NONFINAL_OA_DOC_CODES = frozenset({"CTNF", "MCTNF"})
-FINAL_OA_DOC_CODES = frozenset({"CTFR", "MCTFR"})
-NOA_DOC_CODES = frozenset({"NOA", "MN/=."})
-INTERVIEW_DOC_CODES = frozenset({"INTSUM", "EXINTSUM", "892", "TELE.CONF"})
+NONFINAL_OA_DOC_CODES = frozenset({"CTNF"})
+FINAL_OA_DOC_CODES = frozenset({"CTFR"})
+NOA_DOC_CODES = frozenset({"NOA"})
+# Interview signals in analytics are IFW-only; these codes only (no description fallback).
+INTERVIEW_IFW_DOC_CODES = frozenset({"EXIN", "INTV.SUM.EX", "INTV.SUM.APP"})
+INTERVIEW_DOC_CODES = INTERVIEW_IFW_DOC_CODES
 
 
 def classify_event(description: str) -> str:
@@ -50,36 +52,32 @@ def classify_event_with_ifw_fallback(
     Classify a history-line description; if still OTHER, infer from IFW codes/descriptions
     when the same logical event is ambiguous in history text.
     """
+    _ = document_description
     primary = classify_event(description)
     if primary != "OTHER":
         return primary
     code = (document_code or "").strip().upper()
-    desc = (document_description or "").strip()
-    desc_l = desc.lower()
 
     if code in NONFINAL_OA_DOC_CODES:
         return "NONFINAL_OA"
     if code in FINAL_OA_DOC_CODES:
         return "FINAL_OA"
-    if code in NOA_DOC_CODES or "notice of allowance" in desc_l:
+    if code in NOA_DOC_CODES:
         return "NOA"
-    if code in INTERVIEW_DOC_CODES or "interview summary" in desc_l or "telephone interview" in desc_l:
+    if code in INTERVIEW_DOC_CODES:
         return "INTERVIEW"
     return "OTHER"
 
 
 def ifw_document_suggests_interview(document_code: str | None, document_description: str | None) -> bool:
-    """True if IFW row indicates an examiner interview summary (Part 9)."""
+    """True if IFW document_code is one of the interview codes used for analytics."""
+    _ = document_description
     code = (document_code or "").strip().upper()
-    if code in INTERVIEW_DOC_CODES:
-        return True
-    desc = (document_description or "").lower()
-    return "interview summary" in desc or "examiner interview" in desc or "telephone interview" in desc
+    return code in INTERVIEW_IFW_DOC_CODES
 
 
 def ifw_document_suggests_noa(document_code: str | None, document_description: str | None) -> bool:
+    """True only for IFW Notice of Allowance (code NOA)."""
+    _ = document_description
     code = (document_code or "").strip().upper()
-    if code in NOA_DOC_CODES:
-        return True
-    desc = (document_description or "").lower()
-    return "notice of allowance" in desc and "fees due" in desc
+    return code == "NOA"

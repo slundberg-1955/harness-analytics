@@ -77,47 +77,164 @@ def _resolve_office_name(
     return "UNKNOWN"
 
 
-def _first_date_of_type(events: list[ProsecutionEvent], types: set[str]) -> Optional[date]:
-    for e in events:
-        if e.event_type in types:
-            return e.transaction_date
-    return None
-
-
 def _events_of_type(events: list[ProsecutionEvent], types: set[str]) -> list[ProsecutionEvent]:
     return [e for e in events if e.event_type in types]
 
 
-def _events_before_noa(
-    events: list[ProsecutionEvent], types: set[str], first_noa_date: Optional[date]
-) -> list[ProsecutionEvent]:
-    out: list[ProsecutionEvent] = []
-    for e in events:
-        if e.event_type not in types:
+def _ifw_mail_date(d: FileWrapperDocument) -> Optional[date]:
+    if not d.mail_room_date:
+        return None
+    mrd = d.mail_room_date
+    return mrd.date() if isinstance(mrd, datetime) else mrd
+
+
+def _ifw_doc_code(d: FileWrapperDocument) -> str:
+    return (d.document_code or "").strip().upper()
+
+
+def _first_noa_date_from_ifw(ifw_docs: list[FileWrapperDocument]) -> Optional[date]:
+    dates: list[date] = []
+    for d in ifw_docs:
+        if _ifw_doc_code(d) != "NOA":
             continue
-        if first_noa_date is None:
-            out.append(e)
-        elif e.transaction_date and e.transaction_date < first_noa_date:
-            out.append(e)
+        dd = _ifw_mail_date(d)
+        if dd is not None:
+            dates.append(dd)
+    return min(dates) if dates else None
+
+
+def _ifw_docs_code_before_noa(
+    ifw_docs: list[FileWrapperDocument],
+    doc_code: str,
+    first_noa_date: Optional[date],
+) -> list[FileWrapperDocument]:
+    want = doc_code.strip().upper()
+    out: list[FileWrapperDocument] = []
+    for d in ifw_docs:
+        if _ifw_doc_code(d) != want:
+            continue
+        dd = _ifw_mail_date(d)
+        if dd is None:
+            continue
+        if first_noa_date is not None and dd >= first_noa_date:
+            continue
+        out.append(d)
+    out.sort(key=lambda x: (_ifw_mail_date(x) or date.min, x.id))
     return out
 
 
-def _interview_signal_dates(
-    events: list[ProsecutionEvent], ifw_docs: list[FileWrapperDocument]
-) -> set[date]:
+def _interview_signal_dates_from_ifw(ifw_docs: list[FileWrapperDocument]) -> set[date]:
     dates: set[date] = set()
-    for e in events:
-        if e.event_type == "INTERVIEW" and e.transaction_date:
-            dates.add(e.transaction_date)
     for d in ifw_docs:
         if not ifw_document_suggests_interview(d.document_code, d.document_description):
             continue
-        if not d.mail_room_date:
-            continue
-        mrd = d.mail_room_date
-        dd = mrd.date() if isinstance(mrd, datetime) else mrd
-        dates.add(dd)
+        dd = _ifw_mail_date(d)
+        if dd is not None:
+            dates.add(dd)
     return dates
+
+
+def _days_between(d1: Optional[date], d2: Optional[date]) -> Optional[int]:
+    if d1 and d2:
+        return (d2 - d1).days
+    return None
+
+
+def compute_analytics_for_application(
+    db: Session,
+    app: Application,
+    *,
+    interview_window_days: int,
+    office_cfg: dict[str, Any],
+) -> None:
+    """Compute and upsert application_analytics for one application."""
+    events = (
+        db.query(ProsecutionEvent)
+        .filter(ProsecutionEvent.application_id == app.id)
+        .order_by(ProsecutionEvent.transaction_date, ProsecutionEvent.seq_order)
+        .all()
+    )
+    ifw_docs = (
+        db.query(FileWrapperDocument)
+        .filter(FileWrapperDocument.application_id == app.id)
+        .order_by(FileWrapperDocument.mail_room_date, FileWrapperDocument.id)
+        .all()
+    )
+
+    first_noa_date = _first_noa_date_from_ifw(ifw_docs)
+    nonfinal_ifw = _ifw_docs_code_before_noa(ifw_docs, "CTNF", first_noa_date)
+    final_ifw = _ifw_docs_code_before_noa(ifw_docs, "CTFR", first_noa_date)
+    rce_events = _events_of_type(events, {"RCE"})
+
+    interview_dates = _interview_signal_dates_from_ifw(ifw_docs)
+    last_interview_before_noa: Optional[date] = None
+    if first_noa_date and interview_dates:
+        prior = [d for d in interview_dates if d < first_noa_date]
+        if prior:
+            last_interview_before_noa = max(prior)
+
+    first_rce_date = rce_events[0].transaction_date if rce_events else None
+
+    oa_mail_dates: list[date] = []
+    for d in nonfinal_ifw + final_ifw:
+        dd = _ifw_mail_date(d)
+        if dd is not None:
+            oa_mail_dates.append(dd)
+    first_oa_date = min(oa_mail_dates) if oa_mail_dates else None
+
+    interview_before_noa = last_interview_before_noa is not None
+    days_int_to_noa: Optional[int] = None
+    interview_led_to_noa = False
+    if last_interview_before_noa is not None and first_noa_date is not None:
+        days_int_to_noa = (first_noa_date - last_interview_before_noa).days
+        interview_led_to_noa = days_int_to_noa <= interview_window_days
+
+    billing_atty = (
+        db.query(ApplicationAttorney)
+        .filter(
+            ApplicationAttorney.application_id == app.id,
+            ApplicationAttorney.attorney_role == "POA",
+            ApplicationAttorney.is_first_attorney.is_(True),
+        )
+        .first()
+    )
+    billing_reg = billing_atty.registration_number if billing_atty else None
+    billing_name = (
+        f"{billing_atty.first_name or ''} {billing_atty.last_name or ''}".strip()
+        if billing_atty
+        else None
+    )
+    billing_phone = billing_atty.phone if billing_atty else None
+    is_jac = billing_reg == JAC_REG
+
+    office_name = _resolve_office_name(app.customer_number, billing_phone, office_cfg)
+
+    existing = db.query(ApplicationAnalytics).filter_by(application_id=app.id).first()
+    if not existing:
+        existing = ApplicationAnalytics(application_id=app.id)
+        db.add(existing)
+
+    existing.nonfinal_oa_count = len(nonfinal_ifw)
+    existing.final_oa_count = len(final_ifw)
+    existing.total_substantive_oas = len(nonfinal_ifw) + len(final_ifw)
+    existing.first_oa_date = first_oa_date
+    existing.first_nonfinal_oa_date = _ifw_mail_date(nonfinal_ifw[0]) if nonfinal_ifw else None
+    existing.first_final_oa_date = _ifw_mail_date(final_ifw[0]) if final_ifw else None
+    existing.first_noa_date = first_noa_date
+    existing.had_examiner_interview = bool(interview_dates)
+    existing.interview_count = len(interview_dates)
+    existing.interview_before_noa = interview_before_noa
+    existing.interview_led_to_noa = interview_led_to_noa
+    existing.days_interview_to_noa = days_int_to_noa
+    existing.rce_count = len(rce_events)
+    existing.first_rce_date = first_rce_date
+    existing.days_filing_to_first_oa = _days_between(app.filing_date, first_oa_date)
+    existing.days_filing_to_noa = _days_between(app.filing_date, first_noa_date)
+    existing.days_filing_to_issue = _days_between(app.filing_date, app.issue_date)
+    existing.billing_attorney_reg = billing_reg
+    existing.billing_attorney_name = billing_name or None
+    existing.is_jac = is_jac
+    existing.office_name = office_name
 
 
 def compute_analytics(
@@ -128,93 +245,11 @@ def compute_analytics(
 ) -> None:
     """Compute and upsert application_analytics for every application."""
     office_cfg = load_office_config(office_map_path)
-
     apps = db.query(Application).order_by(Application.id).all()
-
     for app in apps:
-        events = (
-            db.query(ProsecutionEvent)
-            .filter(ProsecutionEvent.application_id == app.id)
-            .order_by(ProsecutionEvent.transaction_date, ProsecutionEvent.seq_order)
-            .all()
+        compute_analytics_for_application(
+            db,
+            app,
+            interview_window_days=interview_window_days,
+            office_cfg=office_cfg,
         )
-        ifw_docs = (
-            db.query(FileWrapperDocument)
-            .filter(FileWrapperDocument.application_id == app.id)
-            .order_by(FileWrapperDocument.mail_room_date, FileWrapperDocument.id)
-            .all()
-        )
-
-        first_noa_date = _first_date_of_type(events, {"NOA"})
-        nonfinal_oa_events = _events_before_noa(events, {"NONFINAL_OA"}, first_noa_date)
-        final_oa_events = _events_before_noa(events, {"FINAL_OA"}, first_noa_date)
-        interview_events = _events_of_type(events, {"INTERVIEW"})
-        rce_events = _events_of_type(events, {"RCE"})
-
-        interview_dates = _interview_signal_dates(events, ifw_docs)
-        first_interview_date = min(interview_dates) if interview_dates else None
-        first_rce_date = rce_events[0].transaction_date if rce_events else None
-        first_oa_date = _first_date_of_type(events, {"NONFINAL_OA", "FINAL_OA"})
-
-        interview_before_noa = bool(
-            first_interview_date and first_noa_date and first_interview_date < first_noa_date
-        )
-        days_int_to_noa: Optional[int] = None
-        interview_led_to_noa = False
-        if first_interview_date and first_noa_date and interview_before_noa:
-            days_int_to_noa = (first_noa_date - first_interview_date).days
-            interview_led_to_noa = days_int_to_noa <= interview_window_days
-
-        billing_atty = (
-            db.query(ApplicationAttorney)
-            .filter(
-                ApplicationAttorney.application_id == app.id,
-                ApplicationAttorney.attorney_role == "POA",
-                ApplicationAttorney.is_first_attorney.is_(True),
-            )
-            .first()
-        )
-        billing_reg = billing_atty.registration_number if billing_atty else None
-        billing_name = (
-            f"{billing_atty.first_name or ''} {billing_atty.last_name or ''}".strip()
-            if billing_atty
-            else None
-        )
-        billing_phone = billing_atty.phone if billing_atty else None
-        is_jac = billing_reg == JAC_REG
-
-        office_name = _resolve_office_name(app.customer_number, billing_phone, office_cfg)
-
-        def days_between(d1: Optional[date], d2: Optional[date]) -> Optional[int]:
-            if d1 and d2:
-                return (d2 - d1).days
-            return None
-
-        existing = db.query(ApplicationAnalytics).filter_by(application_id=app.id).first()
-        if not existing:
-            existing = ApplicationAnalytics(application_id=app.id)
-            db.add(existing)
-
-        existing.nonfinal_oa_count = len(nonfinal_oa_events)
-        existing.final_oa_count = len(final_oa_events)
-        existing.total_substantive_oas = len(nonfinal_oa_events) + len(final_oa_events)
-        existing.first_oa_date = first_oa_date
-        existing.first_nonfinal_oa_date = (
-            nonfinal_oa_events[0].transaction_date if nonfinal_oa_events else None
-        )
-        existing.first_final_oa_date = final_oa_events[0].transaction_date if final_oa_events else None
-        existing.first_noa_date = first_noa_date
-        existing.had_examiner_interview = bool(interview_dates)
-        existing.interview_count = len(interview_dates)
-        existing.interview_before_noa = interview_before_noa
-        existing.interview_led_to_noa = interview_led_to_noa
-        existing.days_interview_to_noa = days_int_to_noa
-        existing.rce_count = len(rce_events)
-        existing.first_rce_date = first_rce_date
-        existing.days_filing_to_first_oa = days_between(app.filing_date, first_oa_date)
-        existing.days_filing_to_noa = days_between(app.filing_date, first_noa_date)
-        existing.days_filing_to_issue = days_between(app.filing_date, app.issue_date)
-        existing.billing_attorney_reg = billing_reg
-        existing.billing_attorney_name = billing_name or None
-        existing.is_jac = is_jac
-        existing.office_name = office_name

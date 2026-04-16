@@ -11,6 +11,7 @@ from openpyxl.workbook import Workbook
 from sqlalchemy.orm import Session
 
 from harness_analytics.reports import (
+    analytics_column_header,
     report_all_harness,
     report_art_unit_summary,
     report_by_office,
@@ -34,7 +35,7 @@ def _write_df_to_sheet(ws, df: pd.DataFrame, *, highlight_jac: bool = False) -> 
 
     cols = list(df.columns)
     for col_idx, col_name in enumerate(cols, 1):
-        cell = ws.cell(row=1, column=col_idx, value=str(col_name).upper().replace("_", " "))
+        cell = ws.cell(row=1, column=col_idx, value=analytics_column_header(str(col_name)))
         cell.font = HEADER_FONT
         cell.fill = HEADER_FILL
         cell.alignment = Alignment(horizontal="center")
@@ -106,7 +107,7 @@ def _write_summary_tab(ws, df: pd.DataFrame) -> None:
             int((df.loc[df.issue_year == 2025, "had_examiner_interview"]).sum()),
         ],
         [
-            "Interviews Led to Immediate NOA (≤90d)",
+            "NOA within interview window of last interview",
             int((df.loc[df.issue_year == 2024, "interview_led_to_noa"]).sum()),
             int((df.loc[df.issue_year == 2025, "interview_led_to_noa"]).sum()),
         ],

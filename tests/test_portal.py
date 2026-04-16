@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 
 pytest.importorskip("fastapi")
@@ -98,3 +100,31 @@ def test_health_unauthenticated(monkeypatch: pytest.MonkeyPatch) -> None:
     client = TestClient(create_app())
     r = client.get("/health")
     assert r.status_code == 200
+
+
+def test_portal_recompute_unknown_application_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PORTAL_PASSWORD", "correct")
+    monkeypatch.setenv("SECRET_KEY", "unit-test-secret-key-32-chars-minimum!!")
+
+    import harness_analytics.portal as portal_mod
+    from harness_analytics.db import get_db
+    from harness_analytics.server import create_app
+
+    monkeypatch.setattr(portal_mod, "_find_application", lambda db, key: None)
+
+    app = create_app()
+
+    def override_get_db():
+        yield MagicMock()
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        client = TestClient(app)
+        r = client.post(
+            "/portal/matter/99999999/recompute-analytics",
+            auth=("viewer", "correct"),
+            follow_redirects=False,
+        )
+        assert r.status_code == 404
+    finally:
+        app.dependency_overrides.clear()

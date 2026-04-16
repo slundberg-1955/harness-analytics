@@ -173,6 +173,7 @@ The same FastAPI service exposes a **password-protected portal** under **`/porta
 1. Set **`PORTAL_PASSWORD`** on the app service to a strong secret.
 2. Set **`SECRET_KEY`** to a long random string (used to sign session cookies). If you omit it, the app falls back to `PORTAL_PASSWORD` for signing (works, but rotating the password will log everyone out).
 3. Optional: **`PORTAL_USER`** — sign-in username (default **`viewer`**).
+4. Optional: **`INTERVIEW_WINDOW_DAYS`** — max days from the **last** qualifying IFW interview before the first IFW **NOA** document for the `interview_led_to_noa` flag (default **90**; matches the CLI `analytics` / ingest `--interview-window`). Used by **Recompute analytics** on matter pages.
 
 **Sign in:** open `https://<your-railway-host>/portal/login` (or `/portal/` — browsers asking for HTML are redirected to the login page). Use the HTML form, or use **HTTP Basic** with the same username and password (for scripts and `curl`).
 
@@ -181,7 +182,8 @@ After sign-in, the browser keeps a **signed session cookie** until you click **S
 What you get:
 
 - **`GET /portal/report.xlsx`** — same multi-sheet Excel workbook as the CLI `report` command (link on the home page after login).
-- **`GET /portal/matter/<application_number>`** — HTML summary for one matter: application fields, analytics row, prosecution events and file-wrapper tables (first 500 rows each if larger), and a link to raw XML when `xml_raw` was stored at ingest.
+- **`GET /portal/matter/<application_number>`** — HTML summary for one matter: application fields, analytics row, prosecution events and file-wrapper tables (first 500 rows each if larger), a one-row **Excel (All Harness IP) column** preview when an analytics row exists, a **Recompute analytics (this application only)** control, and a link to raw XML when `xml_raw` was stored at ingest.
+- **`POST /portal/matter/<application_number>/recompute-analytics`** — recomputes `application_analytics` for that matter only, then redirects back to the matter page (same logic as the CLI `analytics` command, scoped to one application).
 - **`GET /portal/matter/<application_number>/xml`** — raw Biblio XML (`inline` display; large payloads).
 
 `/health` stays **unauthenticated** for Railway probes. If `PORTAL_PASSWORD` is unset, `/portal` routes (except `/portal/login`, which explains the situation) return **503**. Treat this portal as **sensitive**: it can expose client data and full XML.
@@ -193,4 +195,4 @@ What you get:
 
 ## Core metric
 
-Substantive examiner actions (**non-final** and **final** OAs) are counted only for `prosecution_events` dated **before** the first **Notice of Allowance** event (`event_type = 'NOA'`, not internal verification). Interview detection uses **FileContentHistory** plus **IFW** document codes/descriptions (for example `INTSUM`, `EXINTSUM`).
+Substantive **office actions** in analytics are counted from **IFW** only: document code **CTNF** (non-final) and **CTFR** (final), each row dated by mail room date **before** the first IFW document with code **NOA** (allowance). **Interview** signals use IFW only, with document codes **EXIN**, **INTV.SUM.EX**, and **INTV.SUM.APP** (unique mail-room dates). **NOA within 90 days of interview** (`interview_led_to_noa`) is true when the span from the **most recent** qualifying interview date strictly before that first **NOA** to the **NOA** mail date is at most **`INTERVIEW_WINDOW_DAYS`** (default 90). **Days last interview → NOA** stores that span in days.

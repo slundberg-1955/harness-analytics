@@ -6,6 +6,19 @@ import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+# Human-readable Excel / portal headers (database column names unchanged).
+ANALYTICS_REPORT_HEADER_LABELS: dict[str, str] = {
+    "interview_led_to_noa": "NOA WITHIN 90 DAYS OF INTERVIEW",
+    "days_interview_to_noa": "DAYS LAST INTERVIEW TO NOA",
+}
+
+
+def analytics_column_header(db_column_name: str) -> str:
+    return ANALYTICS_REPORT_HEADER_LABELS.get(
+        db_column_name, str(db_column_name).upper().replace("_", " ")
+    )
+
+
 BASE_QUERY = """
 SELECT
     a.application_number,
@@ -42,6 +55,42 @@ WHERE a.issue_year IN (2024, 2025)
   AND a.application_status_code = '150'
 """
 
+# Same column list as BASE_QUERY, without issue-year / status filters (portal testing).
+SPREADSHEET_ROW_QUERY = """
+SELECT
+    a.application_number,
+    a.invention_title,
+    a.filing_date,
+    a.issue_date,
+    a.issue_year,
+    a.patent_number,
+    a.customer_number,
+    a.hdp_customer_number,
+    a.group_art_unit,
+    a.patent_class,
+    a.examiner_first_name || ' ' || a.examiner_last_name AS examiner_name,
+    a.assignee_name,
+    aa.nonfinal_oa_count,
+    aa.final_oa_count,
+    aa.total_substantive_oas,
+    aa.first_noa_date,
+    aa.had_examiner_interview,
+    aa.interview_count,
+    aa.interview_led_to_noa,
+    aa.days_interview_to_noa,
+    aa.rce_count,
+    aa.days_filing_to_first_oa,
+    aa.days_filing_to_noa,
+    aa.days_filing_to_issue,
+    aa.billing_attorney_reg,
+    aa.billing_attorney_name,
+    aa.is_jac,
+    aa.office_name
+FROM applications a
+JOIN application_analytics aa ON aa.application_id = a.id
+WHERE a.application_number = :application_number
+"""
+
 
 def _read_df(db: Session, sql: str) -> pd.DataFrame:
     """Run SELECT and build a DataFrame (avoids older pandas/SQLAlchemy2 read_sql quirks)."""
@@ -56,6 +105,16 @@ def _read_df(db: Session, sql: str) -> pd.DataFrame:
 def report_all_harness(db: Session) -> pd.DataFrame:
     """All issued applications 2024–2025 with analytics."""
     return _read_df(db, BASE_QUERY)
+
+
+def report_spreadsheet_row_for_application(db: Session, application_number: str) -> pd.DataFrame:
+    """One-row DataFrame matching Excel 'All Harness IP' columns, or empty if no analytics row."""
+    result = db.execute(text(SPREADSHEET_ROW_QUERY), {"application_number": application_number})
+    columns = list(result.keys())
+    rows = result.fetchall()
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    return pd.DataFrame([tuple(r) for r in rows], columns=columns)
 
 
 def report_by_office(db: Session) -> dict[str, pd.DataFrame]:

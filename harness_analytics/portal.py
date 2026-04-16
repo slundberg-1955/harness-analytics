@@ -24,8 +24,14 @@ from sqlalchemy.orm import Session
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
+from harness_analytics.analytics import compute_analytics_for_application, load_office_config
 from harness_analytics.db import get_db
 from harness_analytics.models import Application, ApplicationAnalytics, FileWrapperDocument, ProsecutionEvent
+from harness_analytics.reports import (
+    ANALYTICS_REPORT_HEADER_LABELS,
+    analytics_column_header,
+    report_spreadsheet_row_for_application,
+)
 
 router = APIRouter(prefix="/portal", tags=["portal"])
 
@@ -181,8 +187,8 @@ def _analytics_field_pairs(aa: ApplicationAnalytics) -> list[tuple[str, object]]
         ("Had examiner interview", aa.had_examiner_interview),
         ("Interview count", aa.interview_count),
         ("Interview before NOA", aa.interview_before_noa),
-        ("Interview led to NOA (≤window)", aa.interview_led_to_noa),
-        ("Days interview → NOA", aa.days_interview_to_noa),
+        (ANALYTICS_REPORT_HEADER_LABELS["interview_led_to_noa"], aa.interview_led_to_noa),
+        (ANALYTICS_REPORT_HEADER_LABELS["days_interview_to_noa"], aa.days_interview_to_noa),
         ("RCE count", aa.rce_count),
         ("First RCE date", _format_value(aa.first_rce_date)),
         ("Days filing → first OA", aa.days_filing_to_first_oa),
@@ -212,6 +218,14 @@ def _find_application(db: Session, raw_key: str) -> Application | None:
     if digits and digits != key:
         return db.scalar(select(Application).where(Application.application_number == digits))
     return None
+
+
+def _portal_interview_window_days() -> int:
+    raw = os.environ.get("INTERVIEW_WINDOW_DAYS", "90")
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 90
 
 
 @router.get("/login", response_class=HTMLResponse)
@@ -309,6 +323,26 @@ def matter_xml(application_number: str, db: Session = Depends(get_db)) -> Stream
     )
 
 
+@router.post("/matter/{application_number:path}/recompute-analytics")
+def portal_recompute_analytics(
+    application_number: str,
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    app = _find_application(db, application_number)
+    if not app:
+        raise HTTPException(status_code=404, detail="Application not found")
+    office_cfg = load_office_config()
+    compute_analytics_for_application(
+        db,
+        app,
+        interview_window_days=_portal_interview_window_days(),
+        office_cfg=office_cfg,
+    )
+    db.commit()
+    loc = f"/portal/matter/{quote(app.application_number, safe='')}?recomputed=1"
+    return RedirectResponse(url=loc, status_code=303)
+
+
 @router.get("/matter/{application_number:path}", response_class=HTMLResponse)
 def matter_detail(
     request: Request,
@@ -347,6 +381,16 @@ def matter_detail(
 
     has_xml = bool(app.xml_raw)
     xml_url = f"/portal/matter/{quote(app.application_number, safe='')}/xml"
+    recompute_url = f"/portal/matter/{quote(app.application_number, safe='')}/recompute-analytics"
+
+    df_row = report_spreadsheet_row_for_application(db, app.application_number)
+    spreadsheet_headers: list[str] = []
+    spreadsheet_values: list[object] = []
+    if not df_row.empty:
+        spreadsheet_headers = [analytics_column_header(str(c)) for c in df_row.columns]
+        spreadsheet_values = [_format_value(v) for v in df_row.iloc[0].tolist()]
+
+    recomputed = request.query_params.get("recomputed") == "1"
 
     return templates.TemplateResponse(
         request,
@@ -355,6 +399,10 @@ def matter_detail(
             "app": app,
             "has_xml": has_xml,
             "xml_url": xml_url,
+            "recompute_url": recompute_url,
+            "recomputed": recomputed,
+            "spreadsheet_headers": spreadsheet_headers,
+            "spreadsheet_values": spreadsheet_values,
             "app_fields": _application_field_pairs(app),
             "analytics_fields": _analytics_field_pairs(aa) if aa else [],
             "events": events,

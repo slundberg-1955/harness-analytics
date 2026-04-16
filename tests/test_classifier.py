@@ -41,12 +41,37 @@ def test_ifw_fallback_nonfinal_code() -> None:
     )
 
 
+def test_ifw_fallback_mctnf_is_other() -> None:
+    assert (
+        classify_event_with_ifw_fallback(
+            "Some unclear status",
+            document_code="MCTNF",
+            document_description="Office action",
+        )
+        == "OTHER"
+    )
+
+
 def test_ifw_document_suggests_interview() -> None:
-    assert ifw_document_suggests_interview("INTSUM", "Interview Summary") is True
-    assert ifw_document_suggests_interview("EXINTSUM", None) is True
+    assert ifw_document_suggests_interview("EXIN", None) is True
+    assert ifw_document_suggests_interview("INTV.SUM.EX", "") is True
+    assert ifw_document_suggests_interview("intv.sum.app", None) is True
+    assert ifw_document_suggests_interview("INTSUM", "Interview Summary") is False
     assert ifw_document_suggests_interview("CTNF", "Non-Final") is False
 
 
 def test_ifw_document_suggests_noa() -> None:
     assert ifw_document_suggests_noa("NOA", "Notice of Allowance and Fees Due") is True
     assert ifw_document_suggests_noa("CTFR", "Final") is False
+    assert ifw_document_suggests_noa("MN/=.", "Mail Notice of Allowance") is False
+
+
+def test_ifw_fallback_interview_code_only() -> None:
+    assert (
+        classify_event_with_ifw_fallback(
+            "Unclear",
+            document_code="INTV.SUM.EX",
+            document_description="x",
+        )
+        == "INTERVIEW"
+    )

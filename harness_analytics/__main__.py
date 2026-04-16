@@ -48,7 +48,7 @@ def main() -> None:
         "--interview-window",
         type=int,
         default=90,
-        help="Days from first interview to first NOA to count as interview_led_to_noa",
+        help="Max days from last IFW interview (EXIN / INTV.SUM.EX / INTV.SUM.APP) before first IFW NOA to set interview_led_to_noa",
     )
     parser.add_argument(
         "--office-map",
