@@ -32,6 +32,7 @@ NOA_DOC_CODES = frozenset({"NOA"})
 INTERVIEW_IFW_DOC_CODES = frozenset({"EXIN", "INTV.SUM.EX", "INTV.SUM.APP"})
 # IFW document code counted in analytics (file wrapper).
 IFW_A_NE_DOC_CODE = "A.NE"
+IFW_CTRS_DOC_CODE = "CTRS"
 INTERVIEW_DOC_CODES = INTERVIEW_IFW_DOC_CODES
 
 

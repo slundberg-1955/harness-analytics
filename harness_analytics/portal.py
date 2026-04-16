@@ -170,9 +170,14 @@ def _application_field_pairs(app: Application) -> list[tuple[str, object]]:
         ("Examiner", f"{app.examiner_first_name or ''} {app.examiner_last_name or ''}".strip() or None),
         ("Examiner phone", app.examiner_phone),
         ("Assignee", app.assignee_name),
+        ("Child of prior US application (non-PCT parent)", app.continuity_child_of_prior_us),
         ("Imported at", _format_value(app.imported_at)),
     ]
-    return [(k, v) for k, v in pairs if v is not None or k in ("Application number",)]
+    return [
+        (k, v)
+        for k, v in pairs
+        if v is not None or k in ("Application number",) or k.startswith("Child of prior")
+    ]
 
 
 def _analytics_field_pairs(aa: ApplicationAnalytics) -> list[tuple[str, object]]:
@@ -187,6 +192,7 @@ def _analytics_field_pairs(aa: ApplicationAnalytics) -> list[tuple[str, object]]
         ("Had examiner interview", aa.had_examiner_interview),
         ("Interview count", aa.interview_count),
         ("IFW A.NE count", aa.ifw_a_ne_count),
+        ("IFW CTRS count", aa.ifw_ctrs_count),
         ("Interview before NOA", aa.interview_before_noa),
         (ANALYTICS_REPORT_HEADER_LABELS["interview_led_to_noa"], aa.interview_led_to_noa),
         (ANALYTICS_REPORT_HEADER_LABELS["days_interview_to_noa"], aa.days_interview_to_noa),

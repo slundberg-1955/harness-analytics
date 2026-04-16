@@ -44,6 +44,54 @@ def extract_text(el: Any, xpath: str) -> Optional[str]:
     return None
 
 
+def normalize_application_number_key(raw: str | None) -> str:
+    """Match Patent Center / portal lookups: strip and remove whitespace."""
+    return "".join((raw or "").strip().split())
+
+
+def is_non_pct_parent_application_number(parent: str | None) -> bool:
+    """True if parent number is treated as a prior US application (excludes PCT parents)."""
+    p = (parent or "").strip()
+    if not p:
+        return False
+    pu = p.upper()
+    if pu.startswith("PCT/") or pu.startswith("PCT "):
+        return False
+    return True
+
+
+def continuity_child_of_prior_us_parent(application_number: str, root: Any) -> bool:
+    """
+    True when ``ParentContinuityList`` lists this application as ``ChildApplicationNumber``
+    with a ``ParentApplicationNumber`` that is not a PCT filing (per Harness definition of
+    prior US parent).
+    """
+    child_key = normalize_application_number_key(application_number)
+    if not child_key:
+        return False
+    for el in root.xpath(".//Continuity/ParentContinuityList/ParentContinuity"):
+        child = extract_text(el, "ChildApplicationNumber/text()")
+        parent = extract_text(el, "ParentApplicationNumber/text()")
+        if not child or not parent:
+            continue
+        if normalize_application_number_key(child) != child_key:
+            continue
+        if is_non_pct_parent_application_number(parent):
+            return True
+    return False
+
+
+def child_of_prior_us_parent_from_xml(application_number: str | None, xml_text: str | None) -> bool:
+    """Parse stored Biblio XML; false when XML missing or invalid."""
+    if not application_number or not xml_text or not xml_text.strip():
+        return False
+    try:
+        root = etree.fromstring(xml_text.encode("utf-8"))
+    except etree.XMLSyntaxError:
+        return False
+    return continuity_child_of_prior_us_parent(application_number, root)
+
+
 def parse_biblio_xml(xml_text: str) -> dict[str, Any]:
     """
     Parse a Patent Center Biblio XML string.
@@ -129,6 +177,8 @@ def parse_biblio_xml(xml_text: str) -> dict[str, Any]:
 
     uspto_customer = extract_text(bib, "CustomerNumber/text()") if bib is not None else None
 
+    continuity_child = continuity_child_of_prior_us_parent(app_num, root) if app_num else False
+
     return {
         "application_number": app_num,
         "filing_date": parse_date(extract_text(bib, "FilingDate/text()")) if bib is not None else None,
@@ -161,4 +211,5 @@ def parse_biblio_xml(xml_text: str) -> dict[str, Any]:
         "events": events,
         "documents": documents,
         "inventors": inventors,
+        "continuity_child_of_prior_us": continuity_child,
     }

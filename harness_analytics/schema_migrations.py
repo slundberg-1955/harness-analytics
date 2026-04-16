@@ -11,12 +11,24 @@ from harness_analytics.db import get_database_url
 logger = logging.getLogger(__name__)
 
 
-def ensure_application_analytics_schema() -> None:
-    """
-    Add analytics columns introduced after initial deploy.
+def _add_column_if_missing(engine, table: str, column: str, ddl_suffix: str) -> None:
+    insp = inspect(engine)
+    if not insp.has_table(table):
+        return
+    col_names = {c["name"] for c in insp.get_columns(table)}
+    if column in col_names:
+        return
+    stmt = text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_suffix}")
+    with engine.begin() as conn:
+        conn.execute(stmt)
+    logger.info("Added column %s.%s", table, column)
 
-    SQLAlchemy create_all does not ALTER existing tables, so Railway/production
-    databases need this once per new column.
+
+def ensure_schema_migrations() -> None:
+    """
+    Add columns introduced after initial deploy (create_all does not ALTER tables).
+
+    Safe to run on every process startup.
     """
     url = get_database_url()
     if not url:
@@ -24,19 +36,27 @@ def ensure_application_analytics_schema() -> None:
 
     engine = create_engine(url, pool_pre_ping=True)
     try:
-        insp = inspect(engine)
-        if not insp.has_table("application_analytics"):
-            return
-        col_names = {c["name"] for c in insp.get_columns("application_analytics")}
-        if "ifw_a_ne_count" in col_names:
-            return
-        with engine.begin() as conn:
-            conn.execute(
-                text(
-                    "ALTER TABLE application_analytics "
-                    "ADD COLUMN ifw_a_ne_count INTEGER NOT NULL DEFAULT 0"
-                )
-            )
-        logger.info("Added column application_analytics.ifw_a_ne_count")
+        _add_column_if_missing(
+            engine,
+            "application_analytics",
+            "ifw_a_ne_count",
+            "INTEGER NOT NULL DEFAULT 0",
+        )
+        _add_column_if_missing(
+            engine,
+            "application_analytics",
+            "ifw_ctrs_count",
+            "INTEGER NOT NULL DEFAULT 0",
+        )
+        _add_column_if_missing(
+            engine,
+            "applications",
+            "continuity_child_of_prior_us",
+            "BOOLEAN NOT NULL DEFAULT false",
+        )
     finally:
         engine.dispose()
+
+
+# Backwards-compatible name for imports
+ensure_application_analytics_schema = ensure_schema_migrations

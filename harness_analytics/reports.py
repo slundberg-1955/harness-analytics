@@ -11,6 +11,8 @@ ANALYTICS_REPORT_HEADER_LABELS: dict[str, str] = {
     "interview_led_to_noa": "NOA WITHIN 90 DAYS OF INTERVIEW",
     "days_interview_to_noa": "DAYS LAST INTERVIEW TO NOA",
     "ifw_a_ne_count": "IFW A.NE COUNT",
+    "ifw_ctrs_count": "IFW CTRS COUNT",
+    "continuity_child_of_prior_us": "CHILD OF PRIOR US APPLICATION",
 }
 
 
@@ -49,7 +51,10 @@ SELECT
     aa.billing_attorney_reg,
     aa.billing_attorney_name,
     aa.is_jac,
-    aa.office_name
+    aa.office_name,
+    aa.ifw_a_ne_count,
+    aa.ifw_ctrs_count,
+    a.continuity_child_of_prior_us
 FROM applications a
 JOIN application_analytics aa ON aa.application_id = a.id
 WHERE a.issue_year IN (2024, 2025)
@@ -87,7 +92,9 @@ SELECT
     aa.billing_attorney_name,
     aa.is_jac,
     aa.office_name,
-    aa.ifw_a_ne_count
+    aa.ifw_a_ne_count,
+    aa.ifw_ctrs_count,
+    a.continuity_child_of_prior_us
 FROM applications a
 JOIN application_analytics aa ON aa.application_id = a.id
 WHERE a.application_number = :application_number

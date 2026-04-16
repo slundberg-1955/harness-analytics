@@ -88,6 +88,7 @@ def _ingest_one_file(
     ]:
         setattr(app, field, data.get(field))
 
+    app.continuity_child_of_prior_us = bool(data.get("continuity_child_of_prior_us"))
     app.xml_raw = xml_text if store_xml_raw else None
     session.flush()
 

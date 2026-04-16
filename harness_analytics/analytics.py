@@ -10,7 +10,8 @@ from typing import Any, Optional
 
 from sqlalchemy.orm import Session
 
-from harness_analytics.classifier import IFW_A_NE_DOC_CODE, ifw_document_suggests_interview
+from harness_analytics.classifier import IFW_A_NE_DOC_CODE, IFW_CTRS_DOC_CODE, ifw_document_suggests_interview
+from harness_analytics.xml_parser import child_of_prior_us_parent_from_xml
 from harness_analytics.models import (
     Application,
     ApplicationAnalytics,
@@ -167,6 +168,10 @@ def compute_analytics_for_application(
         .all()
     )
 
+    app.continuity_child_of_prior_us = child_of_prior_us_parent_from_xml(
+        app.application_number, app.xml_raw
+    )
+
     first_noa_date = _first_noa_date_from_ifw(ifw_docs)
     nonfinal_ifw = _ifw_docs_code_before_noa(ifw_docs, "CTNF", first_noa_date)
     final_ifw = _ifw_docs_code_before_noa(ifw_docs, "CTFR", first_noa_date)
@@ -242,6 +247,7 @@ def compute_analytics_for_application(
     existing.is_jac = is_jac
     existing.office_name = office_name
     existing.ifw_a_ne_count = _count_ifw_doc_code(ifw_docs, IFW_A_NE_DOC_CODE)
+    existing.ifw_ctrs_count = _count_ifw_doc_code(ifw_docs, IFW_CTRS_DOC_CODE)
 
 
 def compute_analytics(

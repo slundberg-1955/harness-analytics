@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import create_engine, text
 
 from harness_analytics.portal import install_portal_security, router as portal_router
-from harness_analytics.schema_migrations import ensure_application_analytics_schema
+from harness_analytics.schema_migrations import ensure_schema_migrations
 
 
 def _normalize_db_url(url: str) -> str:
@@ -21,7 +21,7 @@ def _normalize_db_url(url: str) -> str:
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
-    ensure_application_analytics_schema()
+    ensure_schema_migrations()
     yield
 
 

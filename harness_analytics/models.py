@@ -49,6 +49,7 @@ class Application(Base):
         Computed("EXTRACT(YEAR FROM issue_date)::integer", persisted=True),
     )
     xml_raw: Mapped[Optional[str]] = mapped_column(Text)
+    continuity_child_of_prior_us: Mapped[bool] = mapped_column(Boolean, default=False)
     imported_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -173,6 +174,7 @@ class ApplicationAnalytics(Base):
     is_jac: Mapped[bool] = mapped_column(Boolean, default=False)
     office_name: Mapped[Optional[str]] = mapped_column(Text)
     ifw_a_ne_count: Mapped[int] = mapped_column(Integer, default=0)
+    ifw_ctrs_count: Mapped[int] = mapped_column(Integer, default=0)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

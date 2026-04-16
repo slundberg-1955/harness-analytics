@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from harness_analytics.analytics import _count_ifw_doc_code, _resolve_office_name, load_office_config
-from harness_analytics.classifier import IFW_A_NE_DOC_CODE
+from harness_analytics.classifier import IFW_A_NE_DOC_CODE, IFW_CTRS_DOC_CODE
 
 
 def test_load_office_config_defaults(tmp_path: Path) -> None:
@@ -69,3 +69,14 @@ def test_count_ifw_a_ne_exact_document_code_only() -> None:
         _Doc(None),
     ]
     assert _count_ifw_doc_code(docs, IFW_A_NE_DOC_CODE) == 2
+
+
+def test_count_ifw_ctrs_exact_code() -> None:
+    class _Doc:
+        __slots__ = ("document_code",)
+
+        def __init__(self, document_code: str | None) -> None:
+            self.document_code = document_code
+
+    docs = [_Doc("CTRS"), _Doc("ctrs"), _Doc("CTNF"), _Doc("CTR")]  # last not CTRS
+    assert _count_ifw_doc_code(docs, IFW_CTRS_DOC_CODE) == 2

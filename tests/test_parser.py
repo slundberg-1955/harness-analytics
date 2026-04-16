@@ -4,7 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from harness_analytics.xml_parser import parse_biblio_xml
+from harness_analytics.xml_parser import (
+    child_of_prior_us_parent_from_xml,
+    continuity_child_of_prior_us_parent,
+    parse_biblio_xml,
+)
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "sample_17552591.xml"
 
@@ -15,6 +19,7 @@ def test_parse_sample_application_number() -> None:
     assert data["customer_number"] == "15639"
     assert data["hdp_customer_number"] == "15639"
     assert data["issue_date"].year == 2025
+    assert data.get("continuity_child_of_prior_us") is False
 
 
 def test_parse_attorneys_first_poa() -> None:
@@ -43,3 +48,68 @@ def test_parse_minimal_xml_no_biblio() -> None:
     data = parse_biblio_xml(xml)
     assert data["application_number"] is None
     assert data["events"] == []
+
+
+def test_continuity_child_of_prior_us_parent() -> None:
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<PatentCenterApplication>
+  <ApplicationBibliographicData>
+    <ApplicationNumber>17135687</ApplicationNumber>
+    <FilingDate>2015-01-01T00:00:00</FilingDate>
+  </ApplicationBibliographicData>
+  <Continuity>
+    <ParentContinuityList>
+      <ParentContinuity>
+        <ParentApplicationNumber>14125698</ParentApplicationNumber>
+        <ChildApplicationNumber>17135687</ChildApplicationNumber>
+        <ContinuityDescription>is a Continuation of</ContinuityDescription>
+      </ParentContinuity>
+      <ParentContinuity>
+        <ParentApplicationNumber>PCT/US2012/042281</ParentApplicationNumber>
+        <ChildApplicationNumber>14125698</ChildApplicationNumber>
+        <ContinuityDescription>is a National Stage Entry of</ContinuityDescription>
+      </ParentContinuity>
+    </ParentContinuityList>
+    <ChildContinuityList/>
+  </Continuity>
+  <FileContentHistories/>
+  <ImageFileWrapperList/>
+</PatentCenterApplication>"""
+    data = parse_biblio_xml(xml)
+    assert data["application_number"] == "17135687"
+    assert data["continuity_child_of_prior_us"] is True
+    assert child_of_prior_us_parent_from_xml("17135687", xml) is True
+    assert child_of_prior_us_parent_from_xml("1713 5687", xml) is True
+
+
+def test_continuity_false_when_only_pct_parent_for_child() -> None:
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<PatentCenterApplication>
+  <ApplicationBibliographicData>
+    <ApplicationNumber>14125698</ApplicationNumber>
+  </ApplicationBibliographicData>
+  <Continuity>
+    <ParentContinuityList>
+      <ParentContinuity>
+        <ParentApplicationNumber>PCT/US2012/042281</ParentApplicationNumber>
+        <ChildApplicationNumber>14125698</ChildApplicationNumber>
+        <ContinuityDescription>is a National Stage Entry of</ContinuityDescription>
+      </ParentContinuity>
+    </ParentContinuityList>
+  </Continuity>
+  <FileContentHistories/>
+  <ImageFileWrapperList/>
+</PatentCenterApplication>"""
+    data = parse_biblio_xml(xml)
+    assert data["continuity_child_of_prior_us"] is False
+
+
+def test_continuity_helper_on_element() -> None:
+    from lxml import etree
+
+    root = etree.fromstring(
+        b"""<PatentCenterApplication><ApplicationBibliographicData>
+        <ApplicationNumber>1</ApplicationNumber></ApplicationBibliographicData>
+        <Continuity><ParentContinuityList/></Continuity></PatentCenterApplication>"""
+    )
+    assert continuity_child_of_prior_us_parent("1", root) is False
