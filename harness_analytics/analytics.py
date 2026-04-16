@@ -92,33 +92,9 @@ def _ifw_doc_code(d: FileWrapperDocument) -> str:
     return (d.document_code or "").strip().upper()
 
 
-def _ifw_doc_code_matches_a_ne(document_code: Optional[str]) -> bool:
-    """True if IFW code is the A.NE notice (PAIR) including common export variants.
-
-    Patent Center XML sometimes uses ``ANE`` (no dot), hyphens, middle dots, or
-    ``A. NE`` spacing while PAIR shows ``A.NE``.
-    """
-    src = (document_code or "").strip().upper()
-    if not src:
-        return False
-    raw = src
-    for ch in ("\u00b7", "\u2219", "\u2022", "\u2024", "\u00a0"):
-        raw = raw.replace(ch, ".")
-    raw = raw.replace("-", ".")
-    raw = re.sub(r"\s+", "", raw)
-    raw = re.sub(r"\.+", ".", raw).strip(".")
-    if raw == "A.NE":
-        return True
-    if raw == "ANE":
-        return True
-    letters = re.sub(r"[^A-Z]", "", src)
-    return letters == "ANE"
-
-
 def _count_ifw_doc_code(ifw_docs: list[FileWrapperDocument], doc_code: str) -> int:
+    """Count IFW rows whose ``document_code`` equals ``doc_code`` (strip + case only)."""
     want = doc_code.strip().upper()
-    if want == IFW_A_NE_DOC_CODE.strip().upper():
-        return sum(1 for d in ifw_docs if _ifw_doc_code_matches_a_ne(d.document_code))
     return sum(1 for d in ifw_docs if _ifw_doc_code(d) == want)
 
 

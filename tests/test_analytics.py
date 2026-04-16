@@ -50,8 +50,8 @@ def test_resolve_office_name(customer: str | None, phone: str | None, expected: 
     assert _resolve_office_name(customer, phone, cfg) == expected
 
 
-def test_count_ifw_a_ne_strict_and_unicode_dot() -> None:
-    """A.NE count tolerates middle-dot / spacing / no-dot variants seen in exports."""
+def test_count_ifw_a_ne_exact_document_code_only() -> None:
+    """A.NE count matches document_code exactly (periods preserved); strip + case only."""
 
     class _Doc:
         __slots__ = ("document_code",)
@@ -62,13 +62,10 @@ def test_count_ifw_a_ne_strict_and_unicode_dot() -> None:
     docs = [
         _Doc("A.NE"),
         _Doc("a.ne"),
-        _Doc("A\u00b7NE"),  # middle dot
+        _Doc("A\u00b7NE"),  # not ASCII A.NE — not counted
+        _Doc("ANE"),
         _Doc("A. NE"),
-        _Doc("ANE"),  # compact code (no dot) — common in XML vs PAIR display
-        _Doc("A-NE"),
-        _Doc("A.N.E"),
         _Doc("CTNF"),
         _Doc(None),
-        _Doc("PANE"),  # letters PANE — not counted
     ]
-    assert _count_ifw_doc_code(docs, IFW_A_NE_DOC_CODE) == 7
+    assert _count_ifw_doc_code(docs, IFW_A_NE_DOC_CODE) == 2
