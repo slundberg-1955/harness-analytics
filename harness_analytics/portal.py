@@ -15,7 +15,7 @@ from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.security import HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
@@ -320,6 +320,52 @@ def download_report(db: Session = Depends(get_db)) -> StreamingResponse:
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers=headers,
     )
+
+
+@router.get("/report-all-years.xlsx")
+def download_report_all_years(db: Session = Depends(get_db)) -> StreamingResponse:
+    """Issued applications (status 150) for every issue year in the database, not only 2024–2025."""
+    from harness_analytics.excel_builder import build_excel_workbook_all_issued_years, workbook_to_bytesio
+
+    wb = build_excel_workbook_all_issued_years(db)
+    buf = workbook_to_bytesio(wb)
+    data = buf.getvalue()
+    headers = {
+        "Content-Disposition": 'attachment; filename="harness_analytics_report_all_years.xlsx"',
+    }
+    return StreamingResponse(
+        iter([data]),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )
+
+
+@router.post("/recompute-all-analytics/start")
+def portal_recompute_all_start(
+    background_tasks: BackgroundTasks,
+) -> JSONResponse:
+    from harness_analytics import bulk_recompute as br
+
+    job, hint = br.try_begin_bulk_recompute()
+    payload = {"hint": hint, **br.job_to_json(job)}
+    if hint == "already_active":
+        return JSONResponse(payload, status_code=200)
+    background_tasks.add_task(
+        br.run_bulk_recompute_job,
+        job.job_id,
+        _portal_interview_window_days(),
+    )
+    return JSONResponse(payload, status_code=200)
+
+
+@router.get("/recompute-all-analytics/status/{job_id}")
+def portal_recompute_all_status(job_id: str) -> JSONResponse:
+    from harness_analytics import bulk_recompute as br
+
+    job = br.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Unknown job")
+    return JSONResponse(br.job_to_json(job))
 
 
 @router.get("/matter/{application_number:path}/xml")

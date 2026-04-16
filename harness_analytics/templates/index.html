@@ -1,11 +1,101 @@
 {% extends "base.html" %}
 {% block title %}Portal — Harness analytics{% endblock %}
-{% block extra_head %}<meta name="robots" content="noindex,nofollow">{% endblock %}
+{% block extra_head %}
+<meta name="robots" content="noindex,nofollow">
+<style>
+  progress#bulk-recompute-progress { width: 100%; height: 1rem; margin-top: 0.5rem; }
+</style>
+{% endblock %}
 {% block content %}
 <div class="card">
   <h1>Portal</h1>
   <p class="muted">Download the Excel report (same workbook as the CLI <code>report</code> command) or open a matter by application number.</p>
-  <p><a class="btn" href="/portal/report.xlsx">Download report (.xlsx)</a></p>
+  <p>
+    <a class="btn" href="/portal/report.xlsx">Download report (.xlsx)</a>
+    <a class="btn secondary" href="/portal/report-all-years.xlsx" style="margin-left:0.5rem;">All issued years (.xlsx)</a>
+  </p>
+  <p class="muted">The default report includes only applications with issue year 2024 or 2025. The second download includes every issued application (status 150) in the database, for all issue years.</p>
+</div>
+<div class="card">
+  <h2>Recompute analytics (all applications)</h2>
+  <p class="muted">Re-runs the same analytics logic as the per-matter button, for every application in the database. This can take several minutes.</p>
+  <p><button type="button" class="btn" id="bulk-recompute-start">Recompute all</button></p>
+  <progress id="bulk-recompute-progress" max="100" value="0" hidden></progress>
+  <p class="muted" id="bulk-recompute-label" hidden></p>
+  <script>
+  (function () {
+    var btn = document.getElementById("bulk-recompute-start");
+    var bar = document.getElementById("bulk-recompute-progress");
+    var label = document.getElementById("bulk-recompute-label");
+    var timer = null;
+    if (!btn || !bar || !label) return;
+    btn.addEventListener("click", function () {
+      btn.disabled = true;
+      bar.removeAttribute("hidden");
+      label.removeAttribute("hidden");
+      bar.value = 0;
+      label.textContent = "Starting…";
+      if (timer) clearInterval(timer);
+      fetch("/portal/recompute-all-analytics/start", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { Accept: "application/json" }
+      }).then(function (r) { return r.json().then(function (j) { return { r: r, j: j }; }); })
+        .then(function (res) {
+          if (!res.r.ok) {
+            label.textContent = "Could not start: " + (res.j.detail || res.r.statusText || String(res.r.status));
+            btn.disabled = false;
+            return;
+          }
+          var jobId = res.j.job_id;
+          if (!jobId) {
+            label.textContent = "No job id returned.";
+            btn.disabled = false;
+            return;
+          }
+          function poll() {
+            fetch("/portal/recompute-all-analytics/status/" + encodeURIComponent(jobId), {
+              credentials: "same-origin",
+              headers: { Accept: "application/json" }
+            }).then(function (r) { return r.json().then(function (j) { return { r: r, j: j }; }); })
+              .then(function (sr) {
+                if (!sr.r.ok) {
+                  label.textContent = "Status request failed.";
+                  btn.disabled = false;
+                  if (timer) clearInterval(timer);
+                  return;
+                }
+                var sj = sr.j;
+                var pct = sj.total > 0 ? Math.round(100 * sj.done / sj.total) : (sj.status === "completed" ? 100 : 0);
+                bar.value = pct;
+                if (sj.status === "pending" || sj.status === "running") {
+                  label.textContent = "Recomputing: " + sj.done + " / " + sj.total + " (" + pct + "%)";
+                } else if (sj.status === "completed") {
+                  label.textContent = "Finished. " + sj.done + " application(s) updated.";
+                  if (timer) clearInterval(timer);
+                  btn.disabled = false;
+                } else if (sj.status === "failed") {
+                  label.textContent = "Failed: " + (sj.error || "unknown error");
+                  if (timer) clearInterval(timer);
+                  btn.disabled = false;
+                }
+              })
+              .catch(function () {
+                label.textContent = "Network error while polling.";
+                btn.disabled = false;
+                if (timer) clearInterval(timer);
+              });
+          }
+          poll();
+          timer = setInterval(poll, 600);
+        })
+        .catch(function () {
+          label.textContent = "Network error.";
+          btn.disabled = false;
+        });
+    });
+  })();
+  </script>
 </div>
 <div class="card">
   <h2>Open matter</h2>

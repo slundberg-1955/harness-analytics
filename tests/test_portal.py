@@ -128,3 +128,66 @@ def test_portal_recompute_unknown_application_404(monkeypatch: pytest.MonkeyPatc
         assert r.status_code == 404
     finally:
         app.dependency_overrides.clear()
+
+
+def test_portal_bulk_recompute_status_unknown_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PORTAL_PASSWORD", "correct")
+    monkeypatch.setenv("SECRET_KEY", "unit-test-secret-key-32-chars-minimum!!")
+    from harness_analytics.server import create_app
+
+    client = TestClient(create_app())
+    r = client.get(
+        "/portal/recompute-all-analytics/status/not-a-real-job-id",
+        auth=("viewer", "correct"),
+    )
+    assert r.status_code == 404
+
+
+def test_portal_bulk_recompute_start_completes_with_fake_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PORTAL_PASSWORD", "correct")
+    monkeypatch.setenv("SECRET_KEY", "unit-test-secret-key-32-chars-minimum!!")
+
+    import harness_analytics.bulk_recompute as br
+    from harness_analytics.server import create_app
+
+    def fake_run(job_id: str, interview_window_days: int) -> None:
+        with br._lock:
+            j = br._jobs.get(job_id)
+            if j:
+                j.total = 2
+                j.done = 2
+                j.status = "completed"
+        br._clear_active_if_matches(job_id)
+
+    monkeypatch.setattr(br, "run_bulk_recompute_job", fake_run)
+    with br._lock:
+        br._jobs.clear()
+        br._active_job_id = None
+
+    client = TestClient(create_app())
+    r = client.post(
+        "/portal/recompute-all-analytics/start",
+        auth=("viewer", "correct"),
+        headers={"Accept": "application/json"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body.get("hint") == "started"
+    assert "job_id" in body
+    jid = body["job_id"]
+    sj = None
+    for _ in range(20):
+        st = client.get(
+            f"/portal/recompute-all-analytics/status/{jid}",
+            auth=("viewer", "correct"),
+        )
+        assert st.status_code == 200
+        sj = st.json()
+        if sj["status"] == "completed":
+            break
+    assert sj is not None
+    assert sj["status"] == "completed"
+    assert sj["done"] == 2
+    assert sj["total"] == 2

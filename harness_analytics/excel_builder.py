@@ -13,10 +13,15 @@ from sqlalchemy.orm import Session
 from harness_analytics.reports import (
     analytics_column_header,
     report_all_harness,
+    report_all_issued_all_years,
     report_art_unit_summary,
+    report_art_unit_summary_all_years,
     report_by_office,
+    report_by_office_all_years,
     report_interview_to_noa,
+    report_interview_to_noa_all_years,
     report_specific_clients,
+    report_specific_clients_all_years,
 )
 
 JAC_FILL = PatternFill("solid", fgColor="FFFF00")
@@ -120,6 +125,77 @@ def _write_summary_tab(ws, df: pd.DataFrame) -> None:
                 cell.fill = HEADER_FILL
 
 
+def _write_summary_tab_multi_year(ws, df: pd.DataFrame) -> None:
+    """Like _write_summary_tab but one column per distinct issue_year in the frame."""
+    if df.empty or "issue_year" not in df.columns:
+        ws.cell(row=1, column=1, value="No data for summary")
+        return
+    year_norm = pd.to_numeric(df["issue_year"], errors="coerce").dropna().astype(int)
+    if year_norm.empty:
+        ws.cell(row=1, column=1, value="No issue_year values for summary")
+        return
+    years_list = sorted(year_norm.unique().tolist())
+
+    def _mask_year(y: int) -> pd.Series:
+        return pd.to_numeric(df["issue_year"], errors="coerce") == y
+
+    def _count(y: int) -> int:
+        return int(_mask_year(y).sum())
+
+    def _pct_zero_oa(y: int) -> str:
+        sub = df.loc[_mask_year(y), "total_substantive_oas"]
+        if sub.empty:
+            return ""
+        m = (sub == 0).mean()
+        if pd.isna(m):
+            return ""
+        return f"{100 * float(m):.1f}%"
+
+    def _pct_final(y: int) -> str:
+        sub = df.loc[_mask_year(y), "final_oa_count"]
+        if sub.empty:
+            return ""
+        m = (sub >= 1).mean()
+        if pd.isna(m):
+            return ""
+        return f"{100 * float(m):.1f}%"
+
+    def _fmt_mean_masked(col: str, year: int, nd: int) -> object:
+        sub = df.loc[_mask_year(year), col]
+        if sub.empty:
+            return None
+        m = sub.mean()
+        if pd.isna(m):
+            return None
+        return round(float(m), nd)
+
+    header = ["Metric"] + [str(y) for y in years_list]
+    rows: list[list[object]] = [
+        header,
+        ["Total Applications Issued"] + [_count(y) for y in years_list],
+        ["Avg Substantive OAs Before NOA"] + [_fmt_mean_masked("total_substantive_oas", y, 2) for y in years_list],
+        ["Avg Non-Final OAs"] + [_fmt_mean_masked("nonfinal_oa_count", y, 2) for y in years_list],
+        ["Avg Final OAs"] + [_fmt_mean_masked("final_oa_count", y, 2) for y in years_list],
+        ["% With 0 OAs (straight to NOA)"] + [_pct_zero_oa(y) for y in years_list],
+        ["% With ≥ 1 Final OA"] + [_pct_final(y) for y in years_list],
+        ["Avg Days Filing to NOA"] + [_fmt_mean_masked("days_filing_to_noa", y, 0) for y in years_list],
+        [
+            "Applications with Interviews",
+        ]
+        + [int((df.loc[_mask_year(y), "had_examiner_interview"]).sum()) for y in years_list],
+        [
+            "NOA within interview window of last interview",
+        ]
+        + [int((df.loc[_mask_year(y), "interview_led_to_noa"]).sum()) for y in years_list],
+    ]
+    for r_idx, row in enumerate(rows, start=1):
+        for c_idx, val in enumerate(row, start=1):
+            cell = ws.cell(row=r_idx, column=c_idx, value=val)
+            if r_idx == 1:
+                cell.font = HEADER_FONT
+                cell.fill = HEADER_FILL
+
+
 def build_excel_workbook(db: Session) -> Workbook:
     """Build the full multi-tab Excel workbook in memory (same sheets as CLI report)."""
     wb = Workbook()
@@ -149,6 +225,39 @@ def build_excel_workbook(db: Session) -> Workbook:
 
     ws6 = wb.create_sheet("Summary Statistics")
     _write_summary_tab(ws6, df_all)
+
+    return wb
+
+
+def build_excel_workbook_all_issued_years(db: Session) -> Workbook:
+    """Multi-tab workbook using all issued years (status 150), not only 2024–2025."""
+    wb = Workbook()
+    wb.remove(wb.active)
+
+    df_all = report_all_issued_all_years(db)
+    ws1 = wb.create_sheet("All Harness IP (all years)")
+    _write_df_to_sheet(ws1, df_all, highlight_jac=True)
+
+    offices = report_by_office_all_years(db)
+    for office_name, df_office in offices.items():
+        safe = (office_name or "UNKNOWN")[:31]
+        ws = wb.create_sheet(f"Office - {safe}")
+        _write_df_to_sheet(ws, df_office, highlight_jac=(office_name == "DC"))
+
+    df_clients = report_specific_clients_all_years(db, ["15639", "2557SI", "9587SI"])
+    ws3 = wb.create_sheet("Samsung Clients")
+    _write_df_to_sheet(ws3, df_clients, highlight_jac=True)
+
+    df_int = report_interview_to_noa_all_years(db)
+    ws4 = wb.create_sheet("Interview to NOA")
+    _write_df_to_sheet(ws4, df_int)
+
+    df_au = report_art_unit_summary_all_years(db)
+    ws5 = wb.create_sheet("Art Unit Summary")
+    _write_df_to_sheet(ws5, df_au)
+
+    ws6 = wb.create_sheet("Summary Statistics")
+    _write_summary_tab_multi_year(ws6, df_all)
 
     return wb
 

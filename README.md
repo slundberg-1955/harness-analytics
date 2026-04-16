@@ -181,9 +181,12 @@ After sign-in, the browser keeps a **signed session cookie** until you click **S
 
 What you get:
 
-- **`GET /portal/report.xlsx`** — same multi-sheet Excel workbook as the CLI `report` command (link on the home page after login).
+- **`GET /portal/report.xlsx`** — same multi-sheet Excel workbook as the CLI `report` command (link on the home page after login). The main **All Harness IP** sheet is limited to **issue years 2024 and 2025** (issued, status **150**), matching the original reporting scope.
+- **`GET /portal/report-all-years.xlsx`** — same workbook shape, but **every issued application (status 150)** in the database for **all issue years** (still requires a joined `application_analytics` row). Summary statistics use one column per distinct issue year present in the data.
 - **`GET /portal/matter/<application_number>`** — HTML summary for one matter: application fields, analytics row, prosecution events and file-wrapper tables (first 500 rows each if larger), a one-row **Excel (All Harness IP) column** preview when an analytics row exists, a **Recompute analytics (this application only)** control, and a link to raw XML when `xml_raw` was stored at ingest.
 - **`POST /portal/matter/<application_number>/recompute-analytics`** — recomputes `application_analytics` for that matter only, then redirects back to the matter page (same logic as the CLI `analytics` command, scoped to one application).
+- **`POST /portal/recompute-all-analytics/start`** — starts a **background job** that recomputes analytics for **every** application (JSON response with `job_id` and `hint`). Only **one** such job runs at a time per server process; if a job is already pending or running, the response reuses it (`hint: already_active`).
+- **`GET /portal/recompute-all-analytics/status/<job_id>`** — JSON progress: `status` (`pending` \| `running` \| `completed` \| `failed`), `total`, `done`, and `error` when failed. The portal home page runs this on an interval after **Recompute all**.
 - **`GET /portal/matter/<application_number>/xml`** — raw Biblio XML (`inline` display; large payloads).
 
 `/health` stays **unauthenticated** for Railway probes. If `PORTAL_PASSWORD` is unset, `/portal` routes (except `/portal/login`, which explains the situation) return **503**. Treat this portal as **sensitive**: it can expose client data and full XML.
