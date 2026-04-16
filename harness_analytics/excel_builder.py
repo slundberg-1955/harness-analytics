@@ -12,16 +12,16 @@ from sqlalchemy.orm import Session
 
 from harness_analytics.reports import (
     analytics_column_header,
+    report_all_applications,
     report_all_harness,
-    report_all_issued_all_years,
     report_art_unit_summary,
-    report_art_unit_summary_all_years,
+    report_art_unit_summary_all_applications,
     report_by_office,
-    report_by_office_all_years,
+    report_by_office_all_applications,
     report_interview_to_noa,
-    report_interview_to_noa_all_years,
+    report_interview_to_noa_all_applications,
     report_specific_clients,
-    report_specific_clients_all_years,
+    report_specific_clients_all_applications,
 )
 
 JAC_FILL = PatternFill("solid", fgColor="FFFF00")
@@ -31,6 +31,18 @@ YEAR_FILLS = {
     2024: PatternFill("solid", fgColor="EBF3FB"),
     2025: PatternFill("solid", fgColor="E2EFDA"),
 }
+
+
+def _office_sheet_label(office_name: object) -> str:
+    if office_name is None:
+        return "UNKNOWN"
+    try:
+        if pd.isna(office_name):
+            return "UNKNOWN"
+    except (TypeError, ValueError):
+        pass
+    s = str(office_name).strip()
+    return (s or "UNKNOWN")[:31]
 
 
 def _write_df_to_sheet(ws, df: pd.DataFrame, *, highlight_jac: bool = False) -> None:
@@ -172,7 +184,7 @@ def _write_summary_tab_multi_year(ws, df: pd.DataFrame) -> None:
     header = ["Metric"] + [str(y) for y in years_list]
     rows: list[list[object]] = [
         header,
-        ["Total Applications Issued"] + [_count(y) for y in years_list],
+        ["Applications (by issue year)"] + [_count(y) for y in years_list],
         ["Avg Substantive OAs Before NOA"] + [_fmt_mean_masked("total_substantive_oas", y, 2) for y in years_list],
         ["Avg Non-Final OAs"] + [_fmt_mean_masked("nonfinal_oa_count", y, 2) for y in years_list],
         ["Avg Final OAs"] + [_fmt_mean_masked("final_oa_count", y, 2) for y in years_list],
@@ -207,7 +219,7 @@ def build_excel_workbook(db: Session) -> Workbook:
 
     offices = report_by_office(db)
     for office_name, df_office in offices.items():
-        safe = (office_name or "UNKNOWN")[:31]
+        safe = _office_sheet_label(office_name)
         ws = wb.create_sheet(f"Office - {safe}")
         _write_df_to_sheet(ws, df_office, highlight_jac=(office_name == "DC"))
 
@@ -229,30 +241,30 @@ def build_excel_workbook(db: Session) -> Workbook:
     return wb
 
 
-def build_excel_workbook_all_issued_years(db: Session) -> Workbook:
-    """Multi-tab workbook using all issued years (status 150), not only 2024–2025."""
+def build_excel_workbook_all_applications(db: Session) -> Workbook:
+    """Multi-tab workbook: every application (any status), analytics columns when present."""
     wb = Workbook()
     wb.remove(wb.active)
 
-    df_all = report_all_issued_all_years(db)
-    ws1 = wb.create_sheet("All Harness IP (all years)")
+    df_all = report_all_applications(db)
+    ws1 = wb.create_sheet("All applications")
     _write_df_to_sheet(ws1, df_all, highlight_jac=True)
 
-    offices = report_by_office_all_years(db)
+    offices = report_by_office_all_applications(db)
     for office_name, df_office in offices.items():
-        safe = (office_name or "UNKNOWN")[:31]
+        safe = _office_sheet_label(office_name)
         ws = wb.create_sheet(f"Office - {safe}")
-        _write_df_to_sheet(ws, df_office, highlight_jac=(office_name == "DC"))
+        _write_df_to_sheet(ws, df_office, highlight_jac=(str(office_name) == "DC"))
 
-    df_clients = report_specific_clients_all_years(db, ["15639", "2557SI", "9587SI"])
+    df_clients = report_specific_clients_all_applications(db, ["15639", "2557SI", "9587SI"])
     ws3 = wb.create_sheet("Samsung Clients")
     _write_df_to_sheet(ws3, df_clients, highlight_jac=True)
 
-    df_int = report_interview_to_noa_all_years(db)
+    df_int = report_interview_to_noa_all_applications(db)
     ws4 = wb.create_sheet("Interview to NOA")
     _write_df_to_sheet(ws4, df_int)
 
-    df_au = report_art_unit_summary_all_years(db)
+    df_au = report_art_unit_summary_all_applications(db)
     ws5 = wb.create_sheet("Art Unit Summary")
     _write_df_to_sheet(ws5, df_au)
 

@@ -320,16 +320,17 @@ def download_report(db: Session = Depends(get_db)) -> StreamingResponse:
     )
 
 
+@router.get("/report-all-applications.xlsx")
 @router.get("/report-all-years.xlsx")
-def download_report_all_years(db: Session = Depends(get_db)) -> StreamingResponse:
-    """Issued applications (status 150) for every issue year in the database, not only 2024–2025."""
-    from harness_analytics.excel_builder import build_excel_workbook_all_issued_years, workbook_to_bytesio
+def download_report_all_applications(db: Session = Depends(get_db)) -> StreamingResponse:
+    """Every application (any status); analytics columns populated when an analytics row exists."""
+    from harness_analytics.excel_builder import build_excel_workbook_all_applications, workbook_to_bytesio
 
-    wb = build_excel_workbook_all_issued_years(db)
+    wb = build_excel_workbook_all_applications(db)
     buf = workbook_to_bytesio(wb)
     data = buf.getvalue()
     headers = {
-        "Content-Disposition": 'attachment; filename="harness_analytics_report_all_years.xlsx"',
+        "Content-Disposition": 'attachment; filename="harness_analytics_report_all_applications.xlsx"',
     }
     return StreamingResponse(
         iter([data]),

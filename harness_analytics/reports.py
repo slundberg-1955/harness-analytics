@@ -22,14 +22,17 @@ def analytics_column_header(db_column_name: str) -> str:
     )
 
 
-# Shared SELECT + JOIN for Excel / portal detail rows (portal matter strip matches this set).
-_HARNESS_IP_DETAIL_BODY = """
+def _harness_ip_detail_sql(join: str) -> str:
+    """join: 'INNER' or 'LEFT' — shared columns for Excel / portal matter strip."""
+    return f"""
 SELECT
     a.application_number,
     a.invention_title,
     a.filing_date,
     a.issue_date,
     a.issue_year,
+    a.application_status_code,
+    a.application_status_text,
     a.patent_number,
     a.customer_number,
     a.hdp_customer_number,
@@ -55,8 +58,12 @@ SELECT
     aa.is_jac,
     aa.office_name
 FROM applications a
-JOIN application_analytics aa ON aa.application_id = a.id
+{join} JOIN application_analytics aa ON aa.application_id = a.id
 """
+
+
+# Shared SELECT + INNER JOIN for default Excel / portal matter strip (must have analytics).
+_HARNESS_IP_DETAIL_BODY = _harness_ip_detail_sql("INNER")
 
 BASE_QUERY = (
     _HARNESS_IP_DETAIL_BODY
@@ -66,13 +73,8 @@ WHERE a.issue_year IN (2024, 2025)
 """
 )
 
-# All issued applications (status 150) with analytics, every issue year.
-ALL_ISSUED_YEARS_DETAIL_QUERY = (
-    _HARNESS_IP_DETAIL_BODY
-    + """
-WHERE a.application_status_code = '150'
-"""
-)
+# Every application row (any status), with analytics when present.
+ALL_APPLICATIONS_DETAIL_QUERY = _harness_ip_detail_sql("LEFT")
 
 # Same column list as BASE_QUERY, without issue-year / status filters (portal matter page).
 SPREADSHEET_ROW_QUERY = (
@@ -98,9 +100,12 @@ def report_all_harness(db: Session) -> pd.DataFrame:
     return _read_df(db, BASE_QUERY)
 
 
-def report_all_issued_all_years(db: Session) -> pd.DataFrame:
-    """Issued applications (status 150) for every issue year, with analytics."""
-    return _read_df(db, ALL_ISSUED_YEARS_DETAIL_QUERY)
+def report_all_applications(db: Session) -> pd.DataFrame:
+    """All applications (any status), with analytics columns when an analytics row exists."""
+    return _read_df(
+        db,
+        ALL_APPLICATIONS_DETAIL_QUERY + "\nORDER BY a.application_number\n",
+    )
 
 
 def report_spreadsheet_row_for_application(db: Session, application_number: str) -> pd.DataFrame:
@@ -121,9 +126,9 @@ def report_by_office(db: Session) -> dict[str, pd.DataFrame]:
     return {str(office): grp for office, grp in df.groupby("office_name", dropna=False)}
 
 
-def report_by_office_all_years(db: Session) -> dict[str, pd.DataFrame]:
-    """All issued years: split detail query by office_name."""
-    df = report_all_issued_all_years(db)
+def report_by_office_all_applications(db: Session) -> dict[str, pd.DataFrame]:
+    """All applications export: split by office_name (UNKNOWN when no analytics / office)."""
+    df = report_all_applications(db)
     if df.empty:
         return {}
     return {str(office): grp for office, grp in df.groupby("office_name", dropna=False)}
@@ -144,11 +149,12 @@ def report_specific_clients(db: Session, customer_numbers: list[str]) -> pd.Data
     return _read_df(db, q)
 
 
-def report_specific_clients_all_years(db: Session, customer_numbers: list[str]) -> pd.DataFrame:
+def report_specific_clients_all_applications(db: Session, customer_numbers: list[str]) -> pd.DataFrame:
     nums = ", ".join(f"'{n}'" for n in customer_numbers)
     q = (
-        ALL_ISSUED_YEARS_DETAIL_QUERY
-        + f" AND (a.hdp_customer_number IN ({nums}) OR a.customer_number IN ({nums}))"
+        ALL_APPLICATIONS_DETAIL_QUERY
+        + f"\nWHERE (a.hdp_customer_number IN ({nums}) OR a.customer_number IN ({nums}))\n"
+        "ORDER BY a.application_number\n"
     )
     return _read_df(db, q)
 
@@ -161,8 +167,8 @@ def report_interview_to_noa(db: Session) -> pd.DataFrame:
     return df.sort_values("days_interview_to_noa", na_position="last")
 
 
-def report_interview_to_noa_all_years(db: Session) -> pd.DataFrame:
-    q = ALL_ISSUED_YEARS_DETAIL_QUERY + " AND aa.had_examiner_interview = TRUE"
+def report_interview_to_noa_all_applications(db: Session) -> pd.DataFrame:
+    q = ALL_APPLICATIONS_DETAIL_QUERY + " WHERE aa.had_examiner_interview IS TRUE"
     df = _read_df(db, q)
     if df.empty:
         return df
@@ -190,7 +196,7 @@ def report_art_unit_summary(db: Session) -> pd.DataFrame:
     return _read_df(db, q)
 
 
-def report_art_unit_summary_all_years(db: Session) -> pd.DataFrame:
+def report_art_unit_summary_all_applications(db: Session) -> pd.DataFrame:
     q = """
     SELECT
         a.group_art_unit,
@@ -199,11 +205,10 @@ def report_art_unit_summary_all_years(db: Session) -> pd.DataFrame:
         ROUND(AVG(aa.total_substantive_oas), 2) AS avg_oas_before_noa,
         ROUND(AVG(aa.nonfinal_oa_count), 2)     AS avg_nonfinal_oas,
         ROUND(AVG(aa.final_oa_count), 2)       AS avg_final_oas,
-        SUM(CASE WHEN aa.is_jac THEN 1 ELSE 0 END) AS jac_applications,
+        SUM(CASE WHEN aa.is_jac IS TRUE THEN 1 ELSE 0 END) AS jac_applications,
         ROUND(AVG(aa.days_filing_to_noa), 0)   AS avg_days_to_noa
     FROM applications a
-    JOIN application_analytics aa ON aa.application_id = a.id
-    WHERE a.application_status_code = '150'
+    LEFT JOIN application_analytics aa ON aa.application_id = a.id
     GROUP BY a.group_art_unit, a.issue_year
     ORDER BY a.group_art_unit, a.issue_year
     """
