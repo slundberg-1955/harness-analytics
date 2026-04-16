@@ -142,10 +142,22 @@ This repo includes a **Dockerfile** and [railway.toml](railway.toml) so Railway 
 
 ### CLI against Railway Postgres
 
-With the Postgres plugin selected, Railway shows **`DATABASE_URL`**. Locally:
+From your **laptop**, use the Postgres plugin’s **`DATABASE_PUBLIC_URL`** (or the TCP proxy URL shown in the Postgres service). The internal `postgres.railway.internal` URL only works **inside** Railway’s network.
+
+With the [Railway CLI](https://docs.railway.com/develop/cli) linked to this repo (`railway link`), you can run the helpers (no copy-paste of credentials):
 
 ```bash
-export DATABASE_URL='postgresql://...'   # paste from Railway (postgres:// is normalized automatically)
+cd harness-analytics
+# Bulk load (skips analytics during load; run analytics after — much faster for large folders)
+PYTHONUNBUFFERED=1 python3 scripts/run_railway_ingest.py
+python3 scripts/run_railway_analytics.py
+python3 scripts/run_railway_report.py   # writes harness_railway_report.xlsx in repo root
+```
+
+Or paste manually:
+
+```bash
+export DATABASE_URL='postgresql://...'   # use DATABASE_PUBLIC_URL from Postgres (postgres:// is normalized automatically)
 python3 -m harness_analytics ingest --folder /path/to/xml --commit-every 50
 python3 -m harness_analytics report --output report.xlsx
 ```
