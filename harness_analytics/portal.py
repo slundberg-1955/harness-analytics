@@ -24,7 +24,6 @@ from sqlalchemy.orm import Session
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
-from harness_analytics._debug_agent_log import agent_log
 from harness_analytics.db import get_db
 from harness_analytics.models import Application, ApplicationAnalytics, FileWrapperDocument, ProsecutionEvent
 
@@ -92,15 +91,6 @@ class PortalAuthMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):  # type: ignore[override]
         path = request.url.path
-        # #region agent log
-        if path == "/health" or path.startswith("/health"):
-            agent_log(
-                "portal.py:PortalAuthMiddleware.dispatch",
-                "health_through_mw",
-                data={"path": path, "method": request.method},
-                hypothesis_id="H2_MW",
-            )
-        # #endregion
 
         if not path.startswith("/portal"):
             return await call_next(request)
