@@ -11,6 +11,7 @@ from typing import Any, Optional
 from sqlalchemy.orm import Session
 
 from harness_analytics.classifier import IFW_A_NE_DOC_CODE, IFW_CTRS_DOC_CODE, ifw_document_suggests_interview
+from harness_analytics.extension_metrics import compute_extension_time_counts
 from harness_analytics.xml_parser import child_of_prior_us_parent_from_xml
 from harness_analytics.models import (
     Application,
@@ -241,6 +242,16 @@ def compute_analytics_for_application(
     existing.office_name = office_name
     existing.ifw_a_ne_count = _count_ifw_doc_code(ifw_docs, IFW_A_NE_DOC_CODE)
     existing.ifw_ctrs_count = _count_ifw_doc_code(ifw_docs, IFW_CTRS_DOC_CODE)
+
+    ext = compute_extension_time_counts(nonfinal_ifw, final_ifw, ifw_docs, events, first_noa_date)
+    existing.oa_ext_1mo_count = ext["oa_1mo"]
+    existing.oa_ext_2mo_count = ext["oa_2mo"]
+    existing.oa_ext_3mo_count = ext["oa_3mo"]
+    existing.oa_ext_gt_90d_count = ext["oa_gt90"]
+    existing.ctrs_ext_1mo_count = ext["ctrs_1mo"]
+    existing.ctrs_ext_2mo_count = ext["ctrs_2mo"]
+    existing.ctrs_ext_3mo_count = ext["ctrs_3mo"]
+    existing.ctrs_ext_gt_90d_count = ext["ctrs_gt90"]
 
 
 def compute_analytics(

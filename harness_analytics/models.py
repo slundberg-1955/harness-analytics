@@ -173,6 +173,15 @@ class ApplicationAnalytics(Base):
     office_name: Mapped[Optional[str]] = mapped_column(Text)
     ifw_a_ne_count: Mapped[int] = mapped_column(Integer, default=0)
     ifw_ctrs_count: Mapped[int] = mapped_column(Integer, default=0)
+    # Heuristic extension-of-time counts (see extension_metrics): late vs assumed deadlines.
+    oa_ext_1mo_count: Mapped[int] = mapped_column(Integer, default=0)
+    oa_ext_2mo_count: Mapped[int] = mapped_column(Integer, default=0)
+    oa_ext_3mo_count: Mapped[int] = mapped_column(Integer, default=0)
+    oa_ext_gt_90d_count: Mapped[int] = mapped_column(Integer, default=0)
+    ctrs_ext_1mo_count: Mapped[int] = mapped_column(Integer, default=0)
+    ctrs_ext_2mo_count: Mapped[int] = mapped_column(Integer, default=0)
+    ctrs_ext_3mo_count: Mapped[int] = mapped_column(Integer, default=0)
+    ctrs_ext_gt_90d_count: Mapped[int] = mapped_column(Integer, default=0)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

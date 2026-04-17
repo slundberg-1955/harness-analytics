@@ -69,6 +69,22 @@ def ensure_schema_migrations() -> None:
             "continuity_child_of_prior_us",
             "BOOLEAN NOT NULL DEFAULT false",
         )
+        for col in (
+            "oa_ext_1mo_count",
+            "oa_ext_2mo_count",
+            "oa_ext_3mo_count",
+            "oa_ext_gt_90d_count",
+            "ctrs_ext_1mo_count",
+            "ctrs_ext_2mo_count",
+            "ctrs_ext_3mo_count",
+            "ctrs_ext_gt_90d_count",
+        ):
+            _add_column_if_missing(
+                engine,
+                "application_analytics",
+                col,
+                "INTEGER NOT NULL DEFAULT 0",
+            )
     finally:
         engine.dispose()
 
