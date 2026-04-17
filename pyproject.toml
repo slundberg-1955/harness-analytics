@@ -32,7 +32,7 @@ where = ["."]
 include = ["harness_analytics*"]
 
 [tool.setuptools.package-data]
-harness_analytics = ["templates/*.html"]
+harness_analytics = ["templates/*.html", "static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

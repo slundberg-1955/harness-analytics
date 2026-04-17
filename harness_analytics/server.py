@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import create_engine, text
 
 from harness_analytics.portal import install_portal_security, router as portal_router
+from harness_analytics.portfolio_api import router as portfolio_api_router
 from harness_analytics.schema_migrations import ensure_schema_migrations
 
 
@@ -28,6 +31,12 @@ async def _lifespan(_app: FastAPI):
 def create_app() -> FastAPI:
     app = FastAPI(title="harness-analytics", version="0.1.0", lifespan=_lifespan)
     app.include_router(portal_router)
+    app.include_router(portfolio_api_router)
+
+    static_dir = Path(__file__).resolve().parent / "static"
+    if static_dir.is_dir():
+        app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
     install_portal_security(app)
 
     @app.get("/")

@@ -1,0 +1,151 @@
+"""Pure-function KPI / chart aggregates for the Portfolio Explorer."""
+
+from __future__ import annotations
+
+from harness_analytics.portfolio_aggregates import (
+    STATUS_PILL,
+    compute_charts,
+    compute_kpis,
+    compute_status_mix,
+    status_label,
+    status_tone,
+)
+
+
+def _row(
+    app_no: str,
+    *,
+    status: int | None = 150,
+    status_text: str | None = "Patented Case",
+    days_to_noa: int | None = 500,
+    nonfinal: int = 0,
+    final: int = 0,
+    interview: bool = False,
+    interviews: int = 0,
+    noa_within_90: bool = False,
+    rce: int = 0,
+    is_continuation: bool = False,
+    is_jac: bool = False,
+) -> dict:
+    return {
+        "application_number": app_no,
+        "application_status_code": status,
+        "application_status_text": status_text,
+        "invention_title": f"Title {app_no}",
+        "days_filing_to_noa": days_to_noa,
+        "nonfinal_oa_count": nonfinal,
+        "final_oa_count": final,
+        "had_examiner_interview": interview,
+        "interview_count": interviews,
+        "noa_within_90_days_of_interview": noa_within_90,
+        "rce_count": rce,
+        "is_continuation": is_continuation,
+        "is_jac": is_jac,
+    }
+
+
+def test_status_label_and_tone_use_map() -> None:
+    assert status_label(150, "anything") == "Patented"
+    assert status_tone(150) == "emerald"
+    # Unknown codes fall back to status text.
+    assert status_label(999, "Custom Status") == "Custom Status"
+    assert status_tone(999) == STATUS_PILL["_"]["tone"]
+
+
+def test_kpis_empty_set_is_zeroed() -> None:
+    k = compute_kpis([])
+    assert k["totalApps"] == 0
+    assert k["allowanceRatePct"] == 0.0
+    assert k["avgDaysToNoa"] is None
+    assert k["medianDaysToNoa"] is None
+    assert k["appsWithAtLeastOneOa"] == 0
+    assert k["interviewCount"] == 0
+
+
+def test_kpis_allowance_rate_and_counts() -> None:
+    rows = [
+        _row("A", status=150),
+        _row("B", status=150),
+        _row("C", status=161, status_text="Abandoned"),
+        _row("D", status=93, status_text="NOA Mailed"),
+    ]
+    k = compute_kpis(rows)
+    assert k["totalApps"] == 4
+    assert k["patentedCount"] == 2
+    assert k["abandonedCount"] == 1
+    assert k["pendingCount"] == 1  # NOA-mailed app
+    # 2 patented / (2 + 1 abandoned) = 66.7
+    assert k["allowanceRatePct"] == 66.7
+
+
+def test_kpis_days_to_noa_ignores_nulls() -> None:
+    rows = [
+        _row("A", days_to_noa=100),
+        _row("B", days_to_noa=200),
+        _row("C", days_to_noa=None),
+    ]
+    k = compute_kpis(rows)
+    assert k["avgDaysToNoa"] == 150
+    assert k["medianDaysToNoa"] == 150
+
+
+def test_kpis_interview_and_rce_rates() -> None:
+    rows = [
+        _row("A", interview=True, rce=0),
+        _row("B", interview=True, rce=1),
+        _row("C", interview=False, rce=2),
+        _row("D", interview=False, rce=0),
+    ]
+    k = compute_kpis(rows)
+    assert k["interviewCount"] == 2
+    assert k["interviewRatePct"] == 50.0
+    assert k["rceCount"] == 2
+    assert k["rceRatePct"] == 50.0
+
+
+def test_kpis_any_oa_flag_counts_either_kind() -> None:
+    rows = [
+        _row("A", nonfinal=0, final=0),
+        _row("B", nonfinal=1, final=0),
+        _row("C", nonfinal=0, final=2),
+        _row("D", nonfinal=3, final=1),
+    ]
+    k = compute_kpis(rows)
+    assert k["appsWithAtLeastOneOa"] == 3
+    # avgOaCount is nonfinal + final combined
+    assert k["avgOaCount"] == round((0 + 1 + 2 + 4) / 4, 2)
+
+
+def test_status_mix_sorts_by_count_desc() -> None:
+    rows = [
+        _row("A", status=150),
+        _row("B", status=150),
+        _row("C", status=150),
+        _row("D", status=93, status_text="NOA Mailed"),
+    ]
+    mix = compute_status_mix(rows)
+    assert mix[0]["count"] == 3 and mix[0]["label"] == "Patented"
+    assert mix[1]["count"] == 1 and mix[1]["label"] == "NOA Mailed"
+
+
+def test_charts_days_to_noa_sorts_nulls_last() -> None:
+    rows = [
+        _row("A", days_to_noa=None),
+        _row("B", days_to_noa=300),
+        _row("C", days_to_noa=100),
+    ]
+    charts = compute_charts(rows)
+    seq = [d["days"] for d in charts["daysToNoaByApp"]]
+    assert seq == [100, 300, None]
+
+
+def test_prosecution_signals_noa_within_90_pct() -> None:
+    rows = [
+        _row("A", interview=True, noa_within_90=True),
+        _row("B", interview=True, noa_within_90=False),
+        _row("C", interview=False),
+    ]
+    signals = compute_charts(rows)["prosecutionSignals"]
+    # Only interviewed rows factor into the pct; 1 of 2 = 50%.
+    assert signals["noaWithin90DaysOfInterviewPct"] == 50.0
+    assert signals["continuationTotal"] == 3

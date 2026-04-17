@@ -302,6 +302,15 @@ def portal_home(request: Request) -> HTMLResponse:
     )
 
 
+@router.get("/portfolio", response_class=HTMLResponse)
+def portal_portfolio(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request,
+        "portfolio.html",
+        {"show_sign_out": True},
+    )
+
+
 @router.get("/matter/lookup")
 def matter_lookup(q: str) -> RedirectResponse:
     key = _normalize_lookup_key(q)

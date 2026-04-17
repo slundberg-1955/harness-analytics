@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="robots" content="noindex,nofollow">
+<title>Portfolio Explorer — Harness analytics</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/portfolio.css">
+</head>
+<body>
+<div class="shell">
+
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">H</div>
+      <div>
+        <div class="brand-name">Harness IP</div>
+        <div class="brand-sub">Analytics Suite</div>
+      </div>
+    </div>
+
+    <div class="nav-section-label">Workspace</div>
+    <a class="nav-item" href="/portal/">
+      <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 12l2-2m0 0l7-7 7 7m-14 0v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>
+      Dashboard
+    </a>
+    <a class="nav-item active" href="/portal/portfolio">
+      <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+      Portfolio Explorer
+    </a>
+    <a class="nav-item" href="/portal/report.xlsx">
+      <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
+      Download Excel
+    </a>
+    <a class="nav-item" href="/portal/logout">
+      <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
+      Sign out
+    </a>
+  </aside>
+
+  <div class="main">
+
+    <div class="topbar">
+      <div class="crumbs">Analytics &nbsp;/&nbsp; <strong>Portfolio Explorer</strong></div>
+      <div class="topbar-spacer"></div>
+      <div class="topbar-search">
+        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+        <input id="search-input" type="search" placeholder="Search by app number, title, examiner, assignee…" aria-label="Search portfolio" />
+      </div>
+      <button class="btn" id="export-csv-btn">
+        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
+        Export CSV
+      </button>
+    </div>
+
+    <div class="page">
+
+      <div class="page-head">
+        <div>
+          <h1>Portfolio Explorer</h1>
+          <p>Aggregate prosecution analytics across your managed applications</p>
+        </div>
+        <div class="page-head-meta" id="page-head-meta">LOADING…</div>
+      </div>
+
+      <div class="kpi-grid" id="kpi-grid" aria-live="polite"></div>
+
+      <div class="analytics-grid">
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <div class="card-title">Days Filing → Notice of Allowance</div>
+              <div class="card-sub">by matter · current selection</div>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="bars" id="bars-chart" role="img" aria-label="Days from filing to NOA bar chart"></div>
+            <div class="bars-legend" id="bars-legend"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <div class="card-title">Status Mix</div>
+              <div class="card-sub">by application</div>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="donut-wrap">
+              <svg class="donut" id="donut-chart" viewBox="0 0 42 42" role="img" aria-label="Status mix donut chart"></svg>
+              <div class="donut-legend" id="donut-legend"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <div class="card-title">Prosecution Signals</div>
+              <div class="card-sub">selection averages</div>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="stat-list" id="signals-list"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="filter-bar" id="filter-bar">
+        <span class="filter-bar-label">Filter</span>
+        <div id="filter-chips" class="filter-chips-inline"></div>
+        <div class="filter-bar-spacer"></div>
+        <button class="btn" id="saved-views-btn" aria-haspopup="true" aria-expanded="false">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7h18M6 12h12M10 17h4"/></svg>
+          Saved views
+        </button>
+        <button class="btn" id="columns-btn" aria-haspopup="true" aria-expanded="false">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+          <span id="columns-btn-label">Columns</span>
+        </button>
+      </div>
+
+      <div class="table-card">
+        <div class="table-scroll" id="table-scroll">
+          <table id="portfolio-table">
+            <thead id="portfolio-thead"></thead>
+            <tbody id="portfolio-tbody"></tbody>
+          </table>
+        </div>
+
+        <div class="selection-bar" id="selection-bar" hidden>
+          <span id="selection-count">0 selected</span>
+          <div class="selection-actions">
+            <button class="btn" id="selection-export-btn">Export CSV</button>
+            <button class="btn" id="selection-docket-btn" disabled title="Coming soon">Open in Docket</button>
+            <button class="btn" id="selection-tag-btn" disabled title="Coming soon">Bulk tag</button>
+          </div>
+        </div>
+
+        <div class="table-foot">
+          <div id="table-foot-label">Loading…</div>
+          <div class="pagination" id="pagination"></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<div class="column-picker" id="column-picker" hidden></div>
+<div class="saved-views" id="saved-views-menu" hidden></div>
+
+<div class="detail-overlay" id="detail-overlay" hidden></div>
+<aside class="detail-panel" id="detail-panel" aria-hidden="true" aria-labelledby="detail-title" tabindex="-1">
+  <div class="detail-head">
+    <div>
+      <div class="detail-eyebrow" id="detail-eyebrow"></div>
+      <div class="detail-title" id="detail-title"></div>
+      <div class="detail-pills" id="detail-pills"></div>
+    </div>
+    <button class="detail-close" id="detail-close" aria-label="Close">
+      <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+    </button>
+  </div>
+  <div class="detail-body" id="detail-body"></div>
+</aside>
+
+<script src="/static/portfolio.js" defer></script>
+</body>
+</html>
