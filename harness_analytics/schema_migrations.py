@@ -69,7 +69,7 @@ def ensure_schema_migrations() -> None:
             "continuity_child_of_prior_us",
             "BOOLEAN NOT NULL DEFAULT false",
         )
-        for col in (
+        for legacy in (
             "oa_ext_1mo_count",
             "oa_ext_2mo_count",
             "oa_ext_3mo_count",
@@ -78,6 +78,18 @@ def ensure_schema_migrations() -> None:
             "ctrs_ext_2mo_count",
             "ctrs_ext_3mo_count",
             "ctrs_ext_gt_90d_count",
+        ):
+            _drop_column_if_exists(engine, "application_analytics", legacy)
+        for col in (
+            "ctnf_ext_1mo_count",
+            "ctnf_ext_2mo_count",
+            "ctnf_ext_3mo_count",
+            "ctfr_ext_1mo_count",
+            "ctfr_ext_2mo_count",
+            "ctfr_ext_3mo_count",
+            "ctrs_ext_1mo_count",
+            "ctrs_ext_2mo_count",
+            "ctrs_ext_3mo_count",
         ):
             _add_column_if_missing(
                 engine,

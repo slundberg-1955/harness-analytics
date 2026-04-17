@@ -13,14 +13,15 @@ ANALYTICS_REPORT_HEADER_LABELS: dict[str, str] = {
     "ifw_a_ne_count": "IFW A.NE COUNT",
     "ifw_ctrs_count": "HAS RESTRICTION (CTRS COUNT)",
     "continuity_child_of_prior_us": "IS CONTINUATION",
-    "oa_ext_1mo_count": "OA EXT 1MO LATE (EST)",
-    "oa_ext_2mo_count": "OA EXT 2MO LATE (EST)",
-    "oa_ext_3mo_count": "OA EXT 3MO LATE (EST)",
-    "oa_ext_gt_90d_count": "OA EXT GT90D LATE (EST)",
+    "ctnf_ext_1mo_count": "CTNF EXT 1MO LATE (EST)",
+    "ctnf_ext_2mo_count": "CTNF EXT 2MO LATE (EST)",
+    "ctnf_ext_3mo_count": "CTNF EXT 3MO LATE (EST)",
+    "ctfr_ext_1mo_count": "CTFR EXT 1MO LATE (EST)",
+    "ctfr_ext_2mo_count": "CTFR EXT 2MO LATE (EST)",
+    "ctfr_ext_3mo_count": "CTFR EXT 3MO LATE (EST)",
     "ctrs_ext_1mo_count": "CTRS EXT 1MO LATE (EST)",
     "ctrs_ext_2mo_count": "CTRS EXT 2MO LATE (EST)",
     "ctrs_ext_3mo_count": "CTRS EXT 3MO LATE (EST)",
-    "ctrs_ext_gt_90d_count": "CTRS EXT GT90D LATE (EST)",
 }
 
 
@@ -65,14 +66,15 @@ SELECT
     aa.days_filing_to_issue,
     aa.is_jac,
     aa.office_name,
-    aa.oa_ext_1mo_count,
-    aa.oa_ext_2mo_count,
-    aa.oa_ext_3mo_count,
-    aa.oa_ext_gt_90d_count,
+    aa.ctnf_ext_1mo_count,
+    aa.ctnf_ext_2mo_count,
+    aa.ctnf_ext_3mo_count,
+    aa.ctfr_ext_1mo_count,
+    aa.ctfr_ext_2mo_count,
+    aa.ctfr_ext_3mo_count,
     aa.ctrs_ext_1mo_count,
     aa.ctrs_ext_2mo_count,
-    aa.ctrs_ext_3mo_count,
-    aa.ctrs_ext_gt_90d_count
+    aa.ctrs_ext_3mo_count
 FROM applications a
 {join} JOIN application_analytics aa ON aa.application_id = a.id
 """

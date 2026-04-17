@@ -1,13 +1,14 @@
 """Heuristic extension-of-time counts from IFW OA/CTRS mail dates vs prosecution responses.
 
 Rules (see README):
-- CTNF/CTFR: assumed 3 calendar months to respond from IFW mail date; first classified
+- CTNF / CTFR: assumed 3 calendar months from IFW mail date; first classified
   RESPONSE_NONFINAL / RESPONSE_FINAL / RCE after that OA and before the earlier of the
-  next OA mail or first NOA mail counts as the response date.
+  next OA mail or first NOA mail counts as the response date. Counts are split by
+  non-final (CTNF) vs final (CTFR).
 - CTRS: assumed 2 calendar months; first qualifying response after that CTRS and before
   the earlier of the next CTRS mail or first NOA mail.
 - If response is after the deadline, lateness = response_date - deadline (whole days);
-  buckets: 1–30, 31–60, 61–90, >90 days (each increments one counter per trigger).
+  buckets: 1–30, 31–60, 61–90 days only; lateness beyond 90 days is not counted.
 
 This is a rough proxy, not a determination of formal USPTO extensions.
 """
@@ -64,16 +65,14 @@ def _inc_late_bucket(counters: dict[str, int], key: str) -> None:
 
 
 def _bucket_late_days(late_days: int, prefix: str, counters: dict[str, int]) -> None:
-    if late_days <= 0:
+    if late_days <= 0 or late_days > 90:
         return
     if late_days <= 30:
         _inc_late_bucket(counters, f"{prefix}_1mo")
     elif late_days <= 60:
         _inc_late_bucket(counters, f"{prefix}_2mo")
-    elif late_days <= 90:
-        _inc_late_bucket(counters, f"{prefix}_3mo")
     else:
-        _inc_late_bucket(counters, f"{prefix}_gt90")
+        _inc_late_bucket(counters, f"{prefix}_3mo")
 
 
 def _ctrs_docs_before_noa(ifw_docs: list[Any], first_noa_date: Optional[date]) -> list[tuple[date, int]]:
@@ -97,18 +96,19 @@ def compute_extension_time_counts(
     events: list[Any],
     first_noa_date: Optional[date],
 ) -> dict[str, int]:
-    """Return flat keys oa_1mo, oa_2mo, oa_3mo, oa_gt90, ctrs_* (int counts)."""
+    """Return keys ctnf_1mo..ctfr_3mo, ctrs_1mo..ctrs_3mo (int counts)."""
     events = sorted(events, key=lambda e: (e.transaction_date, e.seq_order or 0))
 
     counters: dict[str, int] = {
-        "oa_1mo": 0,
-        "oa_2mo": 0,
-        "oa_3mo": 0,
-        "oa_gt90": 0,
+        "ctnf_1mo": 0,
+        "ctnf_2mo": 0,
+        "ctnf_3mo": 0,
+        "ctfr_1mo": 0,
+        "ctfr_2mo": 0,
+        "ctfr_3mo": 0,
         "ctrs_1mo": 0,
         "ctrs_2mo": 0,
         "ctrs_3mo": 0,
-        "ctrs_gt90": 0,
     }
 
     oa_rows: list[tuple[date, int, str]] = []
@@ -122,7 +122,7 @@ def compute_extension_time_counts(
             oa_rows.append((md, d.id, "CTFR"))
     oa_rows.sort(key=lambda x: (x[0], x[1]))
 
-    for i, (t0, _oid, _code) in enumerate(oa_rows):
+    for i, (t0, _oid, code) in enumerate(oa_rows):
         next_boundary = oa_rows[i + 1][0] if i + 1 < len(oa_rows) else None
         horizon = _horizon(next_boundary, first_noa_date)
         resp = _first_response_date(events, t0, horizon)
@@ -130,7 +130,8 @@ def compute_extension_time_counts(
             continue
         deadline = _deadline_plus_months(t0, 3)
         late_days = (resp - deadline).days
-        _bucket_late_days(late_days, "oa", counters)
+        prefix = "ctnf" if code == "CTNF" else "ctfr"
+        _bucket_late_days(late_days, prefix, counters)
 
     ctrs_rows = _ctrs_docs_before_noa(ifw_docs, first_noa_date)
     for i, (t0, _cid) in enumerate(ctrs_rows):
