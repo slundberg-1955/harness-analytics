@@ -46,6 +46,7 @@
     { key: "artUnit",        label: "Art Unit" },
     { key: "examiner",       label: "Examiner" },
     { key: "assignee",       label: "Assignee" },
+    { key: "applicant",      label: "Applicant" },
     { key: "hadInterview",   label: "Had Interview" },
     { key: "rceCount",       label: "RCE Count" },
     { key: "filingFrom",     label: "Filing ≥" },
@@ -334,6 +335,7 @@
     violet: "var(--violet-600)",
     slate: "var(--slate-400)",
   };
+  const STATUS_MIX_VISIBLE = 20;
   function renderDonut() {
     const totalEl = document.getElementById("status-mix-total");
     const legend = document.getElementById("donut-legend");
@@ -347,16 +349,26 @@
       return;
     }
 
-    legend.innerHTML = mix.map((entry) => {
+    const rowHtml = (entry, hidden) => {
       const color = TONE_COLORS[entry.tone] || "var(--slate-400)";
       const pct = Math.round((entry.count / total) * 100);
       return `
-        <div class="status-row" data-status="${entry.code != null ? entry.code : ""}" title="Filter table to: ${escapeAttr(entry.label)}">
+        <div class="status-row${hidden ? " status-row-extra" : ""}"${hidden ? " hidden" : ""} data-status="${entry.code != null ? entry.code : ""}" title="Filter table to: ${escapeAttr(entry.label)}">
           <span class="status-row-left"><span class="dot" style="background:${color}"></span>${escapeHtml(entry.label)}</span>
           <span class="status-row-count">${entry.count.toLocaleString()}</span>
           <span class="status-row-pct">${pct}%</span>
         </div>`;
-    }).join("");
+    };
+
+    const visible = mix.slice(0, STATUS_MIX_VISIBLE).map((e) => rowHtml(e, false));
+    const extra = mix.slice(STATUS_MIX_VISIBLE).map((e) => rowHtml(e, true));
+    const hiddenCount = extra.length;
+    const toggleHtml = hiddenCount
+      ? `<button type="button" class="status-toggle" data-expanded="false" aria-expanded="false">Show ${hiddenCount} more <span class="status-toggle-caret" aria-hidden="true">▾</span></button>`
+      : "";
+
+    legend.innerHTML = visible.join("") + extra.join("") + toggleHtml;
+
     legend.querySelectorAll(".status-row").forEach((row) => {
       row.addEventListener("click", () => {
         const code = row.getAttribute("data-status");
@@ -366,6 +378,23 @@
         refresh();
       });
     });
+
+    const toggle = legend.querySelector(".status-toggle");
+    if (toggle) {
+      toggle.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        const expanded = toggle.getAttribute("data-expanded") === "true";
+        const next = !expanded;
+        toggle.setAttribute("data-expanded", String(next));
+        toggle.setAttribute("aria-expanded", String(next));
+        toggle.innerHTML = next
+          ? `Show fewer <span class="status-toggle-caret" aria-hidden="true">▴</span>`
+          : `Show ${hiddenCount} more <span class="status-toggle-caret" aria-hidden="true">▾</span>`;
+        legend.querySelectorAll(".status-row-extra").forEach((row) => {
+          row.hidden = !next;
+        });
+      });
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -430,6 +459,7 @@
     if (key === "filingFrom" || key === "filingTo") prompt += " (YYYY-MM-DD)";
     if (key === "status") prompt += " (comma-separated status codes)";
     if (key === "issueYear") prompt += " (comma-separated 4-digit years)";
+    if (key === "applicant") prompt += " (substring match, comma-separated for OR)";
     const value = window.prompt(prompt, "");
     if (!value) return;
     setParam(key, value.trim());
@@ -903,6 +933,19 @@
     const abd = b.applicationBibliographicData || {};
     const sections = [];
 
+    const applicantNames = (Array.isArray(b.applicants) ? b.applicants : [])
+      .map((a) => (a && a.legalEntityName) ? String(a.legalEntityName).trim() : "")
+      .filter(Boolean);
+    const inventorNames = (Array.isArray(b.inventors) ? b.inventors : [])
+      .map((i) => personName(i && i.name).trim())
+      .filter(Boolean);
+    const applicantValueHtml = applicantNames.length
+      ? applicantNames.map((n) => escapeHtml(n)).join("<br>")
+      : "";
+    const inventorValueHtml = inventorNames.length
+      ? inventorNames.map((n) => escapeHtml(n)).join("<br>")
+      : "";
+
     const bioPairs = [
       ["Application Number", fmtMono(formatAppNumber(b.applicationNumber))],
       ["Confirmation Number", fmtMono(abd.confirmationNumber)],
@@ -915,6 +958,8 @@
       ["Patent Class / Subclass", fmtMono(joinClass(abd.patentClass, abd.patentSubclass))],
       ["Subject Matter", abd.inventionSubjectMatterType ? escapeHtml(abd.inventionSubjectMatterType) : ""],
       ["Is Public", abd.isPublic === true ? "Yes" : abd.isPublic === false ? "No" : ""],
+      [applicantNames.length > 1 ? "Applicants" : "Applicant", applicantValueHtml],
+      [inventorNames.length === 1 ? "Inventor" : "Inventors", inventorValueHtml],
     ].filter((p) => p[1]);
     sections.push(dlSection("Bibliographic Data", bioPairs));
 

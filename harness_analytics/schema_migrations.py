@@ -65,6 +65,7 @@ SELECT
     a.examiner_first_name,
     a.examiner_last_name,
     a.assignee_name,
+    a.applicant_name,
     a.continuity_child_of_prior_us AS is_continuation,
     COALESCE(aa.ifw_ctrs_count, 0)       AS has_restriction_ctrs_count,
     COALESCE(aa.ifw_a_ne_count, 0)       AS ifw_a_ne_count,
@@ -95,6 +96,7 @@ _PORTFOLIO_INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_pa_art_unit ON applications (group_art_unit)",
     "CREATE INDEX IF NOT EXISTS idx_pa_examiner_last ON applications (examiner_last_name)",
     "CREATE INDEX IF NOT EXISTS idx_pa_assignee ON applications (assignee_name)",
+    "CREATE INDEX IF NOT EXISTS idx_pa_applicant ON applications (applicant_name)",
     "CREATE INDEX IF NOT EXISTS idx_pa_filing_date ON applications (filing_date)",
 ]
 
@@ -111,6 +113,95 @@ CREATE TABLE IF NOT EXISTS app_settings (
 def _ensure_app_settings_table(engine) -> None:
     with engine.begin() as conn:
         conn.execute(text(_APP_SETTINGS_TABLE_SQL))
+
+
+# Per-row PL/pgSQL backfill: parses xml_raw with xmlparse(content ...) and
+# pulls //Applicants/Applicant[1]/LegalEntityName via xpath. Wrapped in a
+# per-row EXCEPTION handler so a single malformed XML cannot abort the run.
+# Gated by app_settings key so it only executes on the first deploy that
+# introduces the applicant_name column.
+_APPLICANT_BACKFILL_FLAG = "schema.applicantNameBackfilled"
+_APPLICANT_BACKFILL_SQL = """
+DO $$
+DECLARE
+  r RECORD;
+  v_name TEXT;
+  v_done INTEGER := 0;
+BEGIN
+  FOR r IN
+    SELECT id, xml_raw
+      FROM applications
+     WHERE applicant_name IS NULL
+       AND xml_raw IS NOT NULL
+       AND xml_raw <> ''
+       AND position('<Applicant' in xml_raw) > 0
+  LOOP
+    BEGIN
+      SELECT NULLIF(BTRIM((
+               xpath('//Applicants/Applicant[1]/LegalEntityName/text()',
+                     xmlparse(content r.xml_raw))
+             )[1]::text), '')
+        INTO v_name;
+      IF v_name IS NOT NULL THEN
+        UPDATE applications SET applicant_name = v_name WHERE id = r.id;
+        v_done := v_done + 1;
+      END IF;
+    EXCEPTION WHEN OTHERS THEN
+      NULL;
+    END;
+  END LOOP;
+  RAISE NOTICE 'applicant_name backfill: % rows updated', v_done;
+END $$;
+"""
+
+
+def _backfill_applicant_names_once(engine) -> None:
+    """Populate `applicant_name` from `xml_raw` for legacy rows. Runs at most once."""
+    insp = inspect(engine)
+    if not insp.has_table("applications") or not insp.has_table("app_settings"):
+        return
+    cols = {c["name"] for c in insp.get_columns("applications")}
+    if "applicant_name" not in cols or "xml_raw" not in cols:
+        return
+    with engine.begin() as conn:
+        already = conn.execute(
+            text("SELECT value FROM app_settings WHERE key = :k"),
+            {"k": _APPLICANT_BACKFILL_FLAG},
+        ).first()
+        if already and (already[0] or "").strip() in ("1", "true", "yes"):
+            return
+        # Skip if there's nothing to backfill (fresh deploy or no xml_raw stored).
+        pending = conn.execute(
+            text(
+                "SELECT 1 FROM applications "
+                "WHERE applicant_name IS NULL AND xml_raw IS NOT NULL "
+                "AND xml_raw <> '' LIMIT 1"
+            )
+        ).first()
+        if pending is None:
+            conn.execute(
+                text(
+                    "INSERT INTO app_settings (key, value, updated_at) "
+                    "VALUES (:k, '1', now()) "
+                    "ON CONFLICT (key) DO UPDATE SET value = '1', updated_at = now()"
+                ),
+                {"k": _APPLICANT_BACKFILL_FLAG},
+            )
+            return
+        logger.info("Backfilling applicant_name from xml_raw (one-time)…")
+        try:
+            conn.execute(text(_APPLICANT_BACKFILL_SQL))
+            conn.execute(
+                text(
+                    "INSERT INTO app_settings (key, value, updated_at) "
+                    "VALUES (:k, '1', now()) "
+                    "ON CONFLICT (key) DO UPDATE SET value = '1', updated_at = now()"
+                ),
+                {"k": _APPLICANT_BACKFILL_FLAG},
+            )
+            logger.info("applicant_name backfill complete")
+        except Exception:
+            logger.exception("applicant_name backfill failed; will retry on next startup")
 
 
 def _ensure_patent_applications_view(engine) -> None:
@@ -156,6 +247,12 @@ def ensure_schema_migrations() -> None:
             "continuity_child_of_prior_us",
             "BOOLEAN NOT NULL DEFAULT false",
         )
+        _add_column_if_missing(
+            engine,
+            "applications",
+            "applicant_name",
+            "TEXT",
+        )
         for legacy in (
             "oa_ext_1mo_count",
             "oa_ext_2mo_count",
@@ -186,6 +283,7 @@ def ensure_schema_migrations() -> None:
             )
         _ensure_app_settings_table(engine)
         _ensure_patent_applications_view(engine)
+        _backfill_applicant_names_once(engine)
     finally:
         engine.dispose()
 

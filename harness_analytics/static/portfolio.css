@@ -290,6 +290,22 @@ a { color: inherit; }
   text-align: right;
   font-size: 11px;
 }
+.status-toggle {
+  margin-top: 8px;
+  align-self: flex-start;
+  background: transparent;
+  border: none;
+  padding: 6px 4px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--slate-600);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.status-toggle:hover { color: var(--slate-900); }
+.status-toggle-caret { font-size: 10px; line-height: 1; }
 
 .stat-list { display: flex; flex-direction: column; }
 .stat-row {

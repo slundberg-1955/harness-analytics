@@ -160,8 +160,17 @@ def parse_biblio_xml(xml_text: str) -> dict[str, Any]:
             }
         )
 
-    assignee_name = extract_text(root, ".//assigneeBag/organizationStandardName/text()") or extract_text(
-        root, ".//Applicants/Applicant/LegalEntityName/text()"
+    # Applicant comes from <Applicants/Applicant/LegalEntityName>; pick first non-empty.
+    applicant_name: str | None = None
+    for app_el in root.xpath(".//Applicants/Applicant"):
+        v = extract_text(app_el, "LegalEntityName/text()")
+        if v:
+            applicant_name = v
+            break
+
+    assignee_name = (
+        extract_text(root, ".//assigneeBag/organizationStandardName/text()")
+        or applicant_name
     )
 
     inventors: list[dict[str, Any]] = []
@@ -207,6 +216,7 @@ def parse_biblio_xml(xml_text: str) -> dict[str, Any]:
         "examiner_last_name": examiner_last,
         "examiner_phone": examiner_phone,
         "assignee_name": assignee_name,
+        "applicant_name": applicant_name,
         "attorneys": attorneys,
         "events": events,
         "documents": documents,

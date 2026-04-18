@@ -46,6 +46,7 @@ _SORT_COLUMNS: dict[str, str] = {
     "groupArtUnit": "group_art_unit",
     "examinerName": "examiner_name",
     "assigneeName": "assignee_name",
+    "applicantName": "applicant_name",
     "isContinuation": "is_continuation",
     "nonfinalOaCount": "nonfinal_oa_count",
     "finalOaCount": "final_oa_count",
@@ -73,6 +74,7 @@ _ROW_COLUMNS: list[str] = [
     "patent_class",
     "examiner_name",
     "assignee_name",
+    "applicant_name",
     "is_continuation",
     "has_restriction_ctrs_count",
     "ifw_a_ne_count",
@@ -176,6 +178,7 @@ def _build_where(params: dict[str, Any]) -> tuple[str, dict[str, Any]]:
             "LOWER(COALESCE(invention_title, '')) LIKE :q "
             "OR LOWER(COALESCE(examiner_name, '')) LIKE :q "
             "OR LOWER(COALESCE(assignee_name, '')) LIKE :q "
+            "OR LOWER(COALESCE(applicant_name, '')) LIKE :q "
             "OR LOWER(COALESCE(application_number, '')) LIKE :q"
             ")"
         )
@@ -224,6 +227,18 @@ def _build_where(params: dict[str, Any]) -> tuple[str, dict[str, Any]]:
             placeholders.append(f":{name}")
             binds[name] = v
         conditions.append(f"assignee_name IN ({', '.join(placeholders)})")
+
+    applicants = _split_csv(params.get("applicant"))
+    if applicants:
+        # Applicant names from XML are free-form text and frequently differ in
+        # punctuation/case across filings; match case-insensitively against any
+        # comma-separated value.
+        clauses = []
+        for i, v in enumerate(applicants):
+            name = f"ap_{i}"
+            clauses.append(f"LOWER(COALESCE(applicant_name, '')) LIKE :{name}")
+            binds[name] = f"%{v.lower()}%"
+        conditions.append("(" + " OR ".join(clauses) + ")")
 
     had_interview = _parse_bool(params.get("hadInterview"))
     if had_interview is not None:
@@ -278,6 +293,7 @@ def _row_to_json(row: dict[str, Any]) -> dict[str, Any]:
         "patentClass": row.get("patent_class"),
         "examinerName": row.get("examiner_name"),
         "assigneeName": row.get("assignee_name"),
+        "applicantName": row.get("applicant_name"),
         "isContinuation": bool(row.get("is_continuation")),
         "hasRestrictionCtrsCount": row.get("has_restriction_ctrs_count") or 0,
         "ifwANeCount": row.get("ifw_a_ne_count") or 0,
@@ -345,6 +361,7 @@ def _params_from_request(
     artUnit: Optional[str],
     examiner: Optional[str],
     assignee: Optional[str],
+    applicant: Optional[str],
     hadInterview: Optional[str],
     rceCount: Optional[str],
     filingFrom: Optional[str],
@@ -359,6 +376,7 @@ def _params_from_request(
         "artUnit": artUnit,
         "examiner": examiner,
         "assignee": assignee,
+        "applicant": applicant,
         "hadInterview": hadInterview,
         "rceCount": rceCount,
         "filingFrom": filingFrom,
@@ -376,6 +394,7 @@ def portfolio(
     artUnit: Optional[str] = None,
     examiner: Optional[str] = None,
     assignee: Optional[str] = None,
+    applicant: Optional[str] = None,
     hadInterview: Optional[str] = None,
     rceCount: Optional[str] = None,
     filingFrom: Optional[str] = None,
@@ -387,7 +406,7 @@ def portfolio(
     db: Session = Depends(get_db),
 ) -> JSONResponse:
     params = _params_from_request(
-        q, status, issueYear, artUnit, examiner, assignee,
+        q, status, issueYear, artUnit, examiner, assignee, applicant,
         hadInterview, rceCount, filingFrom, filingTo, sort, dir,
     )
 
@@ -422,6 +441,7 @@ def portfolio_csv(
     artUnit: Optional[str] = None,
     examiner: Optional[str] = None,
     assignee: Optional[str] = None,
+    applicant: Optional[str] = None,
     hadInterview: Optional[str] = None,
     rceCount: Optional[str] = None,
     filingFrom: Optional[str] = None,
@@ -431,7 +451,7 @@ def portfolio_csv(
     db: Session = Depends(get_db),
 ) -> StreamingResponse:
     params = _params_from_request(
-        q, status, issueYear, artUnit, examiner, assignee,
+        q, status, issueYear, artUnit, examiner, assignee, applicant,
         hadInterview, rceCount, filingFrom, filingTo, sort, dir,
     )
     rows = _fetch_rows(db, params)

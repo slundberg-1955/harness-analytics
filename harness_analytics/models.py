@@ -44,6 +44,7 @@ class Application(Base):
     examiner_last_name: Mapped[Optional[str]] = mapped_column(Text)
     examiner_phone: Mapped[Optional[str]] = mapped_column(Text)
     assignee_name: Mapped[Optional[str]] = mapped_column(Text)
+    applicant_name: Mapped[Optional[str]] = mapped_column(Text)
     issue_year: Mapped[Optional[int]] = mapped_column(
         Integer,
         Computed("EXTRACT(YEAR FROM issue_date)::integer", persisted=True),

@@ -85,6 +85,7 @@ def _ingest_one_file(
         "examiner_last_name",
         "examiner_phone",
         "assignee_name",
+        "applicant_name",
     ]:
         setattr(app, field, data.get(field))
 
