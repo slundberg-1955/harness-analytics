@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
+import os
 import re
 from datetime import date, datetime
 from functools import lru_cache
@@ -19,6 +21,7 @@ from lxml import etree
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from harness_analytics import app_settings
 from harness_analytics.db import get_db
 from harness_analytics.portfolio_aggregates import (
     STATUS_PILL,
@@ -92,7 +95,40 @@ _ROW_COLUMNS: list[str] = [
 
 _DEFAULT_PAGE_SIZE = 50
 _MAX_PAGE_SIZE = 200
-_MAX_AGG_ROWS = 5000  # cap on the set handed to KPI/chart math per request
+
+# Cap on the rows materialized in Python for KPI/chart math per request.
+# Precedence: DB setting (`portfolio.aggregateRowCap`) > env
+# (`PORTFOLIO_AGG_ROW_CAP`) > _DEFAULT_AGG_ROW_CAP. `0` disables the cap.
+_DEFAULT_AGG_ROW_CAP = 5000
+SETTING_KEY_AGG_ROW_CAP = "portfolio.aggregateRowCap"
+
+_logger = logging.getLogger(__name__)
+
+
+def _coerce_cap(raw: str | None) -> int | None:
+    if raw is None or raw.strip() == "":
+        return None
+    try:
+        v = int(raw)
+    except ValueError:
+        _logger.warning(
+            "Invalid portfolio aggregate row cap %r; ignoring", raw
+        )
+        return None
+    if v < 0:
+        return None
+    return v
+
+
+def _aggregate_row_cap() -> int:
+    """DB setting overrides env var overrides default."""
+    db_value = _coerce_cap(app_settings.get_setting(SETTING_KEY_AGG_ROW_CAP))
+    if db_value is not None:
+        return db_value
+    env_value = _coerce_cap(os.environ.get("PORTFOLIO_AGG_ROW_CAP"))
+    if env_value is not None:
+        return env_value
+    return _DEFAULT_AGG_ROW_CAP
 
 
 # ---------------------------------------------------------------------------
@@ -273,15 +309,25 @@ def _iso(v: Any) -> Optional[str]:
     return str(v)
 
 
-def _fetch_rows(db: Session, params: dict[str, Any]) -> list[dict[str, Any]]:
-    """Fetch ALL matching rows (up to _MAX_AGG_ROWS) for KPI/chart math."""
+def _fetch_rows(
+    db: Session, params: dict[str, Any], cap: int | None = None
+) -> list[dict[str, Any]]:
+    """Fetch matching rows for KPI/chart math.
+
+    `cap` is the maximum number of rows to materialize. `0` (or any falsy
+    value other than `None`) disables the cap and pulls every matching row;
+    `None` reads the cap from `PORTFOLIO_AGG_ROW_CAP`.
+    """
+    if cap is None:
+        cap = _aggregate_row_cap()
     where_sql, binds = _build_where(params)
     sql = (
         f"SELECT {', '.join(_ROW_COLUMNS)} FROM patent_applications"
         + where_sql
         + _sort_clause(params)
-        + f" LIMIT {_MAX_AGG_ROWS}"
     )
+    if cap and cap > 0:
+        sql += f" LIMIT {int(cap)}"
     result = db.execute(text(sql), binds)
     cols = list(result.keys())
     return [dict(zip(cols, r)) for r in result.fetchall()]
@@ -345,8 +391,10 @@ def portfolio(
         hadInterview, rceCount, filingFrom, filingTo, sort, dir,
     )
 
-    all_rows = _fetch_rows(db, params)
+    cap = _aggregate_row_cap()
+    all_rows = _fetch_rows(db, params, cap=cap)
     total = len(all_rows)
+    capped = bool(cap and total >= cap)
     start = (page - 1) * pageSize
     end = start + pageSize
     page_rows = all_rows[start:end]
@@ -357,6 +405,8 @@ def portfolio(
             "total": total,
             "page": page,
             "pageSize": pageSize,
+            "aggregateRowCap": cap if cap and cap > 0 else None,
+            "capped": capped,
             "kpis": compute_kpis(all_rows),
             "charts": compute_charts(all_rows),
             "statusPill": {str(k): v for k, v in STATUS_PILL.items()},

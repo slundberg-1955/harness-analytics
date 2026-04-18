@@ -534,7 +534,11 @@
     const start = total ? (state.page - 1) * state.pageSize + 1 : 0;
     const end = Math.min(state.page * state.pageSize, total);
     const selCount = state.selected.size;
-    label.innerHTML = `Showing <strong>${start}–${end}</strong> of <strong>${total.toLocaleString()}</strong>${selCount ? ` · ${selCount} selected` : ""}`;
+    const cap = state.lastData && state.lastData.aggregateRowCap;
+    const cappedNote = state.lastData && state.lastData.capped && cap
+      ? ` · <span title="Set PORTFOLIO_AGG_ROW_CAP on the service to raise this limit." style="color: var(--amber-600)">capped at ${cap.toLocaleString()}</span>`
+      : "";
+    label.innerHTML = `Showing <strong>${start}–${end}</strong> of <strong>${total.toLocaleString()}</strong>${cappedNote}${selCount ? ` · ${selCount} selected` : ""}`;
 
     const pageCount = Math.max(1, Math.ceil(total / state.pageSize));
     const buttons = [];

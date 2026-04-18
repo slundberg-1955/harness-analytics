@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Settings · Harness analytics{% endblock %}
+{% block content %}
+<div class="card">
+  <h1>Settings</h1>
+  <p class="muted">App-wide configuration. Saved values are stored in the database and take effect immediately for all users.</p>
+</div>
+
+{% if saved %}
+<div class="card" style="border-color:#bcdcc1;background:#f1faf2;">
+  <strong>Saved.</strong> The new value is now in effect.
+</div>
+{% endif %}
+{% if error == "invalid" %}
+<div class="card" style="border-color:#e2b4b4;background:#fbf1f1;">
+  <strong>Invalid value.</strong> Enter a non-negative integer, or leave the field blank to clear the override.
+</div>
+{% elif error == "db" %}
+<div class="card" style="border-color:#e2b4b4;background:#fbf1f1;">
+  <strong>Could not save.</strong> The database rejected the update. Check server logs and try again.
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>Portfolio Explorer</h2>
+
+  <form method="post" action="/portal/settings/portfolio-cap">
+    <p style="margin:0 0 0.4rem;"><strong>Aggregate row cap</strong></p>
+    <p class="muted" style="margin:0 0 0.75rem;">
+      Maximum number of applications materialized per request to compute KPIs and charts on the
+      Portfolio Explorer. Higher caps return more accurate aggregates but use more memory and CPU.
+      Enter <code>0</code> to disable the cap entirely. Leave blank to fall back to the
+      <code>PORTFOLIO_AGG_ROW_CAP</code> environment variable, then to the built-in default.
+    </p>
+
+    <div style="display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap;">
+      <label for="portfolio-cap" class="muted">Cap:</label>
+      <input
+        id="portfolio-cap"
+        type="text"
+        name="value"
+        value="{{ portfolio_cap_db }}"
+        placeholder="(unset — using {% if portfolio_cap_env %}env var{% else %}default{% endif %})"
+        inputmode="numeric"
+        pattern="[0-9]*"
+        style="min-width:160px;"
+      >
+      <button type="submit">Save</button>
+    </div>
+
+    <dl class="grid2" style="margin-top:1rem;">
+      <dt>Effective value (in use now)</dt>
+      <dd>
+        {% if portfolio_cap_effective == 0 %}
+          Disabled — no cap applied
+        {% else %}
+          {{ "{:,}".format(portfolio_cap_effective) }} rows
+        {% endif %}
+      </dd>
+      <dt>Stored in database</dt>
+      <dd>{{ portfolio_cap_db if portfolio_cap_db else "—" }}</dd>
+      <dt>Environment variable</dt>
+      <dd>{{ portfolio_cap_env if portfolio_cap_env else "—" }} <span class="muted">(<code>PORTFOLIO_AGG_ROW_CAP</code>)</span></dd>
+      <dt>Built-in default</dt>
+      <dd>{{ "{:,}".format(portfolio_cap_default) }}</dd>
+    </dl>
+
+    <p class="muted" style="margin-top:0.75rem;">
+      Precedence: <strong>Database</strong> &rarr; <strong>Environment variable</strong> &rarr; <strong>Default</strong>.
+      Cached for ~15 seconds across the app, so changes can take a few seconds to propagate to other workers.
+    </p>
+  </form>
+</div>
+{% endblock %}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime, timezone
 from typing import Any
 from unittest.mock import MagicMock
@@ -192,6 +193,11 @@ class _FakeSession:
         else:
             rows.sort(key=lambda r: r.get("application_number") or "", reverse=rev)
 
+        # Honor `LIMIT N` so cap behavior is exercised end-to-end.
+        m = re.search(r"LIMIT\s+(\d+)\s*$", sql)
+        if m:
+            rows = rows[: int(m.group(1))]
+
         return _FakeResult(rows)
 
 
@@ -257,6 +263,51 @@ def test_portfolio_rejects_bad_page_size(monkeypatch: pytest.MonkeyPatch) -> Non
     client = _make_client(monkeypatch, _FIXTURE_ROWS)
     r = client.get("/portal/api/portfolio?pageSize=10000", auth=("viewer", "test-pw"))
     assert r.status_code == 422
+
+
+def test_portfolio_aggregate_row_cap_default_in_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PORTFOLIO_AGG_ROW_CAP", raising=False)
+    client = _make_client(monkeypatch, _FIXTURE_ROWS)
+    r = client.get("/portal/api/portfolio", auth=("viewer", "test-pw"))
+    body = r.json()
+    assert body["aggregateRowCap"] == 5000
+    assert body["capped"] is False
+
+
+def test_portfolio_aggregate_row_cap_env_override_marks_capped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Cap below the fixture size so the response should report `capped: true`.
+    monkeypatch.setenv("PORTFOLIO_AGG_ROW_CAP", "2")
+    client = _make_client(monkeypatch, _FIXTURE_ROWS)
+    r = client.get("/portal/api/portfolio", auth=("viewer", "test-pw"))
+    body = r.json()
+    assert body["aggregateRowCap"] == 2
+    assert body["total"] == 2
+    assert body["capped"] is True
+    # KPI math is computed against the capped set, not the original fixture.
+    assert body["kpis"]["totalApps"] == 2
+
+
+def test_portfolio_aggregate_row_cap_disabled_with_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PORTFOLIO_AGG_ROW_CAP", "0")
+    client = _make_client(monkeypatch, _FIXTURE_ROWS)
+    r = client.get("/portal/api/portfolio", auth=("viewer", "test-pw"))
+    body = r.json()
+    assert body["aggregateRowCap"] is None
+    assert body["capped"] is False
+    assert body["total"] == 3
+
+
+def test_portfolio_aggregate_row_cap_invalid_env_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PORTFOLIO_AGG_ROW_CAP", "not-a-number")
+    from harness_analytics.portfolio_api import _aggregate_row_cap
+
+    assert _aggregate_row_cap() == 5000
 
 
 def test_portfolio_csv_streams(monkeypatch: pytest.MonkeyPatch) -> None:

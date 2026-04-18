@@ -99,6 +99,20 @@ _PORTFOLIO_INDEX_SQL = [
 ]
 
 
+_APP_SETTINGS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)
+"""
+
+
+def _ensure_app_settings_table(engine) -> None:
+    with engine.begin() as conn:
+        conn.execute(text(_APP_SETTINGS_TABLE_SQL))
+
+
 def _ensure_patent_applications_view(engine) -> None:
     insp = inspect(engine)
     if not insp.has_table("applications") or not insp.has_table("application_analytics"):
@@ -170,6 +184,7 @@ def ensure_schema_migrations() -> None:
                 col,
                 "INTEGER NOT NULL DEFAULT 0",
             )
+        _ensure_app_settings_table(engine)
         _ensure_patent_applications_view(engine)
     finally:
         engine.dispose()

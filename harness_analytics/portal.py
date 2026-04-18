@@ -24,9 +24,15 @@ from sqlalchemy.orm import Session
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
+from harness_analytics import app_settings
 from harness_analytics.analytics import compute_analytics_for_application, load_office_config
 from harness_analytics.db import get_db
 from harness_analytics.models import Application, ApplicationAnalytics, FileWrapperDocument, ProsecutionEvent
+from harness_analytics.portfolio_api import (
+    SETTING_KEY_AGG_ROW_CAP,
+    _aggregate_row_cap,
+    _DEFAULT_AGG_ROW_CAP,
+)
 from harness_analytics.reports import (
     ANALYTICS_REPORT_HEADER_LABELS,
     analytics_column_header,
@@ -309,6 +315,56 @@ def portal_portfolio(request: Request) -> HTMLResponse:
         "portfolio.html",
         {"show_sign_out": True},
     )
+
+
+def _settings_context(request: Request, *, saved: bool = False, error: str | None = None) -> dict:
+    db_value = app_settings.get_setting(SETTING_KEY_AGG_ROW_CAP)
+    env_value = os.environ.get("PORTFOLIO_AGG_ROW_CAP", "")
+    effective = _aggregate_row_cap()
+    return {
+        "show_sign_out": True,
+        "portfolio_cap_db": db_value or "",
+        "portfolio_cap_env": env_value,
+        "portfolio_cap_default": _DEFAULT_AGG_ROW_CAP,
+        "portfolio_cap_effective": effective,
+        "saved": saved,
+        "error": error,
+    }
+
+
+@router.get("/settings", response_class=HTMLResponse)
+def portal_settings(request: Request) -> HTMLResponse:
+    saved = request.query_params.get("saved") == "1"
+    error = request.query_params.get("error") or None
+    return templates.TemplateResponse(
+        request,
+        "settings.html",
+        _settings_context(request, saved=saved, error=error),
+    )
+
+
+@router.post("/settings/portfolio-cap")
+def portal_settings_save_portfolio_cap(
+    value: str = Form(""),
+) -> RedirectResponse:
+    raw = (value or "").strip()
+    if not raw:
+        try:
+            app_settings.set_setting(SETTING_KEY_AGG_ROW_CAP, None)
+        except Exception:
+            return RedirectResponse(url="/portal/settings?error=db", status_code=303)
+        return RedirectResponse(url="/portal/settings?saved=1", status_code=303)
+    try:
+        n = int(raw)
+        if n < 0:
+            raise ValueError
+    except ValueError:
+        return RedirectResponse(url="/portal/settings?error=invalid", status_code=303)
+    try:
+        app_settings.set_setting(SETTING_KEY_AGG_ROW_CAP, str(n))
+    except Exception:
+        return RedirectResponse(url="/portal/settings?error=db", status_code=303)
+    return RedirectResponse(url="/portal/settings?saved=1", status_code=303)
 
 
 @router.get("/matter/lookup")

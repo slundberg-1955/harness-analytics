@@ -174,6 +174,7 @@ The same FastAPI service exposes a **password-protected portal** under **`/porta
 2. Set **`SECRET_KEY`** to a long random string (used to sign session cookies). If you omit it, the app falls back to `PORTAL_PASSWORD` for signing (works, but rotating the password will log everyone out).
 3. Optional: **`PORTAL_USER`** — sign-in username (default **`viewer`**).
 4. Optional: **`INTERVIEW_WINDOW_DAYS`** — max days from the **last** qualifying IFW interview before the first IFW **NOA** document for the `interview_led_to_noa` flag (default **90**; matches the CLI `analytics` / ingest `--interview-window`). Used by **Recompute analytics** on matter pages.
+5. Optional: **`PORTFOLIO_AGG_ROW_CAP`** — maximum rows the **Portfolio Explorer** materializes per request to compute KPIs / charts (default **5000**; set to **`0`** to disable the cap and always pull every matching row). When the cap fires, the JSON response carries `"capped": true` and the table footer shows a "capped at N" note. This can also be set live from the in-app **Settings** page (`/portal/settings`); a value stored there overrides the env var.
 
 **Sign in:** open `https://<your-railway-host>/portal/login` (or `/portal/` — browsers asking for HTML are redirected to the login page). Use the HTML form, or use **HTTP Basic** with the same username and password (for scripts and `curl`).
 
