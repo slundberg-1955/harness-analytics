@@ -272,22 +272,20 @@
 
     container.innerHTML = `
       <div class="histogram">
-        <div class="hist-bars">
-          ${bins.map((b, i) => {
-            const heightPct = Math.max(b.count > 0 ? 4 : 0, Math.round((b.count / maxCount) * 100));
-            const valueLabel = b.count > 0 ? String(b.count) : "";
-            const title = `${b.label} · ${b.count} apps (${b.pct}%)`;
-            const isMedian = i === medianBinIdx;
-            return `
-              <div class="hist-col" title="${escapeAttr(title)}">
-                <div class="hist-value">${valueLabel}</div>
-                <div class="hist-bar-wrap">
-                  <div class="hist-bar${isMedian ? " hist-bar-median" : ""}" style="height:${heightPct}%"></div>
-                </div>
-                <div class="hist-tick">${escapeHtml(b.label)}</div>
-              </div>`;
-          }).join("")}
-        </div>
+        ${bins.map((b, i) => {
+          const widthPct = Math.max(b.count > 0 ? 1 : 0, Math.round((b.count / maxCount) * 100));
+          const isMedian = i === medianBinIdx;
+          const title = `${b.label} · ${b.count.toLocaleString()} apps (${b.pct}%)`;
+          return `
+            <div class="hist-row${isMedian ? " hist-row-median" : ""}" title="${escapeAttr(title)}">
+              <div class="hist-row-label">${escapeHtml(b.label)}</div>
+              <div class="hist-row-bar-wrap">
+                <div class="hist-row-bar" style="width:${widthPct}%"></div>
+              </div>
+              <div class="hist-row-count">${b.count.toLocaleString()}</div>
+              <div class="hist-row-pct">${b.pct}%</div>
+            </div>`;
+        }).join("")}
       </div>`;
 
     const medianText = median != null

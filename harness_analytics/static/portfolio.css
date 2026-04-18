@@ -188,16 +188,12 @@ a { color: inherit; }
 
 .analytics-grid {
   display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 12px; margin-bottom: 20px;
-  align-items: stretch;
+  align-items: start;
 }
 .card {
   background: white; border: 1px solid var(--slate-200); border-radius: var(--radius-lg);
   overflow: hidden;
 }
-/* Cards in the analytics row stretch to a uniform height; the body fills the
-   card so the histogram inside can grow proportionally. */
-.analytics-grid > .card { display: flex; flex-direction: column; }
-.analytics-grid > .card > .card-body { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .card-head {
   padding: 12px 16px;
   border-bottom: 1px solid var(--slate-200);
@@ -207,14 +203,8 @@ a { color: inherit; }
 .card-sub   { font-size: 11px; color: var(--slate-500); font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.06em;}
 .card-body  { padding: 16px; }
 
-/* Outer chart container: fills the card body, leaving room for the legend. */
-.bars {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 200px;
-  padding: 0;
-}
+/* Outer chart container — sized to its content (no flex stretch). */
+.bars { padding: 0; }
 .bars-legend {
   display: flex;
   gap: 16px;
@@ -222,75 +212,49 @@ a { color: inherit; }
   padding-top: 12px;
   border-top: 1px solid var(--slate-200);
   flex-wrap: wrap;
-  flex-shrink: 0;
 }
 .legend-dot { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--slate-600); font-family: var(--font-mono); }
 .legend-dot.legend-stat { color: var(--slate-700); }
 .dot { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
 .empty-chart { color: var(--slate-500); font-size: 12px; padding: 12px 4px; }
 
-/* Histogram: days-filing-to-NOA distribution */
+/* Horizontal bar chart for the days-filing-to-NOA distribution.
+   Compact: each bin is one row ~22px tall, labels left-aligned. */
 .histogram {
-  flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 4px 4px 0;
-  min-height: 0;
-}
-.hist-bars {
-  flex: 1;
-  display: flex;
-  align-items: stretch;
-  gap: 8px;
-  min-height: 160px;
-}
-.hist-col {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
   gap: 4px;
-  cursor: default;
 }
-.hist-value {
+.hist-row {
+  display: grid;
+  grid-template-columns: 56px 1fr 60px 56px;
+  align-items: center;
+  gap: 10px;
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--slate-600);
+  padding: 1px 0;
+}
+.hist-row-label { text-align: right; color: var(--slate-700); }
+.hist-row-bar-wrap {
   height: 14px;
-  line-height: 14px;
-  flex-shrink: 0;
+  background: var(--slate-100, #f1f5f9);
+  border-radius: 4px;
+  overflow: hidden;
+  position: relative;
 }
-.hist-bar-wrap {
-  width: 100%;
-  flex: 1;
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  border-bottom: 1px solid var(--slate-200);
-  min-height: 0;
-}
-.hist-bar {
-  width: 78%;
-  background: linear-gradient(to top, var(--blue-600), var(--blue-500));
-  border-radius: 3px 3px 0 0;
+.hist-row-bar {
+  height: 100%;
+  background: linear-gradient(to right, var(--blue-500), var(--blue-600));
+  border-radius: 4px;
+  min-width: 2px;
   transition: opacity 120ms ease;
-  min-height: 2px;
 }
-.hist-col:hover .hist-bar { opacity: 0.85; }
-.hist-bar-median {
-  outline: 2px solid var(--amber-600);
-  outline-offset: -2px;
-}
-.hist-tick {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--slate-500);
-  white-space: nowrap;
-  text-align: center;
-  flex-shrink: 0;
-}
+.hist-row:hover .hist-row-bar { opacity: 0.85; }
+.hist-row-median .hist-row-label { color: var(--amber-600); font-weight: 600; }
+.hist-row-median .hist-row-bar  { background: linear-gradient(to right, var(--amber-500, #f59e0b), var(--amber-600, #d97706)); }
+.hist-row-count { text-align: right; color: var(--slate-700); font-weight: 600; }
+.hist-row-pct { text-align: right; color: var(--slate-500); }
 
 .donut-wrap { display: flex; align-items: center; gap: 16px; }
 .donut { width: 110px; height: 110px; flex-shrink: 0; }
