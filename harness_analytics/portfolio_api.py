@@ -477,6 +477,152 @@ def portfolio_csv(
 
 
 # ---------------------------------------------------------------------------
+# Filter facets endpoint (powers the chip dropdowns)
+# ---------------------------------------------------------------------------
+
+# Map filter key -> SQL column expression on `patent_applications`. Anything
+# not in this map is handled below with a hard-coded option list (boolean,
+# bucketed, date) or rejected with 400.
+_FACET_COLUMNS: dict[str, str] = {
+    "issueYear": "issue_year",
+    "artUnit": "group_art_unit",
+    "examiner": "examiner_name",
+    "applicant": "applicant_name",
+}
+
+# Hard cap on how many distinct values we ship to the client per facet.
+# Most dimensions stay well under this in practice (status/year/art unit are
+# tiny; examiner/applicant can grow but the dropdown UI has a search box on
+# top and we sort by frequency so the long tail is reachable via search).
+_FACET_LIMIT = 2000
+
+
+def _facet_options_for_column(
+    db: Session, column: str, limit: int = _FACET_LIMIT
+) -> list[dict[str, Any]]:
+    sql = (
+        f"SELECT {column} AS value, COUNT(*) AS count "
+        f"FROM patent_applications "
+        f"WHERE {column} IS NOT NULL "
+        f"AND CAST({column} AS TEXT) <> '' "
+        f"GROUP BY {column} "
+        f"ORDER BY count DESC, value ASC "
+        f"LIMIT :lim"
+    )
+    rows = db.execute(text(sql), {"lim": int(limit)}).all()
+    return [
+        {"value": _facet_value(r[0]), "label": _facet_value(r[0]), "count": int(r[1])}
+        for r in rows
+    ]
+
+
+def _facet_value(v: Any) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, (int, float)):
+        # Drop trailing .0 from years/etc.
+        if isinstance(v, float) and v.is_integer():
+            return str(int(v))
+        return str(v)
+    return str(v)
+
+
+def _facet_status(db: Session) -> list[dict[str, Any]]:
+    rows = db.execute(
+        text(
+            "SELECT application_status_code AS code, MAX(application_status_text) AS txt, "
+            "COUNT(*) AS count "
+            "FROM patent_applications "
+            "WHERE application_status_code IS NOT NULL "
+            "GROUP BY application_status_code "
+            "ORDER BY count DESC, code ASC "
+            "LIMIT :lim"
+        ),
+        {"lim": _FACET_LIMIT},
+    ).all()
+    out: list[dict[str, Any]] = []
+    for code, txt, count in rows:
+        if code is None:
+            continue
+        label = status_label(int(code), txt)
+        out.append(
+            {
+                "value": str(int(code)),
+                "label": f"{label} (Code {int(code)})",
+                "count": int(count),
+            }
+        )
+    return out
+
+
+@router.get("/portfolio/facets")
+def portfolio_facets(
+    key: str,
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    """Distinct filter values + per-value counts, used to populate filter dropdowns."""
+    if key == "status":
+        return JSONResponse({"key": key, "options": _facet_status(db)})
+    if key == "hadInterview":
+        rows = db.execute(
+            text(
+                "SELECT had_examiner_interview AS v, COUNT(*) AS c "
+                "FROM patent_applications GROUP BY had_examiner_interview"
+            )
+        ).all()
+        counts = {bool(r[0]): int(r[1]) for r in rows}
+        return JSONResponse(
+            {
+                "key": key,
+                "options": [
+                    {"value": "true", "label": "Yes", "count": counts.get(True, 0)},
+                    {"value": "false", "label": "No", "count": counts.get(False, 0)},
+                ],
+            }
+        )
+    if key == "rceCount":
+        rows = db.execute(
+            text(
+                "SELECT CASE WHEN rce_count >= 3 THEN 'gte3' "
+                "ELSE rce_count::text END AS bucket, COUNT(*) AS c "
+                "FROM patent_applications GROUP BY bucket ORDER BY bucket"
+            )
+        ).all()
+        labels = {"0": "0", "1": "1", "2": "2", "gte3": "3 or more"}
+        counts = {str(r[0]): int(r[1]) for r in rows}
+        return JSONResponse(
+            {
+                "key": key,
+                "options": [
+                    {"value": v, "label": labels[v], "count": counts.get(v, 0)}
+                    for v in ("0", "1", "2", "gte3")
+                ],
+            }
+        )
+    if key in ("filingFrom", "filingTo"):
+        # Special case: not enumerable. Surface the min/max of filing_date so
+        # the UI can render a date input with sensible bounds.
+        row = db.execute(
+            text(
+                "SELECT MIN(filing_date) AS min_d, MAX(filing_date) AS max_d "
+                "FROM patent_applications"
+            )
+        ).first()
+        return JSONResponse(
+            {
+                "key": key,
+                "kind": "date",
+                "min": _iso(row[0]) if row else None,
+                "max": _iso(row[1]) if row else None,
+            }
+        )
+    column = _FACET_COLUMNS.get(key)
+    if not column:
+        raise HTTPException(status_code=400, detail=f"Unknown facet key: {key}")
+    return JSONResponse({"key": key, "options": _facet_options_for_column(db, column)})
+
+
+# ---------------------------------------------------------------------------
 # Biblio endpoint
 # ---------------------------------------------------------------------------
 

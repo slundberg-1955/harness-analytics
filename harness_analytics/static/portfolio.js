@@ -40,18 +40,26 @@
   const COLUMN_STORAGE_KEY = "otto.portfolio.columns.v1";
   const SAVED_VIEWS_KEY = "otto.portfolio.savedViews.v1";
 
+  // Each entry has:
+  //   key   - URL/query param name (must match portfolio_api `_build_where`)
+  //   label - chip label
+  //   kind  - "multi" (default, multi-select dropdown w/ counts), "single"
+  //           (radio), or "date" (single date input). Used by the popover.
   const FILTERABLE = [
-    { key: "status",         label: "Status" },
-    { key: "issueYear",      label: "Issue Year" },
-    { key: "artUnit",        label: "Art Unit" },
-    { key: "examiner",       label: "Examiner" },
-    { key: "assignee",       label: "Assignee" },
-    { key: "applicant",      label: "Applicant" },
-    { key: "hadInterview",   label: "Had Interview" },
-    { key: "rceCount",       label: "RCE Count" },
-    { key: "filingFrom",     label: "Filing ≥" },
-    { key: "filingTo",       label: "Filing ≤" },
+    { key: "status",       label: "Status",       kind: "multi"  },
+    { key: "issueYear",    label: "Issue Year",   kind: "multi"  },
+    { key: "artUnit",      label: "Art Unit",     kind: "multi"  },
+    { key: "examiner",     label: "Examiner",     kind: "multi"  },
+    { key: "applicant",    label: "Applicant",    kind: "multi"  },
+    { key: "hadInterview", label: "Had Interview",kind: "single" },
+    { key: "rceCount",     label: "RCE Count",    kind: "single" },
+    { key: "filingFrom",   label: "Filing ≥",     kind: "date"   },
+    { key: "filingTo",     label: "Filing ≤",     kind: "date"   },
   ];
+
+  function filterableMeta(key) {
+    return FILTERABLE.find((f) => f.key === key) || { key, label: key, kind: "multi" };
+  }
 
   // ---------------------------------------------------------------------
   // State
@@ -424,47 +432,243 @@
     const host = document.getElementById("filter-chips");
     const active = getActiveFilters();
     const chips = [];
-    FILTERABLE.forEach(({ key, label }) => {
+    FILTERABLE.forEach(({ key, label, kind }) => {
       if (active[key]) {
-        chips.push(chipHtml(`${label}: ${active[key]}`, true, key));
+        const display = formatActiveFilterValue(key, kind, active[key]);
+        chips.push(chipHtml(`${label}: ${display}`, true, key));
       } else {
         chips.push(chipHtml(`+ ${label}`, false, key));
       }
     });
     host.innerHTML = chips.join("");
-    host.querySelectorAll("[data-filter-key]").forEach((el) => {
-      el.addEventListener("click", () => onFilterChipClick(el.getAttribute("data-filter-key")));
+    host.querySelectorAll(".filter-chip").forEach((el) => {
+      el.addEventListener("click", (ev) => {
+        const target = ev.target.closest(".filter-chip-x");
+        const key = el.getAttribute("data-filter-key");
+        if (target) {
+          ev.stopPropagation();
+          clearFilter(key);
+          return;
+        }
+        openFilterPopover(el, key);
+      });
     });
+  }
+
+  function clearFilter(key) {
+    setParam(key, "");
+    state.page = 1;
+    closeFilterPopover();
+    refresh();
   }
 
   function chipHtml(text, active, key) {
     const x = active
-      ? '<svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>'
+      ? '<span class="filter-chip-x" aria-label="Clear filter"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg></span>'
       : "";
     return `<button type="button" class="filter-chip${active ? " active" : ""}" data-filter-key="${key}">${escapeHtml(text)}${x}</button>`;
   }
 
-  function onFilterChipClick(key) {
-    const p = getParams();
-    if (p.get(key)) {
-      setParam(key, "");
-      state.page = 1;
-      refresh();
+  function formatActiveFilterValue(key, kind, raw) {
+    if (kind === "single") {
+      if (key === "hadInterview") return raw === "true" ? "Yes" : "No";
+      if (key === "rceCount") return raw === "gte3" ? "3+" : raw;
+    }
+    if (kind === "multi") {
+      const parts = String(raw).split(",").map((s) => s.trim()).filter(Boolean);
+      if (parts.length <= 1) return parts[0] || raw;
+      return `${parts[0]} +${parts.length - 1}`;
+    }
+    return raw;
+  }
+
+  // -------------------------------------------------------------------
+  // Filter popover (replaces window.prompt() chip flow)
+  // -------------------------------------------------------------------
+
+  let _popoverEl = null;
+  let _popoverState = null; // { key, kind, anchor, options, selected }
+
+  function closeFilterPopover() {
+    if (_popoverEl) {
+      _popoverEl.remove();
+      _popoverEl = null;
+    }
+    _popoverState = null;
+    document.removeEventListener("mousedown", _onPopoverDocDown, true);
+    document.removeEventListener("keydown", _onPopoverKeydown, true);
+    window.removeEventListener("resize", _onPopoverReposition);
+    window.removeEventListener("scroll", _onPopoverReposition, true);
+  }
+
+  function _onPopoverDocDown(ev) {
+    if (!_popoverEl) return;
+    if (_popoverEl.contains(ev.target)) return;
+    if (_popoverState && _popoverState.anchor && _popoverState.anchor.contains(ev.target)) return;
+    closeFilterPopover();
+  }
+
+  function _onPopoverKeydown(ev) {
+    if (ev.key === "Escape") {
+      ev.preventDefault();
+      closeFilterPopover();
+    }
+  }
+
+  function _onPopoverReposition() {
+    if (_popoverEl && _popoverState && _popoverState.anchor) {
+      _positionPopover(_popoverEl, _popoverState.anchor);
+    }
+  }
+
+  function _positionPopover(el, anchor) {
+    const rect = anchor.getBoundingClientRect();
+    el.style.position = "fixed";
+    const desiredWidth = el.offsetWidth || 280;
+    let left = rect.left;
+    if (left + desiredWidth > window.innerWidth - 8) {
+      left = Math.max(8, window.innerWidth - desiredWidth - 8);
+    }
+    el.style.left = `${Math.round(left)}px`;
+    const top = rect.bottom + 6;
+    el.style.top = `${Math.round(top)}px`;
+  }
+
+  function openFilterPopover(anchorEl, key) {
+    if (_popoverState && _popoverState.key === key) {
+      closeFilterPopover();
       return;
     }
-    const label = (FILTERABLE.find((f) => f.key === key) || {}).label || key;
-    let prompt = `Filter by ${label}`;
-    if (key === "hadInterview") prompt += " (true/false)";
-    if (key === "rceCount") prompt += " (0, 1, 2, or gte3)";
-    if (key === "filingFrom" || key === "filingTo") prompt += " (YYYY-MM-DD)";
-    if (key === "status") prompt += " (comma-separated status codes)";
-    if (key === "issueYear") prompt += " (comma-separated 4-digit years)";
-    if (key === "applicant") prompt += " (substring match, comma-separated for OR)";
-    const value = window.prompt(prompt, "");
-    if (!value) return;
-    setParam(key, value.trim());
+    closeFilterPopover();
+
+    const meta = filterableMeta(key);
+    const active = getActiveFilters()[key] || "";
+    const selected = new Set(
+      active ? String(active).split(",").map((s) => s.trim()).filter(Boolean) : []
+    );
+
+    const root = document.createElement("div");
+    root.className = "filter-popover";
+    root.setAttribute("role", "dialog");
+    root.setAttribute("aria-label", `${meta.label} filter`);
+    root.innerHTML = `
+      <div class="filter-popover-head">
+        <div class="filter-popover-title">${escapeHtml(meta.label)}</div>
+        <button type="button" class="filter-popover-close" aria-label="Close">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="filter-popover-body" data-body></div>
+      <div class="filter-popover-foot">
+        <button type="button" class="filter-popover-btn ghost" data-act="clear">Clear</button>
+        <button type="button" class="filter-popover-btn primary" data-act="apply">Apply</button>
+      </div>
+    `;
+    document.body.appendChild(root);
+    _popoverEl = root;
+    _popoverState = { key, kind: meta.kind, anchor: anchorEl, options: [], selected };
+
+    root.querySelector(".filter-popover-close").addEventListener("click", () => closeFilterPopover());
+    root.querySelector('[data-act="clear"]').addEventListener("click", () => clearFilter(key));
+    root.querySelector('[data-act="apply"]').addEventListener("click", () => applyPopover());
+
+    _positionPopover(root, anchorEl);
+    document.addEventListener("mousedown", _onPopoverDocDown, true);
+    document.addEventListener("keydown", _onPopoverKeydown, true);
+    window.addEventListener("resize", _onPopoverReposition);
+    window.addEventListener("scroll", _onPopoverReposition, true);
+
+    const body = root.querySelector("[data-body]");
+    body.innerHTML = `<div class="filter-popover-loading">Loading…</div>`;
+
+    fetch(`/portal/api/portfolio/facets?key=${encodeURIComponent(key)}`, {
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+    })
+      .then((r) => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then((data) => {
+        if (!_popoverEl || _popoverState.key !== key) return;
+        renderPopoverBody(body, data, meta, selected);
+        _positionPopover(_popoverEl, anchorEl);
+      })
+      .catch(() => {
+        if (!_popoverEl || _popoverState.key !== key) return;
+        body.innerHTML = `<div class="filter-popover-empty">Couldn't load options.</div>`;
+      });
+  }
+
+  function applyPopover() {
+    if (!_popoverState) return;
+    const { key, kind } = _popoverState;
+    let value = "";
+    if (kind === "date") {
+      const input = _popoverEl.querySelector('input[type="date"]');
+      value = input ? input.value : "";
+    } else {
+      const checked = Array.from(_popoverEl.querySelectorAll('input[type="checkbox"]:checked, input[type="radio"]:checked'));
+      value = checked.map((c) => c.value).join(",");
+    }
+    closeFilterPopover();
+    setParam(key, value || "");
     state.page = 1;
     refresh();
+  }
+
+  function renderPopoverBody(body, data, meta, selected) {
+    if (meta.kind === "date" || data.kind === "date") {
+      const cur = (getActiveFilters()[meta.key] || "").trim();
+      body.innerHTML = `
+        <div class="filter-popover-date">
+          <input type="date" value="${escapeAttr(cur)}" min="${escapeAttr(data.min || "")}" max="${escapeAttr(data.max || "")}" />
+          ${data.min || data.max ? `<div class="filter-popover-hint">Range: ${escapeHtml(data.min || "?")} → ${escapeHtml(data.max || "?")}</div>` : ""}
+        </div>
+      `;
+      return;
+    }
+    const options = (data.options || []);
+    if (!options.length) {
+      body.innerHTML = `<div class="filter-popover-empty">No values.</div>`;
+      return;
+    }
+    const isSingle = meta.kind === "single";
+    const inputType = isSingle ? "radio" : "checkbox";
+    const inputName = `flt_${meta.key}`;
+    const showSearch = !isSingle && options.length > 8;
+    const rows = options.map((o) => {
+      const checked = selected.has(String(o.value)) ? "checked" : "";
+      return `
+        <label class="filter-popover-row" data-search="${escapeAttr((o.label || "").toLowerCase())}">
+          <input type="${inputType}" name="${inputName}" value="${escapeAttr(String(o.value))}" ${checked} />
+          <span class="filter-popover-row-label">${escapeHtml(o.label || String(o.value))}</span>
+          ${typeof o.count === "number" ? `<span class="filter-popover-row-count">${o.count.toLocaleString()}</span>` : ""}
+        </label>
+      `;
+    }).join("");
+
+    body.innerHTML = `
+      ${showSearch ? `<div class="filter-popover-search"><input type="text" placeholder="Search…" autocomplete="off" /></div>` : ""}
+      <div class="filter-popover-list" role="listbox">${rows}</div>
+    `;
+
+    if (showSearch) {
+      const searchInput = body.querySelector(".filter-popover-search input");
+      searchInput.addEventListener("input", () => {
+        const q = searchInput.value.trim().toLowerCase();
+        body.querySelectorAll(".filter-popover-row").forEach((row) => {
+          const hay = row.getAttribute("data-search") || "";
+          row.style.display = !q || hay.indexOf(q) !== -1 ? "" : "none";
+        });
+      });
+      // Autofocus search; helpful for examiner/applicant lists.
+      setTimeout(() => searchInput.focus(), 0);
+    }
+
+    if (isSingle) {
+      // Apply on select for single-choice filters (radio).
+      body.querySelectorAll('input[type="radio"]').forEach((r) => {
+        r.addEventListener("change", () => applyPopover());
+      });
+    }
   }
 
   // ---------------------------------------------------------------------
