@@ -530,10 +530,44 @@ tbody td.center { text-align: center; }
   text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 2px;
 }
 .xml-modal-title { font-size: 15px; font-weight: 600; color: var(--slate-900); }
-.xml-modal-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.xml-modal-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; flex-wrap: wrap; }
 .xml-modal-btn {
   font-size: 12px; padding: 6px 12px; line-height: 1.2;
   text-decoration: none;
+}
+.xml-modal-search {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: var(--slate-50, #f8fafc);
+  border: 1px solid var(--slate-200);
+  border-radius: var(--radius);
+  padding: 2px 4px 2px 8px;
+}
+.xml-modal-search-input {
+  border: none; background: transparent; outline: none;
+  font-family: inherit; font-size: 12px; color: var(--slate-900);
+  padding: 4px 0; min-width: 180px;
+}
+.xml-modal-search-input::placeholder { color: var(--slate-500); }
+.xml-modal-search-count {
+  font-family: var(--font-mono); font-size: 11px; color: var(--slate-500);
+  min-width: 56px; text-align: right;
+}
+.xml-modal-search-nav {
+  border: none; background: transparent; color: var(--slate-600);
+  width: 22px; height: 22px; border-radius: 4px;
+  display: grid; place-items: center; cursor: pointer;
+}
+.xml-modal-search-nav:hover:not(:disabled) { background: var(--slate-200); color: var(--slate-900); }
+.xml-modal-search-nav:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* Highlights for search matches inside the dark XML pane */
+.xml-pre mark {
+  background: #fde68a; color: #1e293b;
+  border-radius: 2px; padding: 0 1px;
+}
+.xml-pre mark.xml-match-current {
+  background: #f59e0b; color: #0f172a;
+  box-shadow: 0 0 0 1px #d97706;
 }
 .xml-modal-body {
   overflow: auto; flex: 1; min-height: 0;

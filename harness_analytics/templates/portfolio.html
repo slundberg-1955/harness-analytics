@@ -186,6 +186,24 @@
         <div class="xml-modal-title" id="xml-modal-title">Bibliographic XML</div>
       </div>
       <div class="xml-modal-actions">
+        <div class="xml-modal-search" role="search">
+          <input
+            type="search"
+            id="xml-modal-search-input"
+            class="xml-modal-search-input"
+            placeholder="Search XML…"
+            aria-label="Search XML"
+            autocomplete="off"
+            spellcheck="false"
+          >
+          <span class="xml-modal-search-count" id="xml-modal-search-count" aria-live="polite"></span>
+          <button class="xml-modal-search-nav" id="xml-modal-search-prev" type="button" aria-label="Previous match" title="Previous match (Shift+Enter)">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 15l7-7 7 7"/></svg>
+          </button>
+          <button class="xml-modal-search-nav" id="xml-modal-search-next" type="button" aria-label="Next match" title="Next match (Enter)">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+          </button>
+        </div>
         <button class="btn xml-modal-btn" id="xml-modal-copy" type="button">Copy</button>
         <a class="btn xml-modal-btn" id="xml-modal-download" href="#" download>Download</a>
         <button class="detail-close" id="xml-modal-close" aria-label="Close XML viewer" type="button">

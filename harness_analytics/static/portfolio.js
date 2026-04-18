@@ -111,6 +111,17 @@
     });
     document.getElementById("xml-modal-copy").addEventListener("click", copyXmlToClipboard);
 
+    const searchInput = document.getElementById("xml-modal-search-input");
+    searchInput.addEventListener("input", (e) => applyXmlSearch(e.target.value));
+    searchInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        moveXmlMatch(e.shiftKey ? -1 : 1);
+      }
+    });
+    document.getElementById("xml-modal-search-prev").addEventListener("click", () => moveXmlMatch(-1));
+    document.getElementById("xml-modal-search-next").addEventListener("click", () => moveXmlMatch(1));
+
     document.addEventListener("keydown", onKeydown);
 
     window.addEventListener("popstate", () => {
@@ -690,6 +701,11 @@
   // ---------------------------------------------------------------------
   let _xmlModalLastActive = null;
   let _xmlModalRawText = "";
+  // Pretty-printed text we actually render; kept so the search can re-build
+  // the highlighted markup without re-fetching.
+  let _xmlModalDisplayText = "";
+  let _xmlMatchCount = 0;
+  let _xmlMatchIndex = -1;
 
   function isXmlModalOpen() {
     const o = document.getElementById("xml-modal-overlay");
@@ -712,8 +728,10 @@
     const safeName = String(applicationNumber).replace(/[^\w.\-]+/g, "_").slice(0, 80);
     dl.setAttribute("download", `biblio_${safeName}.xml`);
 
+    resetXmlSearch();
     pre.textContent = "Loading XML…";
     _xmlModalRawText = "";
+    _xmlModalDisplayText = "";
     overlay.hidden = false;
     document.getElementById("xml-modal").focus();
 
@@ -729,7 +747,11 @@
       }
       const text = await resp.text();
       _xmlModalRawText = text;
-      pre.textContent = prettyPrintXml(text);
+      _xmlModalDisplayText = prettyPrintXml(text);
+      pre.textContent = _xmlModalDisplayText;
+      // Re-apply any in-flight search term (typed before the fetch resolved).
+      const term = document.getElementById("xml-modal-search-input").value;
+      if (term) applyXmlSearch(term);
     } catch (err) {
       console.error(err);
       pre.textContent = "Network error loading XML.";
@@ -742,6 +764,83 @@
     if (_xmlModalLastActive && typeof _xmlModalLastActive.focus === "function") {
       _xmlModalLastActive.focus();
     }
+  }
+
+  // -------------------------- search --------------------------
+  function resetXmlSearch() {
+    _xmlMatchCount = 0;
+    _xmlMatchIndex = -1;
+    const input = document.getElementById("xml-modal-search-input");
+    if (input) input.value = "";
+    updateXmlSearchControls();
+  }
+
+  function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+
+  function applyXmlSearch(term) {
+    const pre = document.getElementById("xml-modal-pre");
+    if (!_xmlModalDisplayText) {
+      _xmlMatchCount = 0;
+      _xmlMatchIndex = -1;
+      updateXmlSearchControls();
+      return;
+    }
+    const trimmed = (term || "").trim();
+    if (!trimmed) {
+      pre.textContent = _xmlModalDisplayText;
+      _xmlMatchCount = 0;
+      _xmlMatchIndex = -1;
+      updateXmlSearchControls();
+      return;
+    }
+    const re = new RegExp(escapeRegex(trimmed), "gi");
+    const escaped = escapeHtml(_xmlModalDisplayText);
+    // Re-run the regex on the escaped string so the indices align with what
+    // we render. Search terms with special chars (<, &) are uncommon here but
+    // we escape the term-as-found for safety when emitting <mark>.
+    let count = 0;
+    const html = escaped.replace(re, (match) => {
+      count += 1;
+      return `<mark data-xml-match="${count - 1}">${match}</mark>`;
+    });
+    pre.innerHTML = html;
+    _xmlMatchCount = count;
+    _xmlMatchIndex = count > 0 ? 0 : -1;
+    highlightCurrentMatch();
+    updateXmlSearchControls();
+  }
+
+  function moveXmlMatch(delta) {
+    if (_xmlMatchCount === 0) return;
+    _xmlMatchIndex = (_xmlMatchIndex + delta + _xmlMatchCount) % _xmlMatchCount;
+    highlightCurrentMatch();
+    updateXmlSearchControls();
+  }
+
+  function highlightCurrentMatch() {
+    const pre = document.getElementById("xml-modal-pre");
+    pre.querySelectorAll("mark.xml-match-current").forEach((el) => el.classList.remove("xml-match-current"));
+    if (_xmlMatchIndex < 0) return;
+    const el = pre.querySelector(`mark[data-xml-match="${_xmlMatchIndex}"]`);
+    if (el) {
+      el.classList.add("xml-match-current");
+      el.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+    }
+  }
+
+  function updateXmlSearchControls() {
+    const count = document.getElementById("xml-modal-search-count");
+    const prev = document.getElementById("xml-modal-search-prev");
+    const next = document.getElementById("xml-modal-search-next");
+    if (_xmlMatchCount === 0) {
+      const term = document.getElementById("xml-modal-search-input").value.trim();
+      count.textContent = term ? "0 / 0" : "";
+    } else {
+      count.textContent = `${_xmlMatchIndex + 1} / ${_xmlMatchCount}`;
+    }
+    const disabled = _xmlMatchCount === 0;
+    prev.disabled = disabled;
+    next.disabled = disabled;
   }
 
   async function copyXmlToClipboard() {
@@ -1078,6 +1177,14 @@
   function onKeydown(e) {
     const panel = document.getElementById("detail-panel");
     const panelOpen = panel.classList.contains("open");
+    // While the XML viewer is open, intercept ⌘F / Ctrl+F to focus its
+    // in-modal search instead of triggering the browser find UI.
+    if (isXmlModalOpen() && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "f") {
+      e.preventDefault();
+      const input = document.getElementById("xml-modal-search-input");
+      if (input) { input.focus(); input.select(); }
+      return;
+    }
     if (e.key === "Escape") {
       if (isXmlModalOpen()) { closeXmlModal(); e.preventDefault(); return; }
       if (panelOpen) { closeDetail(); e.preventDefault(); return; }
