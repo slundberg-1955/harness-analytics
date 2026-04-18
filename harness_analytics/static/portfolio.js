@@ -303,7 +303,7 @@
   }
 
   // ---------------------------------------------------------------------
-  // Donut
+  // Status mix list (formerly a donut + legend; now legend-only)
   // ---------------------------------------------------------------------
   const TONE_COLORS = {
     emerald: "var(--emerald-600)",
@@ -314,40 +314,29 @@
     slate: "var(--slate-400)",
   };
   function renderDonut() {
-    const donut = document.getElementById("donut-chart");
+    const totalEl = document.getElementById("status-mix-total");
     const legend = document.getElementById("donut-legend");
     const mix = (state.charts && state.charts.statusMix) || [];
     const total = mix.reduce((acc, e) => acc + e.count, 0);
+    if (totalEl) {
+      totalEl.textContent = total ? `${total.toLocaleString()} apps` : "";
+    }
     if (!total) {
-      donut.innerHTML = "";
       legend.innerHTML = '<div class="empty-chart">No data.</div>';
       return;
     }
-    const circumference = 100;
-    let offset = 25; // rotate so the biggest slice starts at the top
-    let svg = `<circle cx="21" cy="21" r="15.915" fill="transparent" stroke="#e2e8f0" stroke-width="4"/>`;
-    mix.forEach((entry) => {
-      const pct = (entry.count / total) * circumference;
-      const color = TONE_COLORS[entry.tone] || "var(--slate-400)";
-      svg += `<circle cx="21" cy="21" r="15.915" fill="transparent" stroke="${color}" stroke-width="4"
-                stroke-dasharray="${pct.toFixed(2)} ${(circumference - pct).toFixed(2)}"
-                stroke-dashoffset="${(-offset).toFixed(2)}"/>`;
-      offset += pct;
-    });
-    svg += `<text x="21" y="20" text-anchor="middle" font-family="IBM Plex Sans" font-size="7" font-weight="600" fill="#0f172a">${total}</text>`;
-    svg += `<text x="21" y="25.5" text-anchor="middle" font-family="IBM Plex Mono" font-size="3" fill="#64748b">APPS</text>`;
-    donut.innerHTML = svg;
 
     legend.innerHTML = mix.map((entry) => {
       const color = TONE_COLORS[entry.tone] || "var(--slate-400)";
       const pct = Math.round((entry.count / total) * 100);
       return `
-        <div class="donut-row" data-status="${entry.code != null ? entry.code : ""}">
-          <span class="donut-row-left"><span class="dot" style="background:${color}"></span>${escapeHtml(entry.label)}</span>
-          <span class="donut-row-right">${entry.count} · ${pct}%</span>
+        <div class="status-row" data-status="${entry.code != null ? entry.code : ""}" title="Filter table to: ${escapeAttr(entry.label)}">
+          <span class="status-row-left"><span class="dot" style="background:${color}"></span>${escapeHtml(entry.label)}</span>
+          <span class="status-row-count">${entry.count.toLocaleString()}</span>
+          <span class="status-row-pct">${pct}%</span>
         </div>`;
     }).join("");
-    legend.querySelectorAll(".donut-row").forEach((row) => {
+    legend.querySelectorAll(".status-row").forEach((row) => {
       row.addEventListener("click", () => {
         const code = row.getAttribute("data-status");
         if (!code) return;
