@@ -165,12 +165,39 @@
       <div class="detail-title" id="detail-title"></div>
       <div class="detail-pills" id="detail-pills"></div>
     </div>
-    <button class="detail-close" id="detail-close" aria-label="Close">
-      <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
-    </button>
+    <div class="detail-head-actions">
+      <button class="detail-action-btn" id="detail-view-xml" type="button" title="Open the raw bibliographic XML for this application" aria-haspopup="dialog">
+        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="14" height="14"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/></svg>
+        View XML
+      </button>
+      <button class="detail-close" id="detail-close" aria-label="Close">
+        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+      </button>
+    </div>
   </div>
   <div class="detail-body" id="detail-body"></div>
 </aside>
+
+<div class="xml-modal-overlay" id="xml-modal-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="xml-modal-title">
+  <div class="xml-modal" tabindex="-1" id="xml-modal">
+    <div class="xml-modal-head">
+      <div class="xml-modal-titles">
+        <div class="xml-modal-eyebrow" id="xml-modal-eyebrow"></div>
+        <div class="xml-modal-title" id="xml-modal-title">Bibliographic XML</div>
+      </div>
+      <div class="xml-modal-actions">
+        <button class="btn xml-modal-btn" id="xml-modal-copy" type="button">Copy</button>
+        <a class="btn xml-modal-btn" id="xml-modal-download" href="#" download>Download</a>
+        <button class="detail-close" id="xml-modal-close" aria-label="Close XML viewer" type="button">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="xml-modal-body" id="xml-modal-body">
+      <pre class="xml-pre" id="xml-modal-pre"></pre>
+    </div>
+  </div>
+</div>
 
 <script src="/static/portfolio.js" defer></script>
 </body>

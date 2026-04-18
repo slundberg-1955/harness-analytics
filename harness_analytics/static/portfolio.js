@@ -101,6 +101,16 @@
     document.getElementById("detail-close").addEventListener("click", closeDetail);
     document.getElementById("detail-overlay").addEventListener("click", closeDetail);
 
+    document.getElementById("detail-view-xml").addEventListener("click", () => {
+      if (_currentBiblioApp) openXmlModal(_currentBiblioApp.applicationNumber, _currentBiblioApp.title);
+    });
+    document.getElementById("xml-modal-close").addEventListener("click", closeXmlModal);
+    document.getElementById("xml-modal-overlay").addEventListener("click", (e) => {
+      // Click outside the inner .xml-modal closes the modal.
+      if (e.target.id === "xml-modal-overlay") closeXmlModal();
+    });
+    document.getElementById("xml-modal-copy").addEventListener("click", copyXmlToClipboard);
+
     document.addEventListener("keydown", onKeydown);
 
     window.addEventListener("popstate", () => {
@@ -621,15 +631,22 @@
   // Slide-over (biblio)
   // ---------------------------------------------------------------------
   let _lastActiveElement = null;
+  // Tracks the application currently open in the slide-over so the
+  // "View XML" button knows which file to fetch.
+  let _currentBiblioApp = null;
   async function openDetail(row) {
     _lastActiveElement = document.activeElement;
+    _currentBiblioApp = {
+      applicationNumber: row.applicationNumber,
+      title: titleCase(row.inventionTitle || "") || row.applicationNumber || "",
+    };
     const overlay = document.getElementById("detail-overlay");
     const panel = document.getElementById("detail-panel");
     overlay.hidden = false;
     panel.classList.add("open");
     panel.setAttribute("aria-hidden", "false");
     document.getElementById("detail-eyebrow").textContent = `Application · ${formatAppNumber(row.applicationNumber) || ""}`;
-    document.getElementById("detail-title").textContent = titleCase(row.inventionTitle || "") || row.applicationNumber || "";
+    document.getElementById("detail-title").textContent = _currentBiblioApp.title;
     const pills = [];
     if (row.applicationStatusLabel) pills.push(`<span class="pill pill-${row.applicationStatusTone || "slate"}">${escapeHtml(row.applicationStatusLabel)}</span>`);
     if (row.applicationStatusCode != null) pills.push(`<span class="pill pill-slate">Status ${row.applicationStatusCode}</span>`);
@@ -665,6 +682,121 @@
     if (_lastActiveElement && typeof _lastActiveElement.focus === "function") {
       _lastActiveElement.focus();
     }
+    _currentBiblioApp = null;
+  }
+
+  // ---------------------------------------------------------------------
+  // XML viewer modal
+  // ---------------------------------------------------------------------
+  let _xmlModalLastActive = null;
+  let _xmlModalRawText = "";
+
+  function isXmlModalOpen() {
+    const o = document.getElementById("xml-modal-overlay");
+    return o && !o.hidden;
+  }
+
+  async function openXmlModal(applicationNumber, title) {
+    if (!applicationNumber) return;
+    _xmlModalLastActive = document.activeElement;
+    const enc = encodeURIComponent(applicationNumber);
+    const overlay = document.getElementById("xml-modal-overlay");
+    const pre = document.getElementById("xml-modal-pre");
+    const eyebrow = document.getElementById("xml-modal-eyebrow");
+    const titleEl = document.getElementById("xml-modal-title");
+    const dl = document.getElementById("xml-modal-download");
+
+    eyebrow.textContent = `Application · ${formatAppNumber(applicationNumber) || applicationNumber}`;
+    titleEl.textContent = title ? `${title} — Bibliographic XML` : "Bibliographic XML";
+    dl.href = `/portal/matter/${enc}/xml`;
+    const safeName = String(applicationNumber).replace(/[^\w.\-]+/g, "_").slice(0, 80);
+    dl.setAttribute("download", `biblio_${safeName}.xml`);
+
+    pre.textContent = "Loading XML…";
+    _xmlModalRawText = "";
+    overlay.hidden = false;
+    document.getElementById("xml-modal").focus();
+
+    try {
+      const resp = await fetch(`/portal/matter/${enc}/xml`, { credentials: "same-origin" });
+      if (resp.status === 404) {
+        pre.textContent = "Raw XML was not stored for this application (ingest may have used --no-xml-raw).";
+        return;
+      }
+      if (!resp.ok) {
+        pre.textContent = `Could not load XML (${resp.status}).`;
+        return;
+      }
+      const text = await resp.text();
+      _xmlModalRawText = text;
+      pre.textContent = prettyPrintXml(text);
+    } catch (err) {
+      console.error(err);
+      pre.textContent = "Network error loading XML.";
+    }
+  }
+
+  function closeXmlModal() {
+    const overlay = document.getElementById("xml-modal-overlay");
+    overlay.hidden = true;
+    if (_xmlModalLastActive && typeof _xmlModalLastActive.focus === "function") {
+      _xmlModalLastActive.focus();
+    }
+  }
+
+  async function copyXmlToClipboard() {
+    const btn = document.getElementById("xml-modal-copy");
+    const original = btn.textContent;
+    const text = _xmlModalRawText || document.getElementById("xml-modal-pre").textContent || "";
+    try {
+      await navigator.clipboard.writeText(text);
+      btn.textContent = "Copied";
+    } catch (err) {
+      console.error(err);
+      btn.textContent = "Copy failed";
+    }
+    setTimeout(() => { btn.textContent = original; }, 1500);
+  }
+
+  // Lightweight XML pretty-printer. Handles nested tags, text content, comments,
+  // <?xml?> processing instructions, and self-closing elements. Falls back to
+  // the raw input if anything looks malformed.
+  function prettyPrintXml(xml) {
+    if (!xml || typeof xml !== "string") return "";
+    const trimmed = xml.replace(/>\s+</g, "><").trim();
+    if (!trimmed.startsWith("<")) return xml;
+    const tokens = trimmed.match(/<!\[CDATA\[[\s\S]*?\]\]>|<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<[^>]+>|[^<]+/g);
+    if (!tokens) return xml;
+    let depth = 0;
+    const out = [];
+    for (const tok of tokens) {
+      if (tok.startsWith("<?") || tok.startsWith("<!--") || tok.startsWith("<![CDATA[")) {
+        out.push("  ".repeat(depth) + tok);
+      } else if (tok.startsWith("</")) {
+        depth = Math.max(0, depth - 1);
+        out.push("  ".repeat(depth) + tok);
+      } else if (tok.startsWith("<")) {
+        const selfClose = /\/\s*>$/.test(tok);
+        out.push("  ".repeat(depth) + tok);
+        if (!selfClose) depth += 1;
+      } else {
+        // Text content: append to the last line so leaf elements stay on
+        // one line like <foo>bar</foo>.
+        const trimmedText = tok.trim();
+        if (!trimmedText) continue;
+        if (out.length === 0) {
+          out.push(trimmedText);
+        } else {
+          out[out.length - 1] += trimmedText;
+          // The next closing tag should land on the same line too — collapse
+          // by decrementing depth for the next iteration's indent.
+          // We do this by pre-merging the upcoming </tag> via lookahead:
+          // simplest is to just leave the text inline; the closing tag then
+          // gets an indented line of its own which is acceptable.
+        }
+      }
+    }
+    return out.join("\n");
   }
 
   function renderBiblio(b) {
@@ -947,6 +1079,7 @@
     const panel = document.getElementById("detail-panel");
     const panelOpen = panel.classList.contains("open");
     if (e.key === "Escape") {
+      if (isXmlModalOpen()) { closeXmlModal(); e.preventDefault(); return; }
       if (panelOpen) { closeDetail(); e.preventDefault(); return; }
       const picker = document.getElementById("column-picker");
       if (!picker.hidden) { picker.hidden = true; e.preventDefault(); return; }
