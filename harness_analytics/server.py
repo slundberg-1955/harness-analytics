@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import create_engine, text
 
@@ -36,6 +36,17 @@ def create_app() -> FastAPI:
     static_dir = Path(__file__).resolve().parent / "static"
     if static_dir.is_dir():
         app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+    favicon_path = static_dir / "favicon.svg"
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon() -> Response:
+        # Serve the SVG for clients that auto-request /favicon.ico instead of
+        # honoring the <link rel="icon"> in the page head. Modern browsers
+        # accept SVG faviocns regardless of the .ico extension.
+        if favicon_path.is_file():
+            return FileResponse(favicon_path, media_type="image/svg+xml")
+        return Response(status_code=404)
 
     install_portal_security(app)
 
