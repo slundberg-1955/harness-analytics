@@ -7,6 +7,7 @@ database. Keep this module free of FastAPI / SQLAlchemy imports.
 
 from __future__ import annotations
 
+import math
 from statistics import mean, median
 from typing import Any, Iterable
 
@@ -102,7 +103,10 @@ def compute_kpis(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def compute_days_to_noa_by_app(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Sorted ascending by days (nulls last so muted bars cluster on the right)."""
+    """Sorted ascending by days (nulls last so muted bars cluster on the right).
+
+    Kept for backwards compatibility; UI now consumes ``daysToNoaHistogram``.
+    """
     ordered = sorted(
         rows,
         key=lambda r: (
@@ -118,6 +122,98 @@ def compute_days_to_noa_by_app(rows: list[dict[str, Any]]) -> list[dict[str, Any
         }
         for r in ordered
     ]
+
+
+# Bucket widths (in days) the histogram is allowed to use, in increasing order.
+# All values are multiples of 30 days (or aligned to 365) so the auto-generated
+# labels read as whole months / years.
+_HISTOGRAM_BIN_CANDIDATES_DAYS: tuple[int, ...] = (15, 30, 60, 90, 180, 365, 730)
+
+
+def _pick_histogram_bin_days(max_days: int) -> int:
+    """Pick a bin width yielding ~5–12 bars across [0, max_days]."""
+    for c in _HISTOGRAM_BIN_CANDIDATES_DAYS:
+        if math.ceil((max_days + 1) / c) <= 12:
+            chosen = c
+            break
+    else:
+        chosen = _HISTOGRAM_BIN_CANDIDATES_DAYS[-1]
+    # Step down to a smaller candidate when the chart would otherwise have
+    # fewer than 5 bars (looks sparse and uninformative).
+    while (
+        math.ceil((max_days + 1) / chosen) < 5
+        and chosen > _HISTOGRAM_BIN_CANDIDATES_DAYS[0]
+    ):
+        idx = _HISTOGRAM_BIN_CANDIDATES_DAYS.index(chosen)
+        chosen = _HISTOGRAM_BIN_CANDIDATES_DAYS[idx - 1]
+    return chosen
+
+
+def _format_histogram_bin_label(lo: int, hi_exclusive: int, bin_days: int) -> str:
+    if bin_days < 30:
+        return f"{lo}\u2013{hi_exclusive - 1}d"
+    if bin_days % 365 == 0 and lo % 365 == 0 and hi_exclusive % 365 == 0:
+        return f"{lo // 365}\u2013{hi_exclusive // 365}y"
+    lo_m = round(lo / 30)
+    hi_m = round(hi_exclusive / 30)
+    return f"{lo_m}\u2013{hi_m}mo"
+
+
+def compute_days_to_noa_histogram(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Histogram of days-from-filing-to-NOA for the filtered set.
+
+    Returns auto-sized bins, the median / mean for marker rendering, and counts
+    of apps with vs. without an NOA so the UI can disclose what's missing.
+    """
+    days_values: list[int] = [
+        int(r["days_filing_to_noa"])
+        for r in rows
+        if r.get("days_filing_to_noa") is not None
+    ]
+    no_noa_count = sum(1 for r in rows if r.get("days_filing_to_noa") is None)
+
+    if not days_values:
+        return {
+            "bins": [],
+            "binDays": 0,
+            "median": None,
+            "mean": None,
+            "totalWithNoa": 0,
+            "totalWithoutNoa": no_noa_count,
+        }
+
+    max_v = max(days_values)
+    bin_days = _pick_histogram_bin_days(max_v)
+    n_bins = max(1, math.ceil((max_v + 1) / bin_days))
+
+    counts = [0] * n_bins
+    for v in days_values:
+        idx = min(n_bins - 1, v // bin_days)
+        counts[idx] += 1
+
+    total = len(days_values)
+    bins: list[dict[str, Any]] = []
+    for i, count in enumerate(counts):
+        lo = i * bin_days
+        hi_exclusive = (i + 1) * bin_days
+        bins.append(
+            {
+                "label": _format_histogram_bin_label(lo, hi_exclusive, bin_days),
+                "minDays": lo,
+                "maxDays": hi_exclusive - 1,
+                "count": count,
+                "pct": round(100.0 * count / total, 1),
+            }
+        )
+
+    return {
+        "bins": bins,
+        "binDays": bin_days,
+        "median": int(median(days_values)),
+        "mean": round(sum(days_values) / total, 1),
+        "totalWithNoa": total,
+        "totalWithoutNoa": no_noa_count,
+    }
 
 
 def compute_status_mix(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -176,6 +272,9 @@ def compute_prosecution_signals(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 def compute_charts(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {
+        "daysToNoaHistogram": compute_days_to_noa_histogram(rows),
+        # `daysToNoaByApp` retained for any external consumers; the in-app UI
+        # now uses the histogram above.
         "daysToNoaByApp": compute_days_to_noa_by_app(rows),
         "statusMix": compute_status_mix(rows),
         "prosecutionSignals": compute_prosecution_signals(rows),

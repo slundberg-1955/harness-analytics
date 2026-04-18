@@ -139,6 +139,48 @@ def test_charts_days_to_noa_sorts_nulls_last() -> None:
     assert seq == [100, 300, None]
 
 
+def test_days_to_noa_histogram_buckets_and_stats() -> None:
+    # Mix of values: tight cluster around 50–90 days plus one ~600d outlier.
+    rows = [
+        _row("A", days_to_noa=50),
+        _row("B", days_to_noa=60),
+        _row("C", days_to_noa=80),
+        _row("D", days_to_noa=85),
+        _row("E", days_to_noa=600),
+        _row("F", days_to_noa=None),
+    ]
+    hist = compute_charts(rows)["daysToNoaHistogram"]
+    assert hist["totalWithNoa"] == 5
+    assert hist["totalWithoutNoa"] == 1
+    assert sum(b["count"] for b in hist["bins"]) == 5
+    # Bucket widths come from the curated set; for max=600 we expect 90d bins.
+    assert hist["binDays"] in (60, 90, 180)
+    # Each bin carries a label and a percentage that's a multiple of 1/total.
+    for b in hist["bins"]:
+        assert "label" in b and isinstance(b["label"], str)
+        assert b["pct"] == round(100.0 * b["count"] / hist["totalWithNoa"], 1)
+    # Median is the middle of the 5 sorted values: [50,60,80,85,600] -> 80.
+    assert hist["median"] == 80
+
+
+def test_days_to_noa_histogram_empty_when_no_noa_dates() -> None:
+    rows = [_row("A", days_to_noa=None), _row("B", days_to_noa=None)]
+    hist = compute_charts(rows)["daysToNoaHistogram"]
+    assert hist["bins"] == []
+    assert hist["totalWithNoa"] == 0
+    assert hist["totalWithoutNoa"] == 2
+    assert hist["median"] is None and hist["mean"] is None
+
+
+def test_days_to_noa_histogram_uses_smaller_bins_for_short_ranges() -> None:
+    # All values inside 0–90 days: should not collapse to one giant bar.
+    rows = [_row(f"X{i}", days_to_noa=d) for i, d in enumerate([10, 20, 30, 60, 75, 88])]
+    hist = compute_charts(rows)["daysToNoaHistogram"]
+    # We expect at least 5 bars across this range.
+    assert len(hist["bins"]) >= 5
+    assert hist["binDays"] <= 30
+
+
 def test_prosecution_signals_noa_within_90_pct() -> None:
     rows = [
         _row("A", interview=True, noa_within_90=True),

@@ -215,7 +215,55 @@ a { color: inherit; }
 .bar-label { font-family: var(--font-mono); font-size: 10px; color: var(--slate-500); white-space: nowrap; }
 .bars-legend { display: flex; gap: 16px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--slate-200); flex-wrap: wrap; }
 .legend-dot { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--slate-600); font-family: var(--font-mono); }
+.legend-dot.legend-stat { color: var(--slate-700); }
 .dot { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+
+/* Histogram: days-filing-to-NOA distribution */
+.histogram { display: flex; flex-direction: column; gap: 4px; padding: 4px 4px 0; }
+.hist-bars { display: flex; align-items: flex-end; gap: 6px; height: 180px; }
+.hist-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  height: 100%;
+  gap: 4px;
+  cursor: default;
+}
+.hist-value {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--slate-600);
+  height: 14px;
+  line-height: 14px;
+}
+.hist-bar-wrap {
+  width: 100%;
+  flex: 1;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  border-bottom: 1px solid var(--slate-200);
+}
+.hist-bar {
+  width: 78%;
+  background: linear-gradient(to top, var(--blue-600), var(--blue-500));
+  border-radius: 3px 3px 0 0;
+  transition: opacity 120ms ease;
+}
+.hist-col:hover .hist-bar { opacity: 0.85; }
+.hist-bar-median {
+  outline: 2px solid var(--amber-600);
+  outline-offset: -2px;
+}
+.hist-tick {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--slate-500);
+  white-space: nowrap;
+  text-align: center;
+}
 
 .donut-wrap { display: flex; align-items: center; gap: 16px; }
 .donut { width: 110px; height: 110px; flex-shrink: 0; }

@@ -244,38 +244,63 @@
   }
 
   // ---------------------------------------------------------------------
-  // Bar chart
+  // Days filing → NOA histogram
   // ---------------------------------------------------------------------
   function renderBarsChart() {
     const container = document.getElementById("bars-chart");
     const legend = document.getElementById("bars-legend");
-    const data = (state.charts && state.charts.daysToNoaByApp) || [];
-    if (!data.length) {
-      container.innerHTML = '<div class="empty-chart">No applications match the current filters.</div>';
+    const hist = state.charts && state.charts.daysToNoaHistogram;
+
+    if (!hist || !hist.bins || !hist.bins.length) {
+      container.innerHTML = '<div class="empty-chart">No applications with an NOA in the current selection.</div>';
       legend.innerHTML = "";
       return;
     }
-    // Limit to ~40 bars to keep the chart readable on wide data sets.
-    const display = data.slice(0, 40);
-    const maxVal = Math.max(...display.map((d) => d.days || 0)) || 1;
-    const withOa = display.filter((d) => d.days != null).length;
-    const muted = display.length - withOa;
 
-    container.innerHTML = display.map((d) => {
-      const value = d.days;
-      const height = value != null ? Math.max(2, Math.round((value / maxVal) * 100)) : 40;
-      const cls = value != null ? "bar" : "bar muted";
-      const label = value != null ? String(value) : "—";
-      const title = `${d.applicationNumber || ""} · ${d.title || ""} · ${label} days`;
-      return `
-        <div class="bar-col" title="${escapeAttr(title)}">
-          <div class="${cls}" style="height: ${height}%"></div>
-          <div class="bar-label">${label}</div>
-        </div>`;
-    }).join("");
+    const bins = hist.bins;
+    const maxCount = Math.max(...bins.map((b) => b.count)) || 1;
+    const total = hist.totalWithNoa || 0;
+    const noNoa = hist.totalWithoutNoa || 0;
+    const median = hist.median;
+    const mean = hist.mean;
+
+    // Position the median marker on the bar that contains it.
+    let medianBinIdx = -1;
+    if (median != null) {
+      medianBinIdx = bins.findIndex((b) => median >= b.minDays && median <= b.maxDays);
+    }
+
+    container.innerHTML = `
+      <div class="histogram">
+        <div class="hist-bars">
+          ${bins.map((b, i) => {
+            const heightPct = Math.max(b.count > 0 ? 4 : 0, Math.round((b.count / maxCount) * 100));
+            const valueLabel = b.count > 0 ? String(b.count) : "";
+            const title = `${b.label} · ${b.count} apps (${b.pct}%)`;
+            const isMedian = i === medianBinIdx;
+            return `
+              <div class="hist-col" title="${escapeAttr(title)}">
+                <div class="hist-value">${valueLabel}</div>
+                <div class="hist-bar-wrap">
+                  <div class="hist-bar${isMedian ? " hist-bar-median" : ""}" style="height:${heightPct}%"></div>
+                </div>
+                <div class="hist-tick">${escapeHtml(b.label)}</div>
+              </div>`;
+          }).join("")}
+        </div>
+      </div>`;
+
+    const medianText = median != null
+      ? `Median <strong>${median.toLocaleString()}</strong>d`
+      : "";
+    const meanText = mean != null
+      ? `Mean <strong>${mean.toLocaleString()}</strong>d`
+      : "";
     legend.innerHTML = `
-      <span class="legend-dot"><span class="dot" style="background:var(--blue-600)"></span>With OA · ${withOa} apps</span>
-      <span class="legend-dot"><span class="dot" style="background:var(--slate-200)"></span>No substantive OA · ${muted} apps</span>
+      <span class="legend-dot"><span class="dot" style="background:var(--blue-600)"></span>${total} apps with NOA</span>
+      ${noNoa ? `<span class="legend-dot"><span class="dot" style="background:var(--slate-200)"></span>${noNoa} apps without NOA</span>` : ""}
+      ${medianText ? `<span class="legend-dot legend-stat">${medianText}</span>` : ""}
+      ${meanText ? `<span class="legend-dot legend-stat">${meanText}</span>` : ""}
     `;
   }
 
