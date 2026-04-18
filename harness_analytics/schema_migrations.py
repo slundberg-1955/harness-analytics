@@ -66,7 +66,6 @@ SELECT
     a.examiner_first_name,
     a.examiner_last_name,
     a.assignee_name,
-    a.applicant_name,
     a.continuity_child_of_prior_us AS is_continuation,
     COALESCE(aa.ifw_ctrs_count, 0)       AS has_restriction_ctrs_count,
     COALESCE(aa.ifw_a_ne_count, 0)       AS ifw_a_ne_count,
@@ -85,7 +84,11 @@ SELECT
     COALESCE(aa.is_jac, FALSE)           AS is_jac,
     aa.office_name,
     a.imported_at,
-    GREATEST(a.imported_at, aa.updated_at) AS updated_at
+    GREATEST(a.imported_at, aa.updated_at) AS updated_at,
+    -- New columns must be appended at the end so that CREATE OR REPLACE VIEW
+    -- doesn't try to rename existing positions (Postgres only allows adding
+    -- columns at the tail of an existing view).
+    a.applicant_name
 FROM applications a
 LEFT JOIN application_analytics aa ON aa.application_id = a.id
 """
