@@ -313,6 +313,13 @@ a { color: inherit; }
 }
 .status-toggle:hover { color: var(--slate-900); }
 .status-toggle-caret { font-size: 10px; line-height: 1; }
+.status-toggle-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 6px;
+}
+.status-toggle-row .status-toggle { margin-top: 0; }
 
 .stat-list { display: flex; flex-direction: column; }
 .stat-row {
