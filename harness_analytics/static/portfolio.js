@@ -160,6 +160,17 @@
   // ---------------------------------------------------------------------
   // URL / filter params
   // ---------------------------------------------------------------------
+  // Multi-select values are joined with this delimiter (instead of `,`) so
+  // that values containing commas (e.g. "Charles Schwab & Co., Inc.") survive
+  // the round-trip through the URL. Backend accepts both `|` and `,` so old
+  // bookmarks for numeric-only filters keep working.
+  const MULTI_DELIM = "|";
+  function splitMulti(raw) {
+    if (raw == null || raw === "") return [];
+    const s = String(raw);
+    const sep = s.indexOf(MULTI_DELIM) >= 0 ? MULTI_DELIM : ",";
+    return s.split(sep).map((v) => v.trim()).filter(Boolean);
+  }
   function getParams() {
     return new URLSearchParams(location.search);
   }
@@ -168,7 +179,7 @@
     if (value === null || value === undefined || value === "" || (Array.isArray(value) && value.length === 0)) {
       p.delete(key);
     } else {
-      p.set(key, Array.isArray(value) ? value.join(",") : String(value));
+      p.set(key, Array.isArray(value) ? value.join(MULTI_DELIM) : String(value));
     }
     const qs = p.toString();
     history.replaceState(null, "", qs ? `?${qs}` : location.pathname);
@@ -502,7 +513,7 @@
       if (key === "rceCount") return raw === "gte3" ? "3+" : raw;
     }
     if (kind === "multi") {
-      const parts = String(raw).split(",").map((s) => s.trim()).filter(Boolean);
+      const parts = splitMulti(raw);
       if (parts.length <= 1) return parts[0] || raw;
       return `${parts[0]} +${parts.length - 1}`;
     }
@@ -570,9 +581,7 @@
 
     const meta = filterableMeta(key);
     const active = getActiveFilters()[key] || "";
-    const selected = new Set(
-      active ? String(active).split(",").map((s) => s.trim()).filter(Boolean) : []
-    );
+    const selected = new Set(splitMulti(active));
 
     const root = document.createElement("div");
     root.className = "filter-popover";
@@ -633,7 +642,7 @@
       value = input ? input.value : "";
     } else {
       const checked = Array.from(_popoverEl.querySelectorAll('input[type="checkbox"]:checked, input[type="radio"]:checked'));
-      value = checked.map((c) => c.value).join(",");
+      value = checked.map((c) => c.value).join(MULTI_DELIM);
     }
     closeFilterPopover();
     setParam(key, value || "");

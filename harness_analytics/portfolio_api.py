@@ -140,9 +140,18 @@ def _aggregate_row_cap() -> int:
 
 
 def _split_csv(raw: Optional[str]) -> list[str]:
+    """Split a multi-value query parameter.
+
+    Prefers `|` as the delimiter so values containing commas (e.g. corporate
+    applicant names like "Charles Schwab & Co., Inc.") survive intact. Falls
+    back to comma-splitting only when no pipe is present, preserving
+    backward-compatibility with older bookmarks for numeric-only filters
+    (status codes, issue years, art units).
+    """
     if not raw:
         return []
-    return [p.strip() for p in raw.split(",") if p.strip()]
+    sep = "|" if "|" in raw else ","
+    return [p.strip() for p in raw.split(sep) if p.strip()]
 
 
 def _parse_bool(raw: Optional[str]) -> Optional[bool]:
