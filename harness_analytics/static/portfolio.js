@@ -162,14 +162,13 @@
   // ---------------------------------------------------------------------
   // Multi-select values are joined with this delimiter (instead of `,`) so
   // that values containing commas (e.g. "Charles Schwab & Co., Inc.") survive
-  // the round-trip through the URL. Backend accepts both `|` and `,` so old
-  // bookmarks for numeric-only filters keep working.
+  // the round-trip through the URL. We deliberately do NOT fall back to
+  // comma-splitting for legacy URLs — splitting a free-text value on `,`
+  // produces silent "+1" miss-filters that match thousands of unrelated rows.
   const MULTI_DELIM = "|";
   function splitMulti(raw) {
     if (raw == null || raw === "") return [];
-    const s = String(raw);
-    const sep = s.indexOf(MULTI_DELIM) >= 0 ? MULTI_DELIM : ",";
-    return s.split(sep).map((v) => v.trim()).filter(Boolean);
+    return String(raw).split(MULTI_DELIM).map((v) => v.trim()).filter(Boolean);
   }
   function getParams() {
     return new URLSearchParams(location.search);

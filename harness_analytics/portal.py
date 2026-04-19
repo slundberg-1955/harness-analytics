@@ -44,6 +44,29 @@ router = APIRouter(prefix="/portal", tags=["portal"])
 _TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 
+
+def _compute_static_version() -> str:
+    """Cache-buster for /static asset URLs.
+
+    Uses RAILWAY_DEPLOYMENT_ID when present (changes on every deploy) and
+    otherwise falls back to the max mtime of files under ``static/`` at import
+    time. Either way the resulting string changes on each new deploy, which
+    forces browsers off any stale cached portfolio.js / portfolio.css.
+    """
+    rid = os.environ.get("RAILWAY_DEPLOYMENT_ID") or os.environ.get("RAILWAY_GIT_COMMIT_SHA")
+    if rid:
+        return rid[:12]
+    static_dir = Path(__file__).resolve().parent / "static"
+    try:
+        latest = max(p.stat().st_mtime for p in static_dir.rglob("*") if p.is_file())
+        return str(int(latest))
+    except (ValueError, OSError):
+        return "1"
+
+
+STATIC_VERSION = _compute_static_version()
+templates.env.globals["static_version"] = STATIC_VERSION
+
 PORTAL_USER_DEFAULT = "viewer"
 EVENTS_LIMIT = 500
 DOCS_LIMIT = 500

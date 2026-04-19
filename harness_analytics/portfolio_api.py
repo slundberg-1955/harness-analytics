@@ -139,19 +139,29 @@ def _aggregate_row_cap() -> int:
 # ---------------------------------------------------------------------------
 
 
-def _split_csv(raw: Optional[str]) -> list[str]:
+def _split_csv(raw: Optional[str], *, allow_comma: bool = False) -> list[str]:
     """Split a multi-value query parameter.
 
-    Prefers `|` as the delimiter so values containing commas (e.g. corporate
-    applicant names like "Charles Schwab & Co., Inc.") survive intact. Falls
-    back to comma-splitting only when no pipe is present, preserving
-    backward-compatibility with older bookmarks for numeric-only filters
-    (status codes, issue years, art units).
+    The portal frontend always joins multi-select values with `|` so that
+    values containing commas (e.g. corporate applicant names like
+    "Charles Schwab & Co., Inc.") survive the URL round-trip intact.
+
+    Set ``allow_comma=True`` for legacy numeric-only filters (status codes,
+    issue years, art-unit numbers) where comma-separated values can never
+    collide with a real value. Free-text filters (applicant, examiner,
+    assignee) MUST leave it disabled — splitting a value like
+    "Charles Schwab & Co., Inc." on `,` would silently produce
+    `LIKE '%inc.%'` and match thousands of unrelated rows.
     """
     if not raw:
         return []
-    sep = "|" if "|" in raw else ","
-    return [p.strip() for p in raw.split(sep) if p.strip()]
+    if "|" in raw:
+        parts = raw.split("|")
+    elif allow_comma and "," in raw:
+        parts = raw.split(",")
+    else:
+        parts = [raw]
+    return [p.strip() for p in parts if p.strip()]
 
 
 def _parse_bool(raw: Optional[str]) -> Optional[bool]:
@@ -193,7 +203,7 @@ def _build_where(params: dict[str, Any]) -> tuple[str, dict[str, Any]]:
             ")"
         )
 
-    status_codes = [s for s in _split_csv(params.get("status")) if s.lstrip("-").isdigit()]
+    status_codes = [s for s in _split_csv(params.get("status"), allow_comma=True) if s.lstrip("-").isdigit()]
     if status_codes:
         placeholders = []
         for i, s in enumerate(status_codes):
@@ -202,7 +212,7 @@ def _build_where(params: dict[str, Any]) -> tuple[str, dict[str, Any]]:
             binds[name] = int(s)
         conditions.append(f"application_status_code IN ({', '.join(placeholders)})")
 
-    issue_years = [y for y in _split_csv(params.get("issueYear")) if y.isdigit()]
+    issue_years = [y for y in _split_csv(params.get("issueYear"), allow_comma=True) if y.isdigit()]
     if issue_years:
         placeholders = []
         for i, y in enumerate(issue_years):
@@ -211,7 +221,7 @@ def _build_where(params: dict[str, Any]) -> tuple[str, dict[str, Any]]:
             binds[name] = int(y)
         conditions.append(f"issue_year IN ({', '.join(placeholders)})")
 
-    art_units = _split_csv(params.get("artUnit"))
+    art_units = _split_csv(params.get("artUnit"), allow_comma=True)
     if art_units:
         placeholders = []
         for i, v in enumerate(art_units):
