@@ -93,6 +93,7 @@ _ROW_COLUMNS: list[str] = [
     "is_jac",
     "office_name",
     "updated_at",
+    "has_child_continuation",
 ]
 
 _DEFAULT_PAGE_SIZE = 50

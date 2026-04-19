@@ -55,6 +55,12 @@ def _days_to_noa_values(rows: Iterable[dict[str, Any]]) -> list[int]:
     ]
 
 
+# Status codes treated as "Allowed" for the Carley-Hegde-Marco rate.
+# 150 = Patented Case, 93 = NOA Mailed, 159 = Issue Fee Payment Verified.
+# (The Traditional rate intentionally still uses Patented (150) only.)
+_CHM_ALLOWED_STATUS_CODES: frozenset[int] = frozenset({150, 93, 159})
+
+
 def compute_kpis(rows: list[dict[str, Any]]) -> dict[str, Any]:
     total = len(rows)
     patented = sum(1 for r in rows if r.get("application_status_code") == 150)
@@ -63,8 +69,31 @@ def compute_kpis(rows: list[dict[str, Any]]) -> dict[str, Any]:
     # mockup's "13 patented · 2 pending" subtitle for a 15-row portfolio.
     pending = total - patented - abandoned
 
+    # Traditional (#1) rate: Patented / (Patented + Abandoned). Pending matters
+    # are excluded from both numerator and denominator.
     allowance_denom = patented + abandoned
     allowance_pct = round(100.0 * patented / allowance_denom, 1) if allowance_denom else 0.0
+
+    # Carley-Hegde-Marco (#2) "true" allowance rate:
+    #   (A + CA) / (A + CA + AB)
+    #     A  = Allowed without ever filing an RCE
+    #     CA = Allowed after one or more RCEs
+    #     AB = Abandoned without a subsequent continuation/CIP/divisional
+    chm_allowed_no_rce = 0
+    chm_allowed_with_rce = 0
+    chm_abandoned_no_child = 0
+    for r in rows:
+        code = r.get("application_status_code")
+        if code in _CHM_ALLOWED_STATUS_CODES:
+            if _get_int(r, "rce_count") >= 1:
+                chm_allowed_with_rce += 1
+            else:
+                chm_allowed_no_rce += 1
+        elif code == 161 and not r.get("has_child_continuation"):
+            chm_abandoned_no_child += 1
+    chm_num = chm_allowed_no_rce + chm_allowed_with_rce
+    chm_den = chm_num + chm_abandoned_no_child
+    chm_pct = round(100.0 * chm_num / chm_den, 1) if chm_den else 0.0
 
     days = _days_to_noa_values(rows)
     avg_days = round(mean(days), 0) if days else None
@@ -91,6 +120,10 @@ def compute_kpis(rows: list[dict[str, Any]]) -> dict[str, Any]:
         # Prior-period delta is not tracked yet; surfaced as 0.0 so the UI can
         # show a neutral indicator. Spec calls for it but v1 ships without it.
         "allowanceRateDeltaPctPts": 0.0,
+        "chmAllowanceRatePct": chm_pct,
+        "chmAllowedNoRce": chm_allowed_no_rce,
+        "chmAllowedWithRce": chm_allowed_with_rce,
+        "chmAbandonedNoChild": chm_abandoned_no_child,
         "avgDaysToNoa": int(avg_days) if avg_days is not None else None,
         "medianDaysToNoa": int(med_days) if med_days is not None else None,
         "avgOaCount": avg_oa,

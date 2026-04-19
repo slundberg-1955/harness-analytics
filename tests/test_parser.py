@@ -7,6 +7,7 @@ import pytest
 from harness_analytics.xml_parser import (
     child_of_prior_us_parent_from_xml,
     continuity_child_of_prior_us_parent,
+    has_child_continuation_from_xml,
     parse_biblio_xml,
 )
 
@@ -113,3 +114,84 @@ def test_continuity_helper_on_element() -> None:
         <Continuity><ParentContinuityList/></Continuity></PatentCenterApplication>"""
     )
     assert continuity_child_of_prior_us_parent("1", root) is False
+
+
+def test_has_child_continuation_strict_chm_match() -> None:
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<PatentCenterApplication>
+  <ApplicationBibliographicData><ApplicationNumber>17000001</ApplicationNumber></ApplicationBibliographicData>
+  <Continuity>
+    <ParentContinuityList/>
+    <ChildContinuityList>
+      <ChildContinuity>
+        <ParentApplicationNumber>17000001</ParentApplicationNumber>
+        <ChildApplicationNumber>18000002</ChildApplicationNumber>
+        <ContinuityDescription>Continuation</ContinuityDescription>
+      </ChildContinuity>
+    </ChildContinuityList>
+  </Continuity>
+  <FileContentHistories/>
+  <ImageFileWrapperList/>
+</PatentCenterApplication>"""
+    data = parse_biblio_xml(xml)
+    assert data["has_child_continuation"] is True
+    assert has_child_continuation_from_xml(xml) is True
+
+
+def test_has_child_continuation_accepts_division_and_cip_variants() -> None:
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<PatentCenterApplication>
+  <ApplicationBibliographicData><ApplicationNumber>17000010</ApplicationNumber></ApplicationBibliographicData>
+  <Continuity>
+    <ParentContinuityList/>
+    <ChildContinuityList>
+      <ChildContinuity>
+        <ContinuityDescription>Continuation-in-Part</ContinuityDescription>
+      </ChildContinuity>
+      <ChildContinuity>
+        <ContinuityDescription>Division</ContinuityDescription>
+      </ChildContinuity>
+    </ChildContinuityList>
+  </Continuity>
+  <FileContentHistories/>
+  <ImageFileWrapperList/>
+</PatentCenterApplication>"""
+    data = parse_biblio_xml(xml)
+    assert data["has_child_continuation"] is True
+
+
+def test_has_child_continuation_false_for_non_chm_descriptions() -> None:
+    # Children that are National Stage entries or Provisional priorities don't qualify.
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<PatentCenterApplication>
+  <ApplicationBibliographicData><ApplicationNumber>17000020</ApplicationNumber></ApplicationBibliographicData>
+  <Continuity>
+    <ParentContinuityList/>
+    <ChildContinuityList>
+      <ChildContinuity>
+        <ContinuityDescription>is the National Stage of International Application</ContinuityDescription>
+      </ChildContinuity>
+      <ChildContinuity>
+        <ContinuityDescription>Claims Priority from Provisional Application</ContinuityDescription>
+      </ChildContinuity>
+    </ChildContinuityList>
+  </Continuity>
+  <FileContentHistories/>
+  <ImageFileWrapperList/>
+</PatentCenterApplication>"""
+    data = parse_biblio_xml(xml)
+    assert data["has_child_continuation"] is False
+
+
+def test_has_child_continuation_false_when_no_child_list() -> None:
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<PatentCenterApplication>
+  <ApplicationBibliographicData><ApplicationNumber>17000030</ApplicationNumber></ApplicationBibliographicData>
+  <Continuity><ParentContinuityList/><ChildContinuityList/></Continuity>
+  <FileContentHistories/>
+  <ImageFileWrapperList/>
+</PatentCenterApplication>"""
+    data = parse_biblio_xml(xml)
+    assert data["has_child_continuation"] is False
+    assert has_child_continuation_from_xml("") is False
+    assert has_child_continuation_from_xml(None) is False

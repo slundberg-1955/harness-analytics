@@ -51,6 +51,7 @@ class Application(Base):
     )
     xml_raw: Mapped[Optional[str]] = mapped_column(Text)
     continuity_child_of_prior_us: Mapped[bool] = mapped_column(Boolean, default=False)
+    has_child_continuation: Mapped[Optional[bool]] = mapped_column(Boolean)
     imported_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

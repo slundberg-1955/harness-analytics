@@ -257,18 +257,45 @@
     const accents = ["blue", "emerald", "violet", "amber", "slate", "rose"];
     const cards = [
       { label: "Total Apps", value: k.totalApps, sub: `${k.patentedCount} patented · ${k.pendingCount} pending` },
-      { label: "Allowance Rate", value: k.allowanceRatePct, unit: "%", sub: k.allowanceRateDeltaPctPts ? `${k.allowanceRateDeltaPctPts > 0 ? "▲" : "▼"} ${Math.abs(k.allowanceRateDeltaPctPts)} vs. prior period` : `${k.patentedCount} of ${k.patentedCount + k.abandonedCount} closed`, subClass: k.allowanceRateDeltaPctPts > 0 ? "up" : k.allowanceRateDeltaPctPts < 0 ? "down" : "" },
+      (() => {
+        const closed = k.patentedCount + k.abandonedCount;
+        const trad = k.allowanceRateDeltaPctPts
+          ? `${k.allowanceRateDeltaPctPts > 0 ? "▲" : "▼"} ${Math.abs(k.allowanceRateDeltaPctPts)} vs. prior period`
+          : `${k.patentedCount} of ${closed} closed`;
+        const a = k.chmAllowedNoRce || 0;
+        const ca = k.chmAllowedWithRce || 0;
+        const ab = k.chmAbandonedNoChild || 0;
+        const chmDen = a + ca + ab;
+        const chm = chmDen
+          ? `CHM ${k.chmAllowanceRatePct}% · A ${a.toLocaleString()} · CA ${ca.toLocaleString()} · AB ${ab.toLocaleString()}`
+          : "CHM —";
+        const tip = "Traditional: Patented / (Patented + Abandoned). "
+          + "CHM (Carley-Hegde-Marco): (A + CA) / (A + CA + AB) where A = allowed without RCE, "
+          + "CA = allowed after \u22651 RCE, AB = abandoned without a Continuation/CIP/Divisional child. "
+          + "Allowed = status Patented, NOA Mailed, or Issue Fee Verified.";
+        return {
+          label: "Allowance Rate",
+          value: k.allowanceRatePct,
+          unit: "%",
+          sub: trad,
+          subExtra: chm,
+          subExtraClass: "kpi-sub-chm",
+          subClass: k.allowanceRateDeltaPctPts > 0 ? "up" : k.allowanceRateDeltaPctPts < 0 ? "down" : "",
+          tooltip: tip,
+        };
+      })(),
       { label: "Avg Days to NOA", value: k.avgDaysToNoa != null ? k.avgDaysToNoa : "—", sub: k.medianDaysToNoa != null ? `median ${k.medianDaysToNoa}` : "—" },
       { label: "Avg OA Count", value: k.avgOaCount, sub: `${k.appsWithAtLeastOneOa} of ${k.totalApps} received ≥ 1 OA` },
       { label: "Interview Rate", value: k.interviewRatePct, unit: "%", sub: `${k.interviewCount} of ${k.totalApps} matters` },
       { label: "RCE Rate", value: k.rceRatePct, unit: "%", sub: `${k.rceCount} RCE${k.rceCount === 1 ? "" : "s"} filed` },
     ];
     grid.innerHTML = cards.map((c, i) => `
-      <div class="kpi" data-accent="${accents[i]}">
+      <div class="kpi" data-accent="${accents[i]}"${c.tooltip ? ` title="${escapeAttr(c.tooltip)}"` : ""}>
         <div class="kpi-accent-bar"></div>
         <div class="kpi-label">${escapeHtml(c.label)}</div>
         <div class="kpi-value">${escapeHtml(String(c.value))}${c.unit ? `<span class="kpi-unit">${c.unit}</span>` : ""}</div>
         <div class="kpi-sub ${c.subClass || ""}">${escapeHtml(c.sub)}</div>
+        ${c.subExtra ? `<div class="kpi-sub ${c.subExtraClass || ""}">${escapeHtml(c.subExtra)}</div>` : ""}
       </div>
     `).join("");
   }

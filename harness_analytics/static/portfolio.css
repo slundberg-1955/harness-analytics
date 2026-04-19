@@ -175,6 +175,13 @@ a { color: inherit; }
 .kpi-sub { font-size: 11px; color: var(--slate-500); margin-top: 4px; }
 .kpi-sub.up { color: var(--emerald-600); }
 .kpi-sub.down { color: var(--rose-600); }
+.kpi-sub.kpi-sub-chm {
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--slate-600);
+  letter-spacing: 0.01em;
+}
 .kpi-accent-bar {
   position: absolute; left: 0; top: 14px; bottom: 14px; width: 3px;
   border-radius: 0 3px 3px 0;

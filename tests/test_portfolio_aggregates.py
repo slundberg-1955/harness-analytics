@@ -26,6 +26,7 @@ def _row(
     rce: int = 0,
     is_continuation: bool = False,
     is_jac: bool = False,
+    has_child_continuation: bool = False,
 ) -> dict:
     return {
         "application_number": app_no,
@@ -41,6 +42,7 @@ def _row(
         "rce_count": rce,
         "is_continuation": is_continuation,
         "is_jac": is_jac,
+        "has_child_continuation": has_child_continuation,
     }
 
 
@@ -60,6 +62,60 @@ def test_kpis_empty_set_is_zeroed() -> None:
     assert k["medianDaysToNoa"] is None
     assert k["appsWithAtLeastOneOa"] == 0
     assert k["interviewCount"] == 0
+    assert k["chmAllowanceRatePct"] == 0.0
+    assert k["chmAllowedNoRce"] == 0
+    assert k["chmAllowedWithRce"] == 0
+    assert k["chmAbandonedNoChild"] == 0
+
+
+def test_kpis_chm_includes_noa_and_issue_fee_in_allowed() -> None:
+    # All "Allowed"-set codes count toward CHM A/CA but not toward Traditional.
+    rows = [
+        _row("A", status=150, rce=0),                                # A
+        _row("B", status=93, status_text="NOA Mailed", rce=0),       # A
+        _row("C", status=159, status_text="Issue Fee Verified", rce=2),  # CA
+        _row("D", status=161, status_text="Abandoned", has_child_continuation=False),  # AB
+    ]
+    k = compute_kpis(rows)
+    assert k["chmAllowedNoRce"] == 2
+    assert k["chmAllowedWithRce"] == 1
+    assert k["chmAbandonedNoChild"] == 1
+    # (A + CA) / (A + CA + AB) = 3 / 4 = 75.0
+    assert k["chmAllowanceRatePct"] == 75.0
+    # Traditional uses only Patented (150) over Patented + Abandoned: 1 / 2 = 50.0
+    assert k["allowanceRatePct"] == 50.0
+
+
+def test_kpis_chm_excludes_continued_abandons_from_denominator() -> None:
+    # An abandoned matter with a CHM-qualifying child does NOT count as AB.
+    rows = [
+        _row("A", status=150, rce=0),                                          # A
+        _row("B", status=161, status_text="Abandoned", has_child_continuation=True),
+        _row("C", status=161, status_text="Abandoned", has_child_continuation=False),  # AB
+    ]
+    k = compute_kpis(rows)
+    assert k["chmAllowedNoRce"] == 1
+    assert k["chmAllowedWithRce"] == 0
+    assert k["chmAbandonedNoChild"] == 1
+    # 1 / (1 + 1) = 50.0
+    assert k["chmAllowanceRatePct"] == 50.0
+    # Traditional ignores the continuation flag: 1 patented / (1 + 2 abandoned) = 33.3
+    assert k["allowanceRatePct"] == 33.3
+
+
+def test_kpis_chm_zero_when_no_dispositions() -> None:
+    # All-pending portfolio: both rates are 0.0 (divide-by-zero guarded).
+    rows = [
+        _row("A", status=41, status_text="Non-Final"),
+        _row("B", status=42, status_text="Final"),
+        _row("C", status=30, status_text="Published"),
+    ]
+    k = compute_kpis(rows)
+    assert k["allowanceRatePct"] == 0.0
+    assert k["chmAllowanceRatePct"] == 0.0
+    assert k["chmAllowedNoRce"] == 0
+    assert k["chmAllowedWithRce"] == 0
+    assert k["chmAbandonedNoChild"] == 0
 
 
 def test_kpis_allowance_rate_and_counts() -> None:

@@ -88,7 +88,8 @@ SELECT
     -- New columns must be appended at the end so that CREATE OR REPLACE VIEW
     -- doesn't try to rename existing positions (Postgres only allows adding
     -- columns at the tail of an existing view).
-    a.applicant_name
+    a.applicant_name,
+    a.has_child_continuation
 FROM applications a
 LEFT JOIN application_analytics aa ON aa.application_id = a.id
 """
@@ -169,6 +170,124 @@ def _set_backfill_flag(engine) -> None:
             ),
             {"k": _APPLICANT_BACKFILL_FLAG},
         )
+
+
+# One-shot backfill for has_child_continuation: parses xml_raw with
+# xmlparse(content ...) and inspects //ChildContinuityList/ChildContinuity for
+# Continuation, Continuation-in-Part, or Divisional descriptions (CHM strict
+# definition). Wrapped in a per-row EXCEPTION handler so a single malformed
+# XML cannot abort the whole run. Gated by an app_settings flag so it only
+# executes once per environment.
+_CHILD_CONT_BACKFILL_FLAG = "schema.hasChildContinuationBackfilled"
+_CHILD_CONT_BACKFILL_SQL = """
+DO $$
+DECLARE
+  r RECORD;
+  v_flag BOOLEAN;
+  v_done INTEGER := 0;
+BEGIN
+  FOR r IN
+    SELECT id, xml_raw
+      FROM applications
+     WHERE has_child_continuation IS NULL
+       AND xml_raw IS NOT NULL
+       AND xml_raw <> ''
+  LOOP
+    BEGIN
+      SELECT EXISTS (
+        SELECT 1 FROM unnest(xpath(
+          '//ChildContinuityList/ChildContinuity[
+             ContinuityDescription/text()="Continuation" or
+             ContinuityDescription/text()="Continuation in Part" or
+             ContinuityDescription/text()="Continuation-in-Part" or
+             ContinuityDescription/text()="Continuation In Part" or
+             ContinuityDescription/text()="Division" or
+             ContinuityDescription/text()="Divisional"
+           ]',
+          xmlparse(content r.xml_raw)
+        )) AS x
+      )
+      INTO v_flag;
+      UPDATE applications SET has_child_continuation = COALESCE(v_flag, FALSE) WHERE id = r.id;
+      v_done := v_done + 1;
+    EXCEPTION WHEN OTHERS THEN
+      -- Mark malformed rows as FALSE so we don't keep re-trying them on every boot.
+      BEGIN
+        UPDATE applications SET has_child_continuation = FALSE WHERE id = r.id;
+      EXCEPTION WHEN OTHERS THEN
+        NULL;
+      END;
+    END;
+  END LOOP;
+  RAISE NOTICE 'has_child_continuation backfill: % rows updated', v_done;
+END $$;
+"""
+
+
+def _set_child_cont_backfill_flag(engine) -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO app_settings (key, value, updated_at) "
+                "VALUES (:k, '1', now()) "
+                "ON CONFLICT (key) DO UPDATE SET value = '1', updated_at = now()"
+            ),
+            {"k": _CHILD_CONT_BACKFILL_FLAG},
+        )
+
+
+def _run_child_cont_backfill_worker(database_url: str) -> None:
+    """Long-running backfill executed in a daemon thread so it does not block boot."""
+    engine = create_engine(database_url, pool_pre_ping=True)
+    try:
+        logger.info("Backfilling has_child_continuation from xml_raw (background)…")
+        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            conn.execute(text(_CHILD_CONT_BACKFILL_SQL))
+        _set_child_cont_backfill_flag(engine)
+        logger.info("has_child_continuation backfill complete")
+    except Exception:
+        logger.exception("has_child_continuation backfill failed; will retry on next startup")
+    finally:
+        engine.dispose()
+
+
+def _backfill_has_child_continuation_once(engine) -> None:
+    """Schedule the one-time has_child_continuation backfill in a daemon thread."""
+    insp = inspect(engine)
+    if not insp.has_table("applications") or not insp.has_table("app_settings"):
+        return
+    cols = {c["name"] for c in insp.get_columns("applications")}
+    if "has_child_continuation" not in cols or "xml_raw" not in cols:
+        return
+    with engine.connect() as conn:
+        already = conn.execute(
+            text("SELECT value FROM app_settings WHERE key = :k"),
+            {"k": _CHILD_CONT_BACKFILL_FLAG},
+        ).first()
+        if already and (already[0] or "").strip() in ("1", "true", "yes"):
+            return
+        pending = conn.execute(
+            text(
+                "SELECT 1 FROM applications "
+                "WHERE has_child_continuation IS NULL AND xml_raw IS NOT NULL "
+                "AND xml_raw <> '' LIMIT 1"
+            )
+        ).first()
+    if pending is None:
+        _set_child_cont_backfill_flag(engine)
+        return
+
+    database_url = get_database_url()
+    if not database_url:
+        return
+    t = threading.Thread(
+        target=_run_child_cont_backfill_worker,
+        args=(database_url,),
+        name="has-child-continuation-backfill",
+        daemon=True,
+    )
+    t.start()
+    logger.info("has_child_continuation backfill thread started (daemon)")
 
 
 def _run_applicant_backfill_worker(database_url: str) -> None:
@@ -283,6 +402,12 @@ def ensure_schema_migrations() -> None:
             "applicant_name",
             "TEXT",
         )
+        _add_column_if_missing(
+            engine,
+            "applications",
+            "has_child_continuation",
+            "BOOLEAN",
+        )
         for legacy in (
             "oa_ext_1mo_count",
             "oa_ext_2mo_count",
@@ -314,6 +439,7 @@ def ensure_schema_migrations() -> None:
         _ensure_app_settings_table(engine)
         _ensure_patent_applications_view(engine)
         _backfill_applicant_names_once(engine)
+        _backfill_has_child_continuation_once(engine)
     finally:
         engine.dispose()
 

@@ -92,6 +92,40 @@ def child_of_prior_us_parent_from_xml(application_number: str | None, xml_text: 
     return continuity_child_of_prior_us_parent(application_number, root)
 
 
+# Strict CHM definition: a child counts only when it's a Continuation,
+# Continuation-in-Part, or Divisional. The corpus contains a few minor spelling
+# variants (with/without hyphen, "Division" vs "Divisional") so we accept all.
+_CHM_CHILD_DESCRIPTIONS = {
+    "continuation",
+    "continuation in part",
+    "continuation-in-part",
+    "division",
+    "divisional",
+}
+
+
+def has_child_continuation_from_root(root: Any) -> bool:
+    """True when ``ChildContinuityList`` includes a CHM-qualifying child."""
+    if root is None:
+        return False
+    for el in root.xpath(".//Continuity/ChildContinuityList/ChildContinuity"):
+        desc = (extract_text(el, "ContinuityDescription/text()") or "").strip().lower()
+        if desc in _CHM_CHILD_DESCRIPTIONS:
+            return True
+    return False
+
+
+def has_child_continuation_from_xml(xml_text: str | None) -> bool:
+    """Parse stored Biblio XML; false when XML missing or invalid."""
+    if not xml_text or not xml_text.strip():
+        return False
+    try:
+        root = etree.fromstring(xml_text.encode("utf-8"))
+    except etree.XMLSyntaxError:
+        return False
+    return has_child_continuation_from_root(root)
+
+
 def parse_biblio_xml(xml_text: str) -> dict[str, Any]:
     """
     Parse a Patent Center Biblio XML string.
@@ -187,6 +221,7 @@ def parse_biblio_xml(xml_text: str) -> dict[str, Any]:
     uspto_customer = extract_text(bib, "CustomerNumber/text()") if bib is not None else None
 
     continuity_child = continuity_child_of_prior_us_parent(app_num, root) if app_num else False
+    has_child_continuation = has_child_continuation_from_root(root)
 
     return {
         "application_number": app_num,
@@ -222,4 +257,5 @@ def parse_biblio_xml(xml_text: str) -> dict[str, Any]:
         "documents": documents,
         "inventors": inventors,
         "continuity_child_of_prior_us": continuity_child,
+        "has_child_continuation": has_child_continuation,
     }
