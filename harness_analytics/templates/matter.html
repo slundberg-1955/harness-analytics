@@ -1,5 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Matter {{ app.application_number }} — Harness analytics{% endblock %}
+{% block extra_head %}
+<link rel="stylesheet" href="/static/timeline.css?v={{ static_version }}">
+{% endblock %}
 {% block content %}
 <div class="card">
   <h1>{{ app.application_number }}</h1>
@@ -10,6 +13,13 @@
   <p class="muted">Raw XML was not stored for this application (ingest may have used <code>--no-xml-raw</code>).</p>
   {% endif %}
 </div>
+
+<div class="card" id="prosecution-timeline-card">
+  <h2>Prosecution Timeline</h2>
+  <p class="muted">Forward-looking USPTO deadlines computed from the file history. Auto-recomputes when analytics is recomputed below.</p>
+  <div id="prosecution-timeline" data-app-number="{{ app.application_number }}"></div>
+</div>
+<script src="/static/timeline.js?v={{ static_version }}" defer></script>
 
 <div class="card" id="application">
   <h2>Application</h2>

@@ -1,0 +1,237 @@
+/* Prosecution Timeline tab — design tokens lifted from
+   PROSECUTION_TIMELINE_DESIGN.md / 01_matter_timeline.html. Scoped under
+   #prosecution-timeline so we don't disturb the rest of the matter page. */
+
+#prosecution-timeline {
+  --tl-bg: #ffffff;
+  --tl-bg-secondary: #f6f5f1;
+  --tl-bg-tertiary: #ebeae3;
+  --tl-text: #1a1a1a;
+  --tl-text-secondary: #5f5e5a;
+  --tl-text-tertiary: #8d8c87;
+  --tl-border: rgba(0,0,0,0.15);
+  --tl-border-strong: rgba(0,0,0,0.3);
+  --tl-accent: #185fa5;
+  --tl-accent-bg: #e6f1fb;
+  --tl-danger: #a32d2d;
+  --tl-danger-bg: #fcebeb;
+  --tl-warning: #854f0b;
+  --tl-warning-bg: #faeeda;
+  --tl-success: #0f6e56;
+  --tl-success-bg: #e1f5ee;
+  --tl-radius: 8px;
+  --tl-radius-lg: 12px;
+  --tl-mono: "IBM Plex Mono", "SF Mono", Menlo, Consolas, monospace;
+
+  font-variant-numeric: tabular-nums;
+  color: var(--tl-text);
+}
+@media (prefers-color-scheme: dark) {
+  #prosecution-timeline {
+    --tl-bg: #1a1a1a; --tl-bg-secondary: #242423; --tl-bg-tertiary: #2c2c2a;
+    --tl-text: #ebeae3; --tl-text-secondary: #b4b2a9; --tl-text-tertiary: #888780;
+    --tl-border: rgba(255,255,255,0.15); --tl-border-strong: rgba(255,255,255,0.3);
+    --tl-accent: #378add; --tl-accent-bg: rgba(55,138,221,0.15);
+    --tl-danger: #e24b4a; --tl-danger-bg: rgba(226,75,74,0.15);
+    --tl-warning: #ef9f27; --tl-warning-bg: rgba(239,159,39,0.15);
+    --tl-success: #5dcaa5; --tl-success-bg: rgba(93,202,165,0.15);
+  }
+}
+
+#prosecution-timeline .tl-mono { font-family: var(--tl-mono); }
+
+/* status pill */
+#prosecution-timeline .tl-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 10px; border-radius: 999px; font-size: 11px;
+  font-family: var(--tl-mono); text-transform: uppercase; letter-spacing: 0.04em;
+  font-weight: 500;
+}
+#prosecution-timeline .tl-pill-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+#prosecution-timeline .tl-pill-danger  { background: var(--tl-danger-bg);  color: var(--tl-danger);  }
+#prosecution-timeline .tl-pill-warn    { background: var(--tl-warning-bg); color: var(--tl-warning); }
+#prosecution-timeline .tl-pill-info    { background: var(--tl-accent-bg);  color: var(--tl-accent);  }
+#prosecution-timeline .tl-pill-success { background: var(--tl-success-bg); color: var(--tl-success); }
+#prosecution-timeline .tl-pill-muted   { background: var(--tl-bg-tertiary); color: var(--tl-text-tertiary); }
+
+/* disclaimer */
+#prosecution-timeline .tl-disclaimer {
+  background: var(--tl-warning-bg); border: 0.5px solid rgba(133,79,11,0.25);
+  border-radius: var(--tl-radius); padding: 10px 12px; margin-bottom: 16px;
+  font-size: 12px; color: var(--tl-warning);
+  display: flex; align-items: center; gap: 8px;
+}
+#prosecution-timeline .tl-disclaimer-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: var(--tl-warning); color: var(--tl-bg);
+  font-weight: 600; font-size: 10px; flex-shrink: 0;
+}
+
+/* sections */
+#prosecution-timeline .tl-section { margin-bottom: 32px; }
+#prosecution-timeline .tl-section-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  margin-bottom: 12px;
+}
+#prosecution-timeline .tl-section-title { font-size: 14px; font-weight: 600; }
+#prosecution-timeline .tl-section-subtitle {
+  font-family: var(--tl-mono); font-size: 11px; letter-spacing: 0.05em;
+  color: var(--tl-text-tertiary); text-transform: uppercase;
+}
+
+/* response window cards */
+#prosecution-timeline .tl-rwcard {
+  background: var(--tl-bg); border: 0.5px solid var(--tl-border);
+  border-radius: var(--tl-radius-lg); padding: 18px 20px; margin-bottom: 12px;
+}
+#prosecution-timeline .tl-rwcard.is-danger { border-left: 3px solid var(--tl-danger); }
+#prosecution-timeline .tl-rwcard.is-warn   { border-left: 3px solid var(--tl-warning); }
+#prosecution-timeline .tl-rwcard.is-info   { border-left: 3px solid var(--tl-accent); }
+#prosecution-timeline .tl-rwcard-head {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  margin-bottom: 16px; gap: 16px;
+}
+#prosecution-timeline .tl-rwcard-title { font-size: 15px; font-weight: 500; margin: 0 0 2px; }
+#prosecution-timeline .tl-rwcard-sub { font-size: 12px; color: var(--tl-text-secondary); font-family: var(--tl-mono); }
+
+#prosecution-timeline .tl-datecards {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;
+  margin-bottom: 16px;
+}
+#prosecution-timeline .tl-datecard {
+  background: var(--tl-bg-secondary); border: 0.5px solid var(--tl-border);
+  border-radius: var(--tl-radius); padding: 10px 12px;
+}
+#prosecution-timeline .tl-datecard-label {
+  font-family: var(--tl-mono); font-size: 10px; letter-spacing: 0.06em;
+  color: var(--tl-text-tertiary); text-transform: uppercase; margin-bottom: 4px;
+}
+#prosecution-timeline .tl-datecard-date { font-size: 18px; font-weight: 500; }
+#prosecution-timeline .tl-datecard-sub  { font-size: 11px; color: var(--tl-text-secondary); margin-top: 2px; }
+#prosecution-timeline .tl-datecard.is-danger .tl-datecard-date { color: var(--tl-danger); }
+#prosecution-timeline .tl-datecard.is-warn   .tl-datecard-date { color: var(--tl-warning); }
+
+/* EOT cascade table */
+#prosecution-timeline .tl-eot {
+  border: 0.5px solid var(--tl-border); border-radius: var(--tl-radius);
+  overflow: hidden; margin-bottom: 12px;
+}
+#prosecution-timeline .tl-eot table { width: 100%; border-collapse: collapse; font-size: 13px; }
+#prosecution-timeline .tl-eot th {
+  background: var(--tl-bg-secondary); text-align: left;
+  padding: 8px 12px; font-size: 11px; font-family: var(--tl-mono);
+  letter-spacing: 0.05em; text-transform: uppercase; color: var(--tl-text-tertiary);
+  font-weight: 500; border-bottom: 0.5px solid var(--tl-border);
+}
+#prosecution-timeline .tl-eot td { padding: 10px 12px; border-bottom: 0.5px solid var(--tl-border); }
+#prosecution-timeline .tl-eot tr:last-child td { border-bottom: none; }
+#prosecution-timeline .tl-eot .col-date { width: 30%; font-family: var(--tl-mono); }
+#prosecution-timeline .tl-eot .col-fee  { width: 20%; text-align: right; font-family: var(--tl-mono); }
+#prosecution-timeline .tl-eot tr.is-danger .col-date { color: var(--tl-danger); font-weight: 500; }
+#prosecution-timeline .tl-eot tr.is-warn   .col-date { color: var(--tl-warning); }
+#prosecution-timeline .tl-eot .sev-chip {
+  display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  margin-right: 6px; vertical-align: middle;
+}
+#prosecution-timeline .tl-eot .sev-chip.is-info   { background: var(--tl-accent); }
+#prosecution-timeline .tl-eot .sev-chip.is-warn   { background: var(--tl-warning); }
+#prosecution-timeline .tl-eot .sev-chip.is-danger { background: var(--tl-danger); }
+
+#prosecution-timeline .tl-rwcard-footer {
+  display: flex; justify-content: space-between; align-items: center;
+  padding-top: 12px; border-top: 0.5px solid var(--tl-border); flex-wrap: wrap; gap: 12px;
+}
+#prosecution-timeline .tl-assignees {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; color: var(--tl-text-secondary);
+}
+#prosecution-timeline .tl-avatar {
+  width: 22px; height: 22px; border-radius: 50%; background: var(--tl-accent);
+  color: white; font-size: 10px; font-weight: 600;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-family: var(--tl-mono);
+}
+#prosecution-timeline .tl-btn-row { display: flex; gap: 6px; }
+#prosecution-timeline .tl-btn {
+  font-size: 12px; padding: 6px 12px;
+  background: var(--tl-bg); border: 0.5px solid var(--tl-border-strong);
+  border-radius: var(--tl-radius); color: var(--tl-text); cursor: pointer;
+}
+#prosecution-timeline .tl-btn-primary { background: var(--tl-accent); color: white; border-color: var(--tl-accent); }
+#prosecution-timeline .tl-btn-ghost   { border-color: var(--tl-border); color: var(--tl-text-secondary); }
+
+#prosecution-timeline .tl-authority {
+  font-family: var(--tl-mono); font-size: 11px; color: var(--tl-text-tertiary);
+  padding-top: 10px; margin-top: 12px; border-top: 0.5px dashed var(--tl-border);
+}
+#prosecution-timeline .tl-warnings {
+  margin-top: 10px; padding: 8px 10px;
+  background: var(--tl-danger-bg); color: var(--tl-danger);
+  border-radius: var(--tl-radius); font-size: 12px;
+}
+
+/* milestones */
+#prosecution-timeline .tl-milestones {
+  display: flex; gap: 0; overflow-x: auto; padding: 20px 2px;
+  background: var(--tl-bg); border: 0.5px solid var(--tl-border);
+  border-radius: var(--tl-radius-lg);
+}
+#prosecution-timeline .tl-milestone {
+  flex: 0 0 auto; padding: 0 24px; min-width: 160px;
+  border-right: 0.5px dashed var(--tl-border);
+}
+#prosecution-timeline .tl-milestone:last-child { border-right: none; }
+#prosecution-timeline .tl-milestone-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--tl-accent); margin-bottom: 8px; }
+#prosecution-timeline .tl-milestone-date  { font-family: var(--tl-mono); font-size: 11px; color: var(--tl-text-secondary); margin-bottom: 2px; }
+#prosecution-timeline .tl-milestone-label { font-size: 13px; font-weight: 500; }
+#prosecution-timeline .tl-milestone-sub   { font-size: 11px; color: var(--tl-text-tertiary); margin-top: 2px; font-family: var(--tl-mono); text-transform: uppercase; letter-spacing: 0.04em; }
+
+/* informational grid */
+#prosecution-timeline .tl-info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+#prosecution-timeline .tl-info-card {
+  background: var(--tl-bg); border: 0.5px solid var(--tl-border);
+  border-radius: var(--tl-radius-lg); padding: 16px 18px;
+}
+#prosecution-timeline .tl-info-card-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+#prosecution-timeline .tl-info-card-title { font-size: 13px; font-weight: 500; }
+#prosecution-timeline .tl-info-card-body  { font-size: 12px; color: var(--tl-text-secondary); line-height: 1.6; }
+
+@media (max-width: 860px) {
+  #prosecution-timeline .tl-datecards { grid-template-columns: 1fr; }
+  #prosecution-timeline .tl-info-grid { grid-template-columns: 1fr; }
+}
+
+/* loading + error states */
+#prosecution-timeline .tl-loading {
+  padding: 40px 0; text-align: center; color: var(--tl-text-tertiary);
+  font-family: var(--tl-mono); font-size: 12px; letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+#prosecution-timeline .tl-error {
+  padding: 16px; background: var(--tl-danger-bg); color: var(--tl-danger);
+  border-radius: var(--tl-radius); font-size: 13px;
+}
+
+/* shared deadline drawer (used by inbox + portfolio in later milestones) */
+.tl-drawer-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.4);
+  display: none; z-index: 1000;
+}
+.tl-drawer-backdrop.open { display: block; }
+.tl-drawer {
+  position: fixed; top: 0; right: 0; bottom: 0; width: min(560px, 100vw);
+  background: #fff; box-shadow: -4px 0 24px rgba(0,0,0,0.18);
+  transform: translateX(100%); transition: transform 0.18s ease-out;
+  display: flex; flex-direction: column; z-index: 1001;
+}
+.tl-drawer.open { transform: translateX(0); }
+.tl-drawer-head {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 14px 18px; border-bottom: 0.5px solid rgba(0,0,0,0.15);
+}
+.tl-drawer-body { padding: 16px 18px; overflow-y: auto; flex: 1; }
+.tl-drawer-close { background: none; border: none; font-size: 22px; cursor: pointer; color: #5f5e5a; }
+@media (prefers-color-scheme: dark) {
+  .tl-drawer { background: #1a1a1a; color: #ebeae3; }
+}
