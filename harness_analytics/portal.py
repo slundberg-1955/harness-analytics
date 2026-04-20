@@ -438,6 +438,20 @@ def portal_portfolio(request: Request) -> HTMLResponse:
     )
 
 
+@router.get("/actions", response_class=HTMLResponse)
+def portal_actions_inbox(request: Request) -> HTMLResponse:
+    """Upcoming Actions inbox (M6).
+
+    Page is fully static — JS at /static/actions_inbox.js handles all
+    fetching, filter chips, and drawer wiring.
+    """
+    return templates.TemplateResponse(
+        request,
+        "actions_inbox.html",
+        {"show_sign_out": True},
+    )
+
+
 def _settings_context(request: Request, *, saved: bool = False, error: str | None = None) -> dict:
     db_value = app_settings.get_setting(SETTING_KEY_AGG_ROW_CAP)
     env_value = os.environ.get("PORTFOLIO_AGG_ROW_CAP", "")
