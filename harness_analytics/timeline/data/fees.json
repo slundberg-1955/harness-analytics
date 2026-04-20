@@ -1,0 +1,8 @@
+{
+  "_comment": "USPTO 37 CFR 1.17(a) Extension-of-Time fees. Index = EOT month (1..5). Verify against current USPTO fee schedule before each release.",
+  "eot": {
+    "large": [230, 660, 1500, 2350, 3200],
+    "small": [92, 264, 600, 940, 1280],
+    "micro": [46, 132, 300, 470, 640]
+  }
+}
