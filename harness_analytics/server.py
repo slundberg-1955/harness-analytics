@@ -16,6 +16,7 @@ from harness_analytics.db import get_database_url, get_session_factory
 from harness_analytics.portal import install_portal_security, router as portal_router
 from harness_analytics.portfolio_api import router as portfolio_api_router
 from harness_analytics.schema_migrations import ensure_schema_migrations
+from harness_analytics.timeline_api import router as timeline_api_router
 
 
 def _normalize_db_url(url: str) -> str:
@@ -49,6 +50,7 @@ def create_app() -> FastAPI:
     app = FastAPI(title="harness-analytics", version="0.1.0", lifespan=_lifespan)
     app.include_router(portal_router)
     app.include_router(portfolio_api_router)
+    app.include_router(timeline_api_router)
 
     static_dir = Path(__file__).resolve().parent / "static"
     if static_dir.is_dir():
