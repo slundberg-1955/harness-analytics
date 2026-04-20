@@ -11,3 +11,8 @@ healthcheckPath = "/health"
 healthcheckTimeout = 180
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
+
+# To run the Arq worker as a *second* Railway service, point that service at
+# this same Dockerfile and override its start command to:
+#     python -m harness_analytics.jobs.worker
+# Required env on the worker service: DATABASE_URL, REDIS_URL.

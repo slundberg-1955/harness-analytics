@@ -11,6 +11,8 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import create_engine, text
 
+from harness_analytics.auth import bootstrap_owner_from_env
+from harness_analytics.db import get_database_url, get_session_factory
 from harness_analytics.portal import install_portal_security, router as portal_router
 from harness_analytics.portfolio_api import router as portfolio_api_router
 from harness_analytics.schema_migrations import ensure_schema_migrations
@@ -25,6 +27,14 @@ def _normalize_db_url(url: str) -> str:
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     ensure_schema_migrations()
+    if get_database_url():
+        try:
+            SessionLocal = get_session_factory()
+            with SessionLocal() as db:
+                bootstrap_owner_from_env(db)
+        except Exception:  # noqa: BLE001
+            # Bootstrap is best-effort; never block startup.
+            pass
     yield
 
 

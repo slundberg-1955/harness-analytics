@@ -52,6 +52,8 @@ class Application(Base):
     xml_raw: Mapped[Optional[str]] = mapped_column(Text)
     continuity_child_of_prior_us: Mapped[bool] = mapped_column(Boolean, default=False)
     has_child_continuation: Mapped[Optional[bool]] = mapped_column(Boolean)
+    earliest_priority_date: Mapped[Optional[date]] = mapped_column(Date)
+    tenant_id: Mapped[str] = mapped_column(Text, nullable=False, default="global")
     imported_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -190,3 +192,39 @@ class ApplicationAnalytics(Base):
     )
 
     application: Mapped["Application"] = relationship(back_populates="analytics")
+
+
+# ---------------------------------------------------------------------------
+# Auth (M0.2)
+# ---------------------------------------------------------------------------
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    email: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    name: Mapped[Optional[str]] = mapped_column(Text)
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    role: Mapped[str] = mapped_column(Text, nullable=False, default="VIEWER")
+    tenant_id: Mapped[str] = mapped_column(Text, nullable=False, default="global")
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+class UserSession(Base):
+    __tablename__ = "user_sessions"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    user_agent: Mapped[Optional[str]] = mapped_column(Text)
+    ip: Mapped[Optional[str]] = mapped_column(Text)

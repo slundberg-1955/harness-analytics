@@ -15,6 +15,8 @@ dependencies = [
   "pandas",
   "openpyxl",
   "python-dateutil>=2.8",
+  "alembic>=1.13",
+  "passlib[argon2]>=1.7.4",
 ]
 
 [project.optional-dependencies]
@@ -25,6 +27,11 @@ web = [
   "jinja2",
   "itsdangerous>=2.0",
   "python-multipart>=0.0.9",
+  "pyjwt>=2.8",
+]
+worker = [
+  "arq>=0.26",
+  "redis>=5.0",
 ]
 
 [tool.setuptools.packages.find]
@@ -32,7 +39,11 @@ where = ["."]
 include = ["harness_analytics*"]
 
 [tool.setuptools.package-data]
-harness_analytics = ["templates/*.html", "static/*"]
+harness_analytics = [
+  "templates/*.html",
+  "static/*",
+  "timeline/data/*.json",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -114,10 +114,50 @@ CREATE TABLE IF NOT EXISTS app_settings (
 )
 """
 
+_USERS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    email TEXT NOT NULL UNIQUE,
+    name TEXT,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'VIEWER',
+    tenant_id TEXT NOT NULL DEFAULT 'global',
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_login_at TIMESTAMPTZ
+)
+"""
+
+_USER_SESSIONS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS user_sessions (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at TIMESTAMPTZ NOT NULL,
+    user_agent TEXT,
+    ip TEXT
+)
+"""
+
+_AUTH_INDEXES_SQL = [
+    "CREATE INDEX IF NOT EXISTS idx_users_tenant ON users (tenant_id)",
+    "CREATE INDEX IF NOT EXISTS idx_sessions_user ON user_sessions (user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_sessions_expires ON user_sessions (expires_at)",
+    "CREATE INDEX IF NOT EXISTS idx_applications_tenant ON applications (tenant_id)",
+]
+
 
 def _ensure_app_settings_table(engine) -> None:
     with engine.begin() as conn:
         conn.execute(text(_APP_SETTINGS_TABLE_SQL))
+
+
+def _ensure_auth_tables(engine) -> None:
+    with engine.begin() as conn:
+        conn.execute(text(_USERS_TABLE_SQL))
+        conn.execute(text(_USER_SESSIONS_TABLE_SQL))
+        for stmt in _AUTH_INDEXES_SQL:
+            conn.execute(text(stmt))
 
 
 # Per-row PL/pgSQL backfill: parses xml_raw with xmlparse(content ...) and
@@ -408,6 +448,19 @@ def ensure_schema_migrations() -> None:
             "has_child_continuation",
             "BOOLEAN",
         )
+        _add_column_if_missing(
+            engine,
+            "applications",
+            "earliest_priority_date",
+            "DATE",
+        )
+        _add_column_if_missing(
+            engine,
+            "applications",
+            "tenant_id",
+            "TEXT NOT NULL DEFAULT 'global'",
+        )
+        _ensure_auth_tables(engine)
         for legacy in (
             "oa_ext_1mo_count",
             "oa_ext_2mo_count",

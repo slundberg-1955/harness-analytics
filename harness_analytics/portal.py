@@ -26,7 +26,18 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from harness_analytics import app_settings
 from harness_analytics.analytics import compute_analytics_for_application, load_office_config
-from harness_analytics.db import get_db
+from harness_analytics.auth import (
+    SESSION_COOKIE,
+    SESSION_TTL,
+    authenticate,
+    bootstrap_owner_from_env,
+    current_user_optional,
+    has_any_owner,
+    issue_session,
+    lookup_session,
+    revoke_session,
+)
+from harness_analytics.db import get_db, get_session_factory
 from harness_analytics.models import Application, ApplicationAnalytics, FileWrapperDocument, ProsecutionEvent
 from harness_analytics.portfolio_api import (
     SETTING_KEY_AGG_ROW_CAP,
@@ -114,9 +125,35 @@ def _basic_credentials_valid(credentials: HTTPBasicCredentials) -> bool:
     return secrets.compare_digest(credentials.password, expected)
 
 
+def _db_session_user(request: Request):
+    """Look up the DB-backed session token if present. Returns CurrentUser or None.
+
+    Opens a short-lived DB session — middleware doesn't get FastAPI deps.
+    """
+    sid = request.cookies.get(SESSION_COOKIE)
+    if not sid:
+        return None
+    try:
+        SessionLocal = get_session_factory()
+    except RuntimeError:
+        return None
+    db = SessionLocal()
+    try:
+        return lookup_session(db, sid)
+    finally:
+        db.close()
+
+
 def _portal_authenticated(request: Request) -> bool:
+    # Real DB-backed session wins.
+    cu = _db_session_user(request)
+    if cu is not None:
+        request.state.current_user = cu
+        return True
+    # Legacy starlette signed-cookie flag (transitional).
     if request.session.get(SESSION_KEY) is True:
         return True
+    # Basic auth still works during rollout.
     creds = _basic_credentials_from_request(request)
     return bool(creds and _basic_credentials_valid(creds))
 
@@ -136,14 +173,27 @@ class PortalAuthMiddleware(BaseHTTPMiddleware):
         if path in ("/portal/logout", "/portal/logout/"):
             return await call_next(request)
 
-        expected_pw = _portal_password()
-        if not expected_pw:
-            if path.startswith("/portal"):
+        # Authentication is configured if EITHER PORTAL_PASSWORD is set OR a
+        # real user exists in the DB.
+        if not _portal_password():
+            try:
+                SessionLocal = get_session_factory()
+                with SessionLocal() as db:
+                    if not has_any_owner(db):
+                        return JSONResponse(
+                            {
+                                "detail": (
+                                    "Portal is not configured. Set PORTAL_PASSWORD or "
+                                    "create a user via `python -m harness_analytics users add`."
+                                )
+                            },
+                            status_code=503,
+                        )
+            except RuntimeError:
                 return JSONResponse(
-                    {"detail": "Portal is not configured. Set PORTAL_PASSWORD on the service."},
+                    {"detail": "Portal is not configured (no DATABASE_URL)."},
                     status_code=503,
                 )
-            return await call_next(request)
 
         if _portal_authenticated(request):
             return await call_next(request)
@@ -286,13 +336,23 @@ def _portal_interview_window_days() -> int:
 @router.get("/login", response_class=HTMLResponse)
 def portal_login_get(request: Request, invalid: int = 0) -> HTMLResponse:
     pw = _portal_password()
+    SessionLocal = None
+    try:
+        SessionLocal = get_session_factory()
+    except RuntimeError:
+        SessionLocal = None
+    has_owner = False
+    if SessionLocal is not None:
+        with SessionLocal() as db:
+            has_owner = has_any_owner(db)
     return templates.TemplateResponse(
         request,
         "login.html",
         {
             "default_user": _expected_username(),
             "invalid": bool(invalid),
-            "not_configured": not pw,
+            "not_configured": not (pw or has_owner),
+            "has_users": has_owner,
             "show_sign_out": False,
         },
     )
@@ -304,22 +364,60 @@ def portal_login_post(
     username: str = Form(),
     password: str = Form(),
 ) -> RedirectResponse:
+    # Try DB user first when a database is available.
+    SessionLocal = None
+    try:
+        SessionLocal = get_session_factory()
+    except RuntimeError:
+        SessionLocal = None
+
+    if SessionLocal is not None:
+        with SessionLocal() as db:
+            user = authenticate(db, username, password)
+            if user is None and "@" not in username:
+                user = authenticate(db, f"{username}@harness.local", password)
+            if user is not None:
+                sid = issue_session(
+                    db,
+                    user,
+                    user_agent=request.headers.get("user-agent"),
+                    ip=(request.client.host if request.client else None),
+                )
+                resp = RedirectResponse(url="/portal/", status_code=303)
+                resp.set_cookie(
+                    SESSION_COOKIE,
+                    sid,
+                    max_age=int(SESSION_TTL.total_seconds()),
+                    httponly=True,
+                    samesite="lax",
+                    secure=os.environ.get("RAILWAY_ENVIRONMENT") == "production",
+                    path="/",
+                )
+                return resp
+
+    # Legacy shared-password fallback.
     expected = _portal_password()
-    if not expected:
-        raise HTTPException(
-            status_code=503,
-            detail="Portal is not configured. Set PORTAL_PASSWORD on the service.",
-        )
-    if username != _expected_username() or not secrets.compare_digest(password, expected):
-        return RedirectResponse(url="/portal/login?invalid=1", status_code=303)
-    request.session[SESSION_KEY] = True
-    return RedirectResponse(url="/portal/", status_code=303)
+    if expected and username == _expected_username() and secrets.compare_digest(password, expected):
+        request.session[SESSION_KEY] = True
+        return RedirectResponse(url="/portal/", status_code=303)
+
+    return RedirectResponse(url="/portal/login?invalid=1", status_code=303)
 
 
 @router.get("/logout")
 def portal_logout(request: Request) -> RedirectResponse:
+    sid = request.cookies.get(SESSION_COOKIE)
+    if sid:
+        try:
+            SessionLocal = get_session_factory()
+            with SessionLocal() as db:
+                revoke_session(db, sid)
+        except Exception:
+            pass
     request.session.clear()
-    return RedirectResponse(url="/portal/login", status_code=303)
+    resp = RedirectResponse(url="/portal/login", status_code=303)
+    resp.delete_cookie(SESSION_COOKIE, path="/")
+    return resp
 
 
 @router.get("/", response_class=HTMLResponse)
