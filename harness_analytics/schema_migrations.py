@@ -146,6 +146,53 @@ _AUTH_INDEXES_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_applications_tenant ON applications (tenant_id)",
 ]
 
+_IFW_RULES_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS ifw_rules (
+    id SERIAL PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'global',
+    code TEXT NOT NULL,
+    aliases TEXT[],
+    description TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    ssp_months INT,
+    max_months INT,
+    due_months_from_grant INT,
+    grace_months_from_grant INT,
+    from_filing_months INT,
+    from_priority_months INT,
+    base_months_from_priority INT,
+    late_months_from_priority INT,
+    extendable BOOLEAN NOT NULL DEFAULT FALSE,
+    trigger_label TEXT NOT NULL,
+    user_note TEXT NOT NULL DEFAULT '',
+    authority TEXT NOT NULL,
+    warnings TEXT[],
+    priority_tier TEXT,
+    patent_type_applicability TEXT[] NOT NULL DEFAULT
+        ARRAY['UTILITY','DESIGN','PLANT','REISSUE','REEXAM'],
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE (tenant_id, code)
+)
+"""
+
+_UNMAPPED_IFW_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS unmapped_ifw_codes (
+    id SERIAL PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'global',
+    code TEXT NOT NULL,
+    count INT NOT NULL DEFAULT 0,
+    first_seen TIMESTAMPTZ DEFAULT now(),
+    last_seen TIMESTAMPTZ DEFAULT now(),
+    UNIQUE (tenant_id, code)
+)
+"""
+
+_IFW_RULES_INDEXES_SQL = [
+    "CREATE INDEX IF NOT EXISTS idx_ifw_rules_code_active ON ifw_rules (code) WHERE active = TRUE",
+]
+
 
 def _ensure_app_settings_table(engine) -> None:
     with engine.begin() as conn:
@@ -157,6 +204,14 @@ def _ensure_auth_tables(engine) -> None:
         conn.execute(text(_USERS_TABLE_SQL))
         conn.execute(text(_USER_SESSIONS_TABLE_SQL))
         for stmt in _AUTH_INDEXES_SQL:
+            conn.execute(text(stmt))
+
+
+def _ensure_timeline_tables(engine) -> None:
+    with engine.begin() as conn:
+        conn.execute(text(_IFW_RULES_TABLE_SQL))
+        conn.execute(text(_UNMAPPED_IFW_TABLE_SQL))
+        for stmt in _IFW_RULES_INDEXES_SQL:
             conn.execute(text(stmt))
 
 
@@ -461,6 +516,7 @@ def ensure_schema_migrations() -> None:
             "TEXT NOT NULL DEFAULT 'global'",
         )
         _ensure_auth_tables(engine)
+        _ensure_timeline_tables(engine)
         for legacy in (
             "oa_ext_1mo_count",
             "oa_ext_2mo_count",

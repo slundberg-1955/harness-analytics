@@ -13,6 +13,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -228,3 +229,66 @@ class UserSession(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     user_agent: Mapped[Optional[str]] = mapped_column(Text)
     ip: Mapped[Optional[str]] = mapped_column(Text)
+
+
+# ---------------------------------------------------------------------------
+# Timeline (M2/M3)
+# ---------------------------------------------------------------------------
+
+
+class IfwRule(Base):
+    __tablename__ = "ifw_rules"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "code", name="uq_ifw_rules_tenant_code"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(Text, nullable=False, default="global")
+    code: Mapped[str] = mapped_column(Text, nullable=False)
+    aliases: Mapped[Optional[list[str]]] = mapped_column(ARRAY(Text))
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    ssp_months: Mapped[Optional[int]] = mapped_column(Integer)
+    max_months: Mapped[Optional[int]] = mapped_column(Integer)
+    due_months_from_grant: Mapped[Optional[int]] = mapped_column(Integer)
+    grace_months_from_grant: Mapped[Optional[int]] = mapped_column(Integer)
+    from_filing_months: Mapped[Optional[int]] = mapped_column(Integer)
+    from_priority_months: Mapped[Optional[int]] = mapped_column(Integer)
+    base_months_from_priority: Mapped[Optional[int]] = mapped_column(Integer)
+    late_months_from_priority: Mapped[Optional[int]] = mapped_column(Integer)
+    extendable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    trigger_label: Mapped[str] = mapped_column(Text, nullable=False)
+    user_note: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    authority: Mapped[str] = mapped_column(Text, nullable=False)
+    warnings: Mapped[Optional[list[str]]] = mapped_column(ARRAY(Text))
+    priority_tier: Mapped[Optional[str]] = mapped_column(Text)
+    patent_type_applicability: Mapped[list[str]] = mapped_column(
+        ARRAY(Text),
+        nullable=False,
+        default=lambda: ["UTILITY", "DESIGN", "PLANT", "REISSUE", "REEXAM"],
+    )
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class UnmappedIfwCode(Base):
+    __tablename__ = "unmapped_ifw_codes"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "code", name="uq_unmapped_ifw_tenant_code"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(Text, nullable=False, default="global")
+    code: Mapped[str] = mapped_column(Text, nullable=False)
+    count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    first_seen: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    last_seen: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

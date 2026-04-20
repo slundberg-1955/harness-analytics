@@ -32,8 +32,15 @@ async def _lifespan(_app: FastAPI):
             SessionLocal = get_session_factory()
             with SessionLocal() as db:
                 bootstrap_owner_from_env(db)
+            # Seed global IFW rules (idempotent). Best-effort.
+            try:
+                from harness_analytics.timeline.rules_repo import seed_global_rules
+
+                with SessionLocal() as db:
+                    seed_global_rules(db, tenant_id="global")
+            except Exception:  # noqa: BLE001
+                pass
         except Exception:  # noqa: BLE001
-            # Bootstrap is best-effort; never block startup.
             pass
     yield
 
