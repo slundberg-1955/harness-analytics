@@ -254,6 +254,21 @@ def compute_analytics_for_application(
     existing.ctrs_ext_2mo_count = ext["ctrs_2mo"]
     existing.ctrs_ext_3mo_count = ext["ctrs_3mo"]
 
+    # M3: hook the timeline materializer onto the analytics flow. Best-effort —
+    # if the timeline tables don't exist yet (e.g. fresh test DB without the
+    # 0004 migration applied), swallow and continue. Analytics is the source of
+    # truth; deadlines are an enrichment.
+    try:
+        from harness_analytics.timeline.materializer import _recompute_internal
+
+        _recompute_internal(db, app)
+    except Exception:  # noqa: BLE001
+        import logging
+
+        logging.getLogger(__name__).debug(
+            "timeline materializer skipped for application %s", app.id, exc_info=True
+        )
+
 
 def compute_analytics(
     db: Session,

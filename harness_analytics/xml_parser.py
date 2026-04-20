@@ -126,6 +126,41 @@ def has_child_continuation_from_xml(xml_text: str | None) -> bool:
     return has_child_continuation_from_root(root)
 
 
+def earliest_priority_date_from_root(root: Any) -> Any:
+    """Earliest claim from <DomesticPriorityList> + <ForeignPriorityList>.
+
+    Used by the timeline ``priority_later_of`` and ``pct_national`` rules.
+    Returns a ``date`` or ``None`` if no claim is present or parseable.
+    """
+    if root is None:
+        return None
+    candidates = []
+    for path in (
+        ".//DomesticPriorityList/DomesticPriority/FilingDate/text()",
+        ".//DomesticPriority/FilingDate/text()",
+        ".//ForeignPriorityList/ForeignPriority/FilingDate/text()",
+        ".//ForeignPriority/FilingDate/text()",
+        ".//DomesticBenefit/FilingDate/text()",
+    ):
+        for raw in root.xpath(path):
+            d = parse_date(str(raw))
+            if d is not None:
+                candidates.append(d)
+    if not candidates:
+        return None
+    return min(candidates)
+
+
+def earliest_priority_date_from_xml(xml_text: str | None):
+    if not xml_text or not xml_text.strip():
+        return None
+    try:
+        root = etree.fromstring(xml_text.encode("utf-8"))
+    except etree.XMLSyntaxError:
+        return None
+    return earliest_priority_date_from_root(root)
+
+
 def parse_biblio_xml(xml_text: str) -> dict[str, Any]:
     """
     Parse a Patent Center Biblio XML string.
@@ -222,6 +257,7 @@ def parse_biblio_xml(xml_text: str) -> dict[str, Any]:
 
     continuity_child = continuity_child_of_prior_us_parent(app_num, root) if app_num else False
     has_child_continuation = has_child_continuation_from_root(root)
+    earliest_priority_date = earliest_priority_date_from_root(root)
 
     return {
         "application_number": app_num,
@@ -258,4 +294,5 @@ def parse_biblio_xml(xml_text: str) -> dict[str, Any]:
         "inventors": inventors,
         "continuity_child_of_prior_us": continuity_child,
         "has_child_continuation": has_child_continuation,
+        "earliest_priority_date": earliest_priority_date,
     }

@@ -7,6 +7,7 @@ import pytest
 from harness_analytics.xml_parser import (
     child_of_prior_us_parent_from_xml,
     continuity_child_of_prior_us_parent,
+    earliest_priority_date_from_xml,
     has_child_continuation_from_xml,
     parse_biblio_xml,
 )
@@ -195,3 +196,37 @@ def test_has_child_continuation_false_when_no_child_list() -> None:
     assert data["has_child_continuation"] is False
     assert has_child_continuation_from_xml("") is False
     assert has_child_continuation_from_xml(None) is False
+
+
+def test_earliest_priority_date_picks_min_across_lists() -> None:
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<PatentCenterApplication>
+  <ApplicationBibliographicData><ApplicationNumber>17000040</ApplicationNumber><FilingDate>2024-06-01</FilingDate></ApplicationBibliographicData>
+  <DomesticPriorityList>
+    <DomesticPriority><FilingDate>2023-08-15</FilingDate></DomesticPriority>
+    <DomesticPriority><FilingDate>2024-02-01</FilingDate></DomesticPriority>
+  </DomesticPriorityList>
+  <ForeignPriorityList>
+    <ForeignPriority><FilingDate>2023-04-10</FilingDate></ForeignPriority>
+  </ForeignPriorityList>
+  <FileContentHistories/>
+  <ImageFileWrapperList/>
+</PatentCenterApplication>"""
+    from datetime import date
+
+    data = parse_biblio_xml(xml)
+    assert data["earliest_priority_date"] == date(2023, 4, 10)
+    assert earliest_priority_date_from_xml(xml) == date(2023, 4, 10)
+
+
+def test_earliest_priority_date_none_when_no_claims() -> None:
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<PatentCenterApplication>
+  <ApplicationBibliographicData><ApplicationNumber>17000050</ApplicationNumber></ApplicationBibliographicData>
+  <FileContentHistories/>
+  <ImageFileWrapperList/>
+</PatentCenterApplication>"""
+    data = parse_biblio_xml(xml)
+    assert data["earliest_priority_date"] is None
+    assert earliest_priority_date_from_xml("") is None
+    assert earliest_priority_date_from_xml(None) is None

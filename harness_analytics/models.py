@@ -13,7 +13,8 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy import BigInteger
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -292,3 +293,79 @@ class UnmappedIfwCode(Base):
     last_seen: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class ComputedDeadline(Base):
+    __tablename__ = "computed_deadlines"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    application_id: Mapped[int] = mapped_column(
+        ForeignKey("applications.id", ondelete="CASCADE"), nullable=False
+    )
+    rule_id: Mapped[int] = mapped_column(ForeignKey("ifw_rules.id"), nullable=False)
+    trigger_event_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("prosecution_events.id", ondelete="SET NULL")
+    )
+    trigger_document_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("file_wrapper_documents.id", ondelete="SET NULL")
+    )
+    trigger_date: Mapped[date] = mapped_column(Date, nullable=False)
+    trigger_source: Mapped[str] = mapped_column(Text, nullable=False)
+    ssp_date: Mapped[Optional[date]] = mapped_column(Date)
+    statutory_bar_date: Mapped[Optional[date]] = mapped_column(Date)
+    primary_date: Mapped[date] = mapped_column(Date, nullable=False)
+    primary_label: Mapped[str] = mapped_column(Text, nullable=False)
+    rows_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    window_open_date: Mapped[Optional[date]] = mapped_column(Date)
+    grace_end_date: Mapped[Optional[date]] = mapped_column(Date)
+    ids_phases_json: Mapped[Optional[list]] = mapped_column(JSONB)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="OPEN")
+    completed_event_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("prosecution_events.id", ondelete="SET NULL")
+    )
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    superseded_by: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("computed_deadlines.id", ondelete="SET NULL")
+    )
+    assigned_user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    snoozed_until: Mapped[Optional[date]] = mapped_column(Date)
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    warnings: Mapped[Optional[list[str]]] = mapped_column(ARRAY(Text))
+    severity: Mapped[Optional[str]] = mapped_column(Text)
+    tenant_id: Mapped[str] = mapped_column(Text, nullable=False, default="global")
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class DeadlineEvent(Base):
+    __tablename__ = "deadline_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    deadline_id: Mapped[int] = mapped_column(
+        ForeignKey("computed_deadlines.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_json: Mapped[Optional[dict]] = mapped_column(JSONB)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class SupersessionMap(Base):
+    __tablename__ = "supersession_map"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "prev_kind", "new_kind", name="uq_supersession"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    prev_kind: Mapped[str] = mapped_column(Text, nullable=False)
+    new_kind: Mapped[str] = mapped_column(Text, nullable=False)
+    tenant_id: Mapped[str] = mapped_column(Text, nullable=False, default="global")

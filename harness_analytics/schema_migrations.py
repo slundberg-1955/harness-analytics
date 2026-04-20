@@ -89,7 +89,47 @@ SELECT
     -- doesn't try to rename existing positions (Postgres only allows adding
     -- columns at the tail of an existing view).
     a.applicant_name,
-    a.has_child_continuation
+    a.has_child_continuation,
+    a.earliest_priority_date,
+    a.tenant_id,
+    -- Timeline summary columns (nullable when computed_deadlines doesn't exist yet
+    -- or no deadlines have been computed for this app). Computed via correlated
+    -- subqueries so that filter + sort on these columns just works.
+    (
+        SELECT cd.primary_date
+          FROM computed_deadlines cd
+         WHERE cd.application_id = a.id
+           AND cd.status = 'OPEN'
+         ORDER BY cd.primary_date ASC
+         LIMIT 1
+    ) AS next_deadline_date,
+    (
+        SELECT cd.primary_label
+          FROM computed_deadlines cd
+         WHERE cd.application_id = a.id
+           AND cd.status = 'OPEN'
+         ORDER BY cd.primary_date ASC
+         LIMIT 1
+    ) AS next_deadline_label,
+    (
+        SELECT cd.severity
+          FROM computed_deadlines cd
+         WHERE cd.application_id = a.id
+           AND cd.status = 'OPEN'
+         ORDER BY cd.primary_date ASC
+         LIMIT 1
+    ) AS next_deadline_severity,
+    COALESCE((
+        SELECT count(*) FROM computed_deadlines cd
+         WHERE cd.application_id = a.id
+           AND cd.status = 'OPEN'
+    ), 0) AS open_deadline_count,
+    COALESCE((
+        SELECT count(*) FROM computed_deadlines cd
+         WHERE cd.application_id = a.id
+           AND cd.status = 'OPEN'
+           AND cd.primary_date < CURRENT_DATE
+    ), 0) AS overdue_deadline_count
 FROM applications a
 LEFT JOIN application_analytics aa ON aa.application_id = a.id
 """
@@ -193,6 +233,67 @@ _IFW_RULES_INDEXES_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_ifw_rules_code_active ON ifw_rules (code) WHERE active = TRUE",
 ]
 
+_COMPUTED_DEADLINES_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS computed_deadlines (
+    id BIGSERIAL PRIMARY KEY,
+    application_id INT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+    rule_id INT NOT NULL REFERENCES ifw_rules(id),
+    trigger_event_id INT REFERENCES prosecution_events(id) ON DELETE SET NULL,
+    trigger_document_id INT REFERENCES file_wrapper_documents(id) ON DELETE SET NULL,
+    trigger_date DATE NOT NULL,
+    trigger_source TEXT NOT NULL,
+    ssp_date DATE,
+    statutory_bar_date DATE,
+    primary_date DATE NOT NULL,
+    primary_label TEXT NOT NULL,
+    rows_json JSONB NOT NULL,
+    window_open_date DATE,
+    grace_end_date DATE,
+    ids_phases_json JSONB,
+    status TEXT NOT NULL DEFAULT 'OPEN',
+    completed_event_id INT REFERENCES prosecution_events(id) ON DELETE SET NULL,
+    completed_at TIMESTAMPTZ,
+    superseded_by BIGINT REFERENCES computed_deadlines(id) ON DELETE SET NULL,
+    assigned_user_id INT REFERENCES users(id) ON DELETE SET NULL,
+    snoozed_until DATE,
+    notes TEXT,
+    warnings TEXT[],
+    severity TEXT,
+    tenant_id TEXT NOT NULL DEFAULT 'global',
+    computed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)
+"""
+
+_DEADLINE_EVENTS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS deadline_events (
+    id BIGSERIAL PRIMARY KEY,
+    deadline_id BIGINT NOT NULL REFERENCES computed_deadlines(id) ON DELETE CASCADE,
+    user_id INT REFERENCES users(id) ON DELETE SET NULL,
+    action TEXT NOT NULL,
+    payload_json JSONB,
+    occurred_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)
+"""
+
+_SUPERSESSION_MAP_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS supersession_map (
+    id SERIAL PRIMARY KEY,
+    prev_kind TEXT NOT NULL,
+    new_kind TEXT NOT NULL,
+    tenant_id TEXT NOT NULL DEFAULT 'global',
+    UNIQUE (tenant_id, prev_kind, new_kind)
+)
+"""
+
+_DEADLINE_INDEXES_SQL = [
+    "CREATE INDEX IF NOT EXISTS idx_cd_app ON computed_deadlines (application_id)",
+    "CREATE INDEX IF NOT EXISTS idx_cd_primary_open ON computed_deadlines (primary_date) WHERE status = 'OPEN'",
+    "CREATE INDEX IF NOT EXISTS idx_cd_assigned_open ON computed_deadlines (assigned_user_id, primary_date) WHERE status = 'OPEN'",
+    "CREATE INDEX IF NOT EXISTS idx_cd_status ON computed_deadlines (status, primary_date)",
+    "CREATE INDEX IF NOT EXISTS idx_cd_tenant_open ON computed_deadlines (tenant_id, primary_date) WHERE status = 'OPEN'",
+    "CREATE INDEX IF NOT EXISTS idx_de_deadline ON deadline_events (deadline_id)",
+]
+
 
 def _ensure_app_settings_table(engine) -> None:
     with engine.begin() as conn:
@@ -211,7 +312,10 @@ def _ensure_timeline_tables(engine) -> None:
     with engine.begin() as conn:
         conn.execute(text(_IFW_RULES_TABLE_SQL))
         conn.execute(text(_UNMAPPED_IFW_TABLE_SQL))
-        for stmt in _IFW_RULES_INDEXES_SQL:
+        conn.execute(text(_COMPUTED_DEADLINES_TABLE_SQL))
+        conn.execute(text(_DEADLINE_EVENTS_TABLE_SQL))
+        conn.execute(text(_SUPERSESSION_MAP_TABLE_SQL))
+        for stmt in _IFW_RULES_INDEXES_SQL + _DEADLINE_INDEXES_SQL:
             conn.execute(text(stmt))
 
 
@@ -448,6 +552,108 @@ def _backfill_applicant_names_once(engine) -> None:
     logger.info("applicant_name backfill thread started (daemon)")
 
 
+# Backfill earliest_priority_date from xml_raw using xpath. Picks the
+# minimum FilingDate across DomesticPriorityList + ForeignPriorityList +
+# DomesticBenefit. Same per-row EXCEPTION isolation as the other backfills
+# so a single malformed XML row can't abort the whole pass.
+_PRIORITY_BACKFILL_FLAG = "schema.earliestPriorityDateBackfilled"
+_PRIORITY_BACKFILL_SQL = """
+DO $$
+DECLARE
+  r RECORD;
+  v_date DATE;
+  v_done INTEGER := 0;
+BEGIN
+  FOR r IN
+    SELECT id, xml_raw
+      FROM applications
+     WHERE earliest_priority_date IS NULL
+       AND xml_raw IS NOT NULL
+       AND xml_raw <> ''
+  LOOP
+    BEGIN
+      SELECT MIN(NULLIF(BTRIM(t::text), '')::date) INTO v_date
+        FROM unnest(
+          xpath('//DomesticPriorityList/DomesticPriority/FilingDate/text()', xmlparse(content r.xml_raw))
+            || xpath('//ForeignPriorityList/ForeignPriority/FilingDate/text()', xmlparse(content r.xml_raw))
+            || xpath('//DomesticBenefit/FilingDate/text()', xmlparse(content r.xml_raw))
+        ) AS t;
+      IF v_date IS NOT NULL THEN
+        UPDATE applications SET earliest_priority_date = v_date WHERE id = r.id;
+        v_done := v_done + 1;
+      END IF;
+    EXCEPTION WHEN OTHERS THEN
+      NULL;
+    END;
+  END LOOP;
+  RAISE NOTICE 'earliest_priority_date backfill: % rows updated', v_done;
+END $$;
+"""
+
+
+def _set_priority_backfill_flag(engine) -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO app_settings (key, value, updated_at) "
+                "VALUES (:k, '1', now()) "
+                "ON CONFLICT (key) DO UPDATE SET value = '1', updated_at = now()"
+            ),
+            {"k": _PRIORITY_BACKFILL_FLAG},
+        )
+
+
+def _run_priority_backfill_worker(database_url: str) -> None:
+    engine = create_engine(database_url, pool_pre_ping=True)
+    try:
+        logger.info("Backfilling earliest_priority_date from xml_raw (background)…")
+        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            conn.execute(text(_PRIORITY_BACKFILL_SQL))
+        _set_priority_backfill_flag(engine)
+        logger.info("earliest_priority_date backfill complete")
+    except Exception:
+        logger.exception("earliest_priority_date backfill failed; will retry on next startup")
+    finally:
+        engine.dispose()
+
+
+def _backfill_earliest_priority_date_once(engine) -> None:
+    insp = inspect(engine)
+    if not insp.has_table("applications") or not insp.has_table("app_settings"):
+        return
+    cols = {c["name"] for c in insp.get_columns("applications")}
+    if "earliest_priority_date" not in cols or "xml_raw" not in cols:
+        return
+    with engine.connect() as conn:
+        already = conn.execute(
+            text("SELECT value FROM app_settings WHERE key = :k"),
+            {"k": _PRIORITY_BACKFILL_FLAG},
+        ).first()
+        if already and (already[0] or "").strip() in ("1", "true", "yes"):
+            return
+        pending = conn.execute(
+            text(
+                "SELECT 1 FROM applications "
+                "WHERE earliest_priority_date IS NULL AND xml_raw IS NOT NULL "
+                "AND xml_raw <> '' LIMIT 1"
+            )
+        ).first()
+    if pending is None:
+        _set_priority_backfill_flag(engine)
+        return
+    database_url = get_database_url()
+    if not database_url:
+        return
+    t = threading.Thread(
+        target=_run_priority_backfill_worker,
+        args=(database_url,),
+        name="earliest-priority-date-backfill",
+        daemon=True,
+    )
+    t.start()
+    logger.info("earliest_priority_date backfill thread started (daemon)")
+
+
 def _ensure_patent_applications_view(engine) -> None:
     insp = inspect(engine)
     if not insp.has_table("applications") or not insp.has_table("application_analytics"):
@@ -549,6 +755,7 @@ def ensure_schema_migrations() -> None:
         _ensure_patent_applications_view(engine)
         _backfill_applicant_names_once(engine)
         _backfill_has_child_continuation_once(engine)
+        _backfill_earliest_priority_date_once(engine)
     finally:
         engine.dispose()
 
