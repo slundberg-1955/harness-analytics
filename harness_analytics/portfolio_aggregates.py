@@ -61,6 +61,37 @@ def _days_to_noa_values(rows: Iterable[dict[str, Any]]) -> list[int]:
 _CHM_ALLOWED_STATUS_CODES: frozenset[int] = frozenset({150, 93, 159})
 
 
+def _deadlines_within(rows: Iterable[dict[str, Any]], days: int) -> int:
+    """Count rows whose next_deadline_date falls within ``days`` of today.
+
+    Today's date is computed at call time (UTC date is fine for KPI counts —
+    USPTO deadlines are date-only). Rows without a next_deadline_date are
+    excluded. Past-due dates count for ``days >= 0`` so the "Due in 30d" KPI
+    naturally absorbs overdue items into the same number — that's the design
+    doc behavior.
+    """
+    from datetime import date as _date
+
+    today = _date.today()
+    cutoff_days = days
+    out = 0
+    for r in rows:
+        nd = r.get("next_deadline_date")
+        if nd is None:
+            continue
+        if hasattr(nd, "isoformat"):
+            d = nd
+        else:
+            try:
+                d = _date.fromisoformat(str(nd)[:10])
+            except ValueError:
+                continue
+        delta = (d - today).days
+        if delta <= cutoff_days:
+            out += 1
+    return out
+
+
 def compute_kpis(rows: list[dict[str, Any]]) -> dict[str, Any]:
     total = len(rows)
     patented = sum(1 for r in rows if r.get("application_status_code") == 150)
@@ -132,6 +163,16 @@ def compute_kpis(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "interviewCount": interview_count,
         "rceRatePct": rce_rate,
         "rceCount": rce_count,
+        # M7: Deadlines Due (30d) KPI. Pulls from the
+        # patent_applications view's next_deadline_date column, which is
+        # populated by a correlated subquery on computed_deadlines.
+        "deadlinesDue30d": _deadlines_within(rows, 30),
+        "overdueDeadlines": sum(
+            (_get_int(r, "overdue_deadline_count")) for r in rows
+        ),
+        "openDeadlines": sum(
+            (_get_int(r, "open_deadline_count")) for r in rows
+        ),
     }
 
 

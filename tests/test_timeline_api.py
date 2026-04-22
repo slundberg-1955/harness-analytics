@@ -161,6 +161,21 @@ def test_actions_inbox_validates_query_params(monkeypatch: pytest.MonkeyPatch) -
     assert "window" in r.json()["detail"].lower()
 
 
+def test_admin_rules_requires_admin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Legacy basic-auth callers don't have a DB-backed user, so they shouldn't
+    be able to read or mutate rules. Either 401 (no CurrentUser) or 403
+    (CurrentUser is below ADMIN) is acceptable proof the route is wired."""
+    client = _make_client(monkeypatch)
+    r = client.get("/portal/api/admin/rules", auth=("viewer", "test-pw"))
+    assert r.status_code in (401, 403)
+    r = client.put(
+        "/portal/api/admin/rules/1",
+        json={"description": "x"},
+        auth=("viewer", "test-pw"),
+    )
+    assert r.status_code in (401, 403, 404)
+
+
 def test_action_post_requires_known_action(monkeypatch: pytest.MonkeyPatch) -> None:
     """POST validation runs before the DB lookup, so a fake session is fine.
 

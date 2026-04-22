@@ -23,8 +23,8 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
@@ -43,6 +43,46 @@ from harness_analytics.models import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/portal/api", tags=["timeline-api"])
+
+# Separate (unauthenticated) router for the per-user ICS feed. The portal
+# middleware lets /portal/ics/* through; the route itself authenticates
+# against users.ics_token.
+ics_router = APIRouter(prefix="/portal/ics", tags=["timeline-ics"])
+
+
+@ics_router.get("/{user_id}.ics")
+def user_ics_feed(
+    user_id: int,
+    request: Request,
+    token: str = Query(""),
+    db: Session = Depends(get_db),
+) -> Response:
+    from harness_analytics.timeline.ics import (
+        find_user_by_token,
+        render_user_feed,
+    )
+
+    target = find_user_by_token(db, user_id, token)
+    if target is None:
+        # Don't leak whether the user exists.
+        raise HTTPException(status_code=404, detail="Calendar not found")
+
+    def label_for(rule_id: int) -> Optional[str]:
+        rule = _rule_for(db, rule_id)
+        return rule.description if rule else None
+
+    base_url = str(request.base_url).rstrip("/")
+    body = render_user_feed(
+        db, target, base_url=base_url, rules_label_lookup=label_for
+    )
+    return Response(
+        content=body,
+        media_type="text/calendar; charset=utf-8",
+        headers={
+            "Content-Disposition": f'inline; filename="harness-{user_id}.ics"',
+            "Cache-Control": "private, max-age=300",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +152,36 @@ def _serialize_deadline(
         if u is not None:
             assigned = {"id": u.id, "name": u.name or u.email, "email": u.email}
 
+    # M9: surface verification status. Done as a left-join-style lookup so
+    # the API doesn't add a second query in the hot read path.
+    verified_payload: Optional[dict[str, Any]] = None
+    try:
+        from harness_analytics.models import VerifiedDeadline
+
+        vd = db.scalar(
+            select(VerifiedDeadline).where(VerifiedDeadline.deadline_id == cd.id)
+        )
+        if vd is not None:
+            actor = None
+            if vd.verified_by_user_id is not None:
+                u = users_cache.get(vd.verified_by_user_id) or db.get(
+                    User, vd.verified_by_user_id
+                )
+                if u is not None:
+                    users_cache[vd.verified_by_user_id] = u
+                    actor = {"id": u.id, "name": u.name or u.email}
+            verified_payload = {
+                "verified_at": _iso(vd.verified_at),
+                "verified_date": _iso(vd.verified_date),
+                "verified_by": actor,
+                "source": vd.source,
+                "note": vd.note,
+            }
+    except Exception:  # noqa: BLE001
+        # verified_deadlines may not exist yet on environments that haven't
+        # applied the 0005 migration; we don't want to break the timeline UI.
+        verified_payload = None
+
     payload: dict[str, Any] = {
         "id": cd.id,
         "application_id": cd.application_id,
@@ -139,6 +209,7 @@ def _serialize_deadline(
         "authority": rule.authority if rule else None,
         "user_note": rule.user_note if rule else None,
         "computed_at": _iso(cd.computed_at),
+        "verified": verified_payload,
     }
 
     if include_history:
@@ -374,7 +445,12 @@ def deadline_detail(
 # ---------------------------------------------------------------------------
 
 
-_ALLOWED_ACTIONS = {"assign", "complete", "snooze", "unsnooze", "note", "reopen"}
+# M9: 'verify' / 'unverify' join the existing action verbs so they share the
+# same audit trail, role gate, and shape on the wire.
+_ALLOWED_ACTIONS = {
+    "assign", "complete", "snooze", "unsnooze", "note", "reopen",
+    "verify", "unverify",
+}
 
 
 @router.post("/timeline/deadlines/{deadline_id}/actions")
@@ -457,6 +533,47 @@ def deadline_action(
         cd.status = "OPEN"
         cd.completed_at = None
         audit_payload["after"]["status"] = "OPEN"
+
+    elif action == "verify":
+        # Attorney spot-check: stamp the deadline as verified by this user.
+        # Requires ATTORNEY+ in spirit; we keep it at PARALEGAL+ on the role
+        # gate but record who verified so dashboards can filter.
+        from harness_analytics.models import VerifiedDeadline
+
+        existing = db.scalar(
+            select(VerifiedDeadline).where(VerifiedDeadline.deadline_id == cd.id)
+        )
+        note_in = (payload.get("note") or "").strip() or None
+        verified_date = cd.primary_date
+        if existing is not None:
+            audit_payload["before"]["verified_by_user_id"] = existing.verified_by_user_id
+            existing.verified_by_user_id = user.id
+            existing.verified_date = verified_date
+            existing.verified_at = datetime.now(timezone.utc)
+            existing.note = note_in
+        else:
+            db.add(
+                VerifiedDeadline(
+                    deadline_id=cd.id,
+                    verified_by_user_id=user.id,
+                    verified_date=verified_date,
+                    source="manual",
+                    note=note_in,
+                )
+            )
+        audit_payload["after"]["verified_by_user_id"] = user.id
+
+    elif action == "unverify":
+        from harness_analytics.models import VerifiedDeadline
+
+        existing = db.scalar(
+            select(VerifiedDeadline).where(VerifiedDeadline.deadline_id == cd.id)
+        )
+        if existing is None:
+            raise HTTPException(status_code=409, detail="Deadline is not verified")
+        audit_payload["before"]["verified_by_user_id"] = existing.verified_by_user_id
+        db.delete(existing)
+        audit_payload["after"]["verified_by_user_id"] = None
 
     db.add(
         DeadlineEvent(
@@ -575,3 +692,305 @@ def actions_inbox(
             "as_of": _iso(datetime.now(timezone.utc)),
         }
     )
+
+
+# ---------------------------------------------------------------------------
+# M8: Rules admin endpoints (ADMIN/OWNER)
+#
+# These power /portal/admin/rules. The list endpoint also surfaces the top
+# unmapped IFW codes so the admin can decide whether to add a rule.
+# Mutations enqueue a tenant-wide recompute via Arq when available; otherwise
+# they recompute synchronously so dev/test setups without Redis still work.
+# ---------------------------------------------------------------------------
+
+
+_RULE_FIELDS_EDITABLE = {
+    "description": str,
+    "kind": str,
+    "trigger_label": str,
+    "user_note": str,
+    "authority": str,
+    "extendable": bool,
+    "active": bool,
+    "priority_tier": (str, type(None)),
+    "ssp_months": (int, type(None)),
+    "max_months": (int, type(None)),
+    "due_months_from_grant": (int, type(None)),
+    "grace_months_from_grant": (int, type(None)),
+    "from_filing_months": (int, type(None)),
+    "from_priority_months": (int, type(None)),
+    "base_months_from_priority": (int, type(None)),
+    "late_months_from_priority": (int, type(None)),
+}
+
+
+def _rule_to_dict(row: IfwRule) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "tenant_id": row.tenant_id,
+        "code": row.code,
+        "description": row.description,
+        "kind": row.kind,
+        "aliases": list(row.aliases or []),
+        "ssp_months": row.ssp_months,
+        "max_months": row.max_months,
+        "due_months_from_grant": row.due_months_from_grant,
+        "grace_months_from_grant": row.grace_months_from_grant,
+        "from_filing_months": row.from_filing_months,
+        "from_priority_months": row.from_priority_months,
+        "base_months_from_priority": row.base_months_from_priority,
+        "late_months_from_priority": row.late_months_from_priority,
+        "extendable": bool(row.extendable),
+        "trigger_label": row.trigger_label,
+        "user_note": row.user_note or "",
+        "authority": row.authority,
+        "warnings": list(row.warnings or []),
+        "priority_tier": row.priority_tier,
+        "patent_type_applicability": list(row.patent_type_applicability or []),
+        "active": bool(row.active),
+        "updated_at": _iso(row.updated_at),
+    }
+
+
+@router.get("/admin/rules")
+def admin_list_rules(
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_role("ADMIN")),
+) -> JSONResponse:
+    """List effective rules for the caller's tenant + top unmapped codes.
+
+    Tenant overrides shadow globals; the response flags `is_override=True`
+    on rows whose `tenant_id` matches the caller's tenant. The unmapped
+    panel surfaces codes seen during materialization that have no rule —
+    these are the most useful targets for new rules.
+    """
+    from harness_analytics.models import UnmappedIfwCode
+    from harness_analytics.timeline.rules_repo import list_rules
+
+    tenant = user.tenant_id or "global"
+    rows = list_rules(db, tenant_id=tenant)
+
+    rules_payload: list[dict[str, Any]] = []
+    for r in rows:
+        d = _rule_to_dict(r)
+        d["is_override"] = r.tenant_id == tenant and tenant != "global"
+        rules_payload.append(d)
+
+    unmapped_q = (
+        db.query(UnmappedIfwCode)
+        .filter(UnmappedIfwCode.tenant_id.in_([tenant, "global"]))
+        .order_by(UnmappedIfwCode.count.desc(), UnmappedIfwCode.code.asc())
+        .limit(50)
+    )
+    unmapped = [
+        {
+            "code": u.code,
+            "count": int(u.count or 0),
+            "first_seen": _iso(u.first_seen),
+            "last_seen": _iso(u.last_seen),
+        }
+        for u in unmapped_q.all()
+    ]
+
+    return JSONResponse(
+        {
+            "tenant_id": tenant,
+            "rules": rules_payload,
+            "unmapped_codes": unmapped,
+        }
+    )
+
+
+@router.get("/admin/rules/{rule_id}")
+def admin_get_rule(
+    rule_id: int,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_role("ADMIN")),
+) -> JSONResponse:
+    row = db.get(IfwRule, rule_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    tenant = user.tenant_id or "global"
+    if row.tenant_id not in (tenant, "global"):
+        raise HTTPException(status_code=403, detail="Rule belongs to another tenant")
+    out = _rule_to_dict(row)
+    out["is_override"] = row.tenant_id == tenant and tenant != "global"
+    return JSONResponse(out)
+
+
+def _coerce_field(name: str, value: Any) -> Any:
+    """Coerce JSON input to the column type. Empty string → None for nullable
+    numeric/text fields. Raises 400 on type mismatch."""
+    types = _RULE_FIELDS_EDITABLE.get(name)
+    if types is None:
+        raise HTTPException(status_code=400, detail=f"Field {name!r} is not editable")
+    if isinstance(types, tuple):
+        # Nullable column.
+        if value is None or value == "":
+            return None
+        primary = types[0]
+        try:
+            return primary(value) if primary is not str else str(value)
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400, detail=f"Field {name!r} expects {primary.__name__}"
+            )
+    if types is bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+    if types is int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"Field {name!r} expects int")
+    return str(value) if value is not None else ""
+
+
+@router.put("/admin/rules/{rule_id}")
+def admin_update_rule(
+    rule_id: int,
+    payload: dict[str, Any] = Body(...),
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_role("ADMIN")),
+) -> JSONResponse:
+    """Update editable fields on a rule. If the rule is a `global` row and the
+    caller belongs to a non-global tenant, we *clone* it as a tenant override
+    so changes don't leak across tenants. Either way we enqueue a tenant-wide
+    recompute so the dashboard reflects the new rule within minutes.
+    """
+    from harness_analytics.timeline.materializer import recompute_for_tenant
+
+    row = db.get(IfwRule, rule_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    tenant = user.tenant_id or "global"
+    if row.tenant_id not in (tenant, "global"):
+        raise HTTPException(status_code=403, detail="Rule belongs to another tenant")
+
+    # If admin is editing a global row from a non-global tenant, branch off
+    # an override so the global stays canonical for everyone else.
+    if row.tenant_id == "global" and tenant != "global":
+        existing_override = db.scalar(
+            select(IfwRule).where(IfwRule.tenant_id == tenant, IfwRule.code == row.code)
+        )
+        if existing_override is None:
+            override = IfwRule(
+                tenant_id=tenant,
+                code=row.code,
+                description=row.description,
+                kind=row.kind,
+                aliases=list(row.aliases or []),
+                ssp_months=row.ssp_months,
+                max_months=row.max_months,
+                due_months_from_grant=row.due_months_from_grant,
+                grace_months_from_grant=row.grace_months_from_grant,
+                from_filing_months=row.from_filing_months,
+                from_priority_months=row.from_priority_months,
+                base_months_from_priority=row.base_months_from_priority,
+                late_months_from_priority=row.late_months_from_priority,
+                extendable=row.extendable,
+                trigger_label=row.trigger_label,
+                user_note=row.user_note or "",
+                authority=row.authority,
+                warnings=list(row.warnings or []),
+                priority_tier=row.priority_tier,
+                patent_type_applicability=list(row.patent_type_applicability or []),
+                active=row.active,
+            )
+            db.add(override)
+            db.flush()
+            target = override
+        else:
+            target = existing_override
+    else:
+        target = row
+
+    # Apply the patch.
+    for k, v in payload.items():
+        if k in {"aliases", "warnings", "patent_type_applicability"}:
+            if not isinstance(v, list):
+                raise HTTPException(status_code=400, detail=f"{k} must be a list")
+            setattr(target, k, [str(x) for x in v])
+        elif k in _RULE_FIELDS_EDITABLE:
+            setattr(target, k, _coerce_field(k, v))
+        # silently ignore unknown keys (forward-compat)
+
+    target.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(target)
+
+    # Enqueue a tenant-wide recompute. Best-effort: if Redis isn't configured
+    # we fall through to a synchronous call so dev/test still works.
+    enqueue_status = "queued"
+    try:
+        import asyncio
+
+        from harness_analytics.jobs.queue import enqueue
+
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # FastAPI is sync here; schedule on a fresh loop.
+                raise RuntimeError("nested loop")
+        except RuntimeError:
+            asyncio.run(enqueue("timeline_recompute_all", tenant))
+        else:
+            asyncio.run(enqueue("timeline_recompute_all", tenant))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not enqueue tenant recompute, falling back: %s", exc)
+        try:
+            recompute_for_tenant(db, tenant)
+            enqueue_status = "synchronous"
+        except Exception:  # noqa: BLE001
+            logger.exception("Synchronous recompute fallback also failed")
+            enqueue_status = "deferred"
+
+    out = _rule_to_dict(target)
+    out["is_override"] = target.tenant_id == tenant and tenant != "global"
+    out["recompute"] = enqueue_status
+    return JSONResponse(out)
+
+
+# ---------------------------------------------------------------------------
+# M9: ICS feed (per-user, token-authenticated) + token management
+# ---------------------------------------------------------------------------
+
+
+@router.get("/me/ics-token")
+def my_ics_token(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+) -> JSONResponse:
+    """Return the current user's ICS feed URL, generating the token on
+    first call. Idempotent."""
+    from harness_analytics.timeline.ics import issue_or_reuse_token
+
+    db_user = db.get(User, user.id)
+    if db_user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    token = issue_or_reuse_token(db, db_user)
+    base = str(request.base_url).rstrip("/")
+    feed_url = f"{base}/portal/ics/{db_user.id}.ics?token={token}"
+    return JSONResponse({"user_id": db_user.id, "token": token, "url": feed_url})
+
+
+@router.post("/me/ics-token/rotate")
+def rotate_my_ics_token(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+) -> JSONResponse:
+    """Rotate the caller's ICS token. Old subscriptions immediately stop working."""
+    from harness_analytics.timeline.ics import rotate_token
+
+    db_user = db.get(User, user.id)
+    if db_user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    token = rotate_token(db, db_user)
+    base = str(request.base_url).rstrip("/")
+    feed_url = f"{base}/portal/ics/{db_user.id}.ics?token={token}"
+    return JSONResponse({"user_id": db_user.id, "token": token, "url": feed_url})

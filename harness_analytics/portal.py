@@ -173,6 +173,12 @@ class PortalAuthMiddleware(BaseHTTPMiddleware):
         if path in ("/portal/logout", "/portal/logout/"):
             return await call_next(request)
 
+        # M9: per-user ICS feed authenticates via signed token in the URL,
+        # not the portal session. Calendar clients (Outlook/Google/Apple)
+        # never present cookies or Basic auth.
+        if path.startswith("/portal/ics/"):
+            return await call_next(request)
+
         # Authentication is configured if EITHER PORTAL_PASSWORD is set OR a
         # real user exists in the DB.
         if not _portal_password():
@@ -448,6 +454,20 @@ def portal_actions_inbox(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(
         request,
         "actions_inbox.html",
+        {"show_sign_out": True},
+    )
+
+
+@router.get("/admin/rules", response_class=HTMLResponse)
+def portal_rules_admin(request: Request) -> HTMLResponse:
+    """Timeline rules admin (M8). The page itself is open to any authenticated
+    portal user; the underlying /portal/api/admin/rules endpoints enforce the
+    ADMIN/OWNER requirement, so non-admins will see an empty page with a 403
+    message instead of being able to mutate anything.
+    """
+    return templates.TemplateResponse(
+        request,
+        "rules_admin.html",
         {"show_sign_out": True},
     )
 

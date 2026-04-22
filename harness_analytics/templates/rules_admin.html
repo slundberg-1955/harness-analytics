@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Timeline Rules — Harness analytics{% endblock %}
+{% block extra_head %}
+<link rel="stylesheet" href="/static/timeline.css?v={{ static_version }}">
+<link rel="stylesheet" href="/static/rules_admin.css?v={{ static_version }}">
+{% endblock %}
+{% block content %}
+<div class="card ra-page">
+  <div class="ra-header">
+    <div>
+      <h1>Prosecution Timeline Rules</h1>
+      <div class="sub">Edit the calculation engine that produces deadlines across all matters.
+        Saving an edit triggers a tenant-wide recompute.</div>
+    </div>
+    <div class="ra-meta" id="ra-meta">Loading…</div>
+  </div>
+
+  <div class="ra-layout">
+    <!-- LEFT: rule list + unmapped panel -->
+    <aside class="ra-side">
+      <div class="ra-side-section">
+        <input id="ra-search" type="text" placeholder="Search rules by code or description…" autocomplete="off" />
+      </div>
+      <div class="ra-side-section ra-filter-row">
+        <button type="button" class="ra-mini-chip active" data-rule-filter="all">All</button>
+        <button type="button" class="ra-mini-chip" data-rule-filter="active">Active</button>
+        <button type="button" class="ra-mini-chip" data-rule-filter="overrides">Overrides</button>
+        <button type="button" class="ra-mini-chip" data-rule-filter="inactive">Inactive</button>
+      </div>
+      <div class="ra-rule-list" id="ra-rule-list">
+        <div class="ra-empty">Loading rules…</div>
+      </div>
+
+      <div class="ra-side-section ra-unmapped-head">
+        <div class="ra-side-title">Unmapped IFW codes</div>
+        <div class="ra-side-hint">Codes seen during materialization without a matching rule.</div>
+      </div>
+      <div class="ra-unmapped" id="ra-unmapped">
+        <div class="ra-empty">Loading…</div>
+      </div>
+    </aside>
+
+    <!-- RIGHT: editor -->
+    <section class="ra-editor" id="ra-editor">
+      <div class="ra-empty">Select a rule from the list to edit it.</div>
+    </section>
+  </div>
+</div>
+
+<script src="/static/rules_admin.js?v={{ static_version }}" defer></script>
+{% endblock %}

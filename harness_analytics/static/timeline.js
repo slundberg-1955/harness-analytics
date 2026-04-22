@@ -102,6 +102,7 @@
           <span class="tl-pill ${pillClass(rw.severity)}">
             <span class="tl-pill-dot"></span>${escHtml(rw.status || "OPEN")}
           </span>
+          ${rw.verified ? `<span class="tl-verified-badge" title="Verified ${escHtml((rw.verified.verified_at || "").slice(0, 10))}">\u2713 Verified</span>` : ""}
         </div>
         ${dateCards}
         ${eot}
@@ -275,7 +276,9 @@
         body.innerHTML = `
           <div><strong>${escHtml(cd.application_title || "")}</strong></div>
           <div class="tl-mono" style="font-size:11px;color:#888;margin-bottom:12px;">${escHtml(cd.application_number || "")}</div>
-          <div><strong>${escHtml(cd.primary_label || "")}</strong>: ${fmtDate(cd.primary_date)}</div>
+          <div><strong>${escHtml(cd.primary_label || "")}</strong>: ${fmtDate(cd.primary_date)}
+            ${cd.verified ? `<span class="tl-verified-badge" title="Verified by ${escHtml((cd.verified.verified_by && cd.verified.verified_by.name) || "attorney")} on ${escHtml((cd.verified.verified_at || "").slice(0, 10))}">\u2713 Verified</span>` : ""}
+          </div>
           <div>Trigger: ${fmtDate(cd.trigger_date)} (${escHtml(cd.trigger_label || "")})</div>
           <div>Status: ${escHtml(cd.status)}</div>
           ${cd.authority ? `<div class="tl-authority" style="margin-top:8px;">${escHtml(cd.authority)}</div>` : ""}

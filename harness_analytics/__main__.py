@@ -101,8 +101,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Harness IP prosecution analytics")
     parser.add_argument(
         "command",
-        choices=["init", "ingest", "report", "all", "analytics"],
-        help="init=DDL; ingest=XML folder; report=Excel; all=init+ingest+report; analytics=recompute only",
+        choices=["init", "ingest", "report", "all", "analytics", "timeline-recompute", "unmapped-codes"],
+        help=(
+            "init=DDL; ingest=XML folder; report=Excel; all=init+ingest+report; "
+            "analytics=recompute only; timeline-recompute=rebuild deadlines for the tenant; "
+            "unmapped-codes=print top unmapped IFW codes"
+        ),
     )
     parser.add_argument(
         "--db-url",
@@ -152,6 +156,17 @@ def main() -> None:
         action="store_true",
         help="After ingest, skip analytics pass (use analytics command later)",
     )
+    parser.add_argument(
+        "--tenant-id",
+        default="global",
+        help="Tenant scope for timeline-recompute / unmapped-codes (default: global)",
+    )
+    parser.add_argument(
+        "--top",
+        type=int,
+        default=20,
+        help="How many unmapped codes to print (default: 20)",
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
     _configure_logging(args.verbose)
@@ -200,6 +215,32 @@ def main() -> None:
         with Session() as db:
             build_excel_report(db, args.output)
         print(f"Report saved to {args.output}")
+
+    if args.command == "timeline-recompute":
+        from harness_analytics.timeline.materializer import recompute_for_tenant
+        with Session() as db:
+            n = recompute_for_tenant(db, args.tenant_id)
+            db.commit()
+        print(f"Recomputed deadlines for tenant {args.tenant_id!r}: {n} applications.")
+
+    if args.command == "unmapped-codes":
+        from harness_analytics.models import UnmappedIfwCode
+        from sqlalchemy import select as _select
+        with Session() as db:
+            rows = db.scalars(
+                _select(UnmappedIfwCode)
+                .where(UnmappedIfwCode.tenant_id.in_([args.tenant_id, "global"]))
+                .order_by(UnmappedIfwCode.count.desc())
+                .limit(args.top)
+            ).all()
+        if not rows:
+            print("No unmapped codes recorded.")
+        else:
+            print(f"Top {len(rows)} unmapped IFW codes (tenant={args.tenant_id}):")
+            print(f"  {'CODE':<10} {'COUNT':>10}  LAST SEEN")
+            for r in rows:
+                last = r.last_seen.isoformat() if r.last_seen else "-"
+                print(f"  {r.code:<10} {r.count:>10,}  {last}")
 
 
 if __name__ == "__main__":

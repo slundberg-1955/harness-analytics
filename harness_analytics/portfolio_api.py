@@ -55,6 +55,10 @@ _SORT_COLUMNS: dict[str, str] = {
     "daysFilingToNoa": "days_filing_to_noa",
     "daysFilingToIssue": "days_filing_to_issue",
     "updatedAt": "updated_at",
+    # M7: timeline summary sort keys (sorted NULLS LAST by default).
+    "nextDeadlineDate": "next_deadline_date",
+    "openDeadlineCount": "open_deadline_count",
+    "overdueDeadlineCount": "overdue_deadline_count",
 }
 
 # Columns selected from the `patent_applications` view and returned in `rows`.
@@ -94,6 +98,14 @@ _ROW_COLUMNS: list[str] = [
     "office_name",
     "updated_at",
     "has_child_continuation",
+    # M7: timeline summary fields, populated by correlated subqueries on
+    # computed_deadlines from the patent_applications view (see
+    # _PATENT_APPLICATIONS_VIEW_SQL).
+    "next_deadline_date",
+    "next_deadline_label",
+    "next_deadline_severity",
+    "open_deadline_count",
+    "overdue_deadline_count",
 ]
 
 _DEFAULT_PAGE_SIZE = 50
@@ -281,6 +293,24 @@ def _build_where(params: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         binds["filing_to"] = filing_to
         conditions.append("filing_date <= :filing_to")
 
+    # M7: timeline-driven filters. Both are simple booleans / day-counts so
+    # they always live next to the existing chips rather than in the
+    # multi-select popover.
+    has_open = _parse_bool(params.get("hasOpenDeadlines"))
+    if has_open is True:
+        conditions.append("COALESCE(open_deadline_count, 0) > 0")
+    elif has_open is False:
+        conditions.append("COALESCE(open_deadline_count, 0) = 0")
+
+    due_within = (params.get("dueWithin") or "").strip()
+    if due_within in {"7", "30", "90"}:
+        conditions.append(
+            f"next_deadline_date IS NOT NULL "
+            f"AND next_deadline_date <= CURRENT_DATE + INTERVAL '{int(due_within)} days'"
+        )
+    elif due_within == "overdue":
+        conditions.append("COALESCE(overdue_deadline_count, 0) > 0")
+
     where_sql = (" WHERE " + " AND ".join(conditions)) if conditions else ""
     return where_sql, binds
 
@@ -332,6 +362,12 @@ def _row_to_json(row: dict[str, Any]) -> dict[str, Any]:
         "isJac": bool(row.get("is_jac")),
         "officeName": row.get("office_name"),
         "updatedAt": _iso(row.get("updated_at")),
+        # M7: timeline summary projected straight from the view.
+        "nextDeadlineDate": _iso(row.get("next_deadline_date")),
+        "nextDeadlineLabel": row.get("next_deadline_label"),
+        "nextDeadlineSeverity": row.get("next_deadline_severity"),
+        "openDeadlineCount": row.get("open_deadline_count") or 0,
+        "overdueDeadlineCount": row.get("overdue_deadline_count") or 0,
     }
 
 
@@ -388,6 +424,8 @@ def _params_from_request(
     filingTo: Optional[str],
     sort: Optional[str],
     dir: Optional[str],
+    hasOpenDeadlines: Optional[str] = None,
+    dueWithin: Optional[str] = None,
 ) -> dict[str, Any]:
     return {
         "q": q,
@@ -403,6 +441,8 @@ def _params_from_request(
         "filingTo": filingTo,
         "sort": sort,
         "dir": dir,
+        "hasOpenDeadlines": hasOpenDeadlines,
+        "dueWithin": dueWithin,
     }
 
 
@@ -421,6 +461,8 @@ def portfolio(
     filingTo: Optional[str] = None,
     sort: Optional[str] = None,
     dir: Optional[str] = None,
+    hasOpenDeadlines: Optional[str] = None,
+    dueWithin: Optional[str] = None,
     page: int = Query(1, ge=1),
     pageSize: int = Query(_DEFAULT_PAGE_SIZE, ge=1, le=_MAX_PAGE_SIZE),
     db: Session = Depends(get_db),
@@ -428,6 +470,7 @@ def portfolio(
     params = _params_from_request(
         q, status, issueYear, artUnit, examiner, assignee, applicant,
         hadInterview, rceCount, filingFrom, filingTo, sort, dir,
+        hasOpenDeadlines=hasOpenDeadlines, dueWithin=dueWithin,
     )
 
     cap = _aggregate_row_cap()
@@ -468,11 +511,14 @@ def portfolio_csv(
     filingTo: Optional[str] = None,
     sort: Optional[str] = None,
     dir: Optional[str] = None,
+    hasOpenDeadlines: Optional[str] = None,
+    dueWithin: Optional[str] = None,
     db: Session = Depends(get_db),
 ) -> StreamingResponse:
     params = _params_from_request(
         q, status, issueYear, artUnit, examiner, assignee, applicant,
         hadInterview, rceCount, filingFrom, filingTo, sort, dir,
+        hasOpenDeadlines=hasOpenDeadlines, dueWithin=dueWithin,
     )
     rows = _fetch_rows(db, params)
 
@@ -616,6 +662,50 @@ def portfolio_facets(
                 "options": [
                     {"value": v, "label": labels[v], "count": counts.get(v, 0)}
                     for v in ("0", "1", "2", "gte3")
+                ],
+            }
+        )
+    if key == "hasOpenDeadlines":
+        rows = db.execute(
+            text(
+                "SELECT CASE WHEN COALESCE(open_deadline_count, 0) > 0 THEN 'true' "
+                "ELSE 'false' END AS v, COUNT(*) AS c "
+                "FROM patent_applications GROUP BY v"
+            )
+        ).all()
+        counts = {str(r[0]): int(r[1]) for r in rows}
+        return JSONResponse(
+            {
+                "key": key,
+                "options": [
+                    {"value": "true", "label": "Yes", "count": counts.get("true", 0)},
+                    {"value": "false", "label": "No", "count": counts.get("false", 0)},
+                ],
+            }
+        )
+    if key == "dueWithin":
+        # Five mutually-exclusive buckets. We pre-compute counts so the chip
+        # can show "Overdue (12) · Next 7 days (8) ..." without making the
+        # client run any math.
+        row = db.execute(
+            text(
+                "SELECT "
+                "  COALESCE(SUM(CASE WHEN COALESCE(overdue_deadline_count,0) > 0 THEN 1 ELSE 0 END), 0) AS overdue, "
+                "  COALESCE(SUM(CASE WHEN next_deadline_date IS NOT NULL AND next_deadline_date <= CURRENT_DATE + INTERVAL '7 days' THEN 1 ELSE 0 END), 0) AS d7, "
+                "  COALESCE(SUM(CASE WHEN next_deadline_date IS NOT NULL AND next_deadline_date <= CURRENT_DATE + INTERVAL '30 days' THEN 1 ELSE 0 END), 0) AS d30, "
+                "  COALESCE(SUM(CASE WHEN next_deadline_date IS NOT NULL AND next_deadline_date <= CURRENT_DATE + INTERVAL '90 days' THEN 1 ELSE 0 END), 0) AS d90 "
+                "FROM patent_applications"
+            )
+        ).first()
+        overdue, d7, d30, d90 = (int(row[0] or 0), int(row[1] or 0), int(row[2] or 0), int(row[3] or 0)) if row else (0, 0, 0, 0)
+        return JSONResponse(
+            {
+                "key": key,
+                "options": [
+                    {"value": "overdue", "label": "Overdue", "count": overdue},
+                    {"value": "7",  "label": "Next 7 days",  "count": d7},
+                    {"value": "30", "label": "Next 30 days", "count": d30},
+                    {"value": "90", "label": "Next 90 days", "count": d90},
                 ],
             }
         )

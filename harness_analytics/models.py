@@ -215,6 +215,8 @@ class User(Base):
         DateTime(timezone=True), server_default=func.now()
     )
     last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    # M9: per-user opaque token used to sign the personal ICS feed URL.
+    ics_token: Mapped[Optional[str]] = mapped_column(Text, unique=True)
 
 
 class UserSession(Base):
@@ -338,6 +340,34 @@ class ComputedDeadline(Base):
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class VerifiedDeadline(Base):
+    """Attorney-verified deadline (M9).
+
+    A separate row keeps the materializer free to recompute ``computed_deadlines``
+    aggressively without losing the human verification. We only store the
+    fields we need to render a "Verified" badge + audit trail; the underlying
+    deadline row remains the source of truth for the date itself.
+    """
+    __tablename__ = "verified_deadlines"
+    __table_args__ = (
+        UniqueConstraint("deadline_id", name="uq_verified_deadline"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    deadline_id: Mapped[int] = mapped_column(
+        ForeignKey("computed_deadlines.id", ondelete="CASCADE"), nullable=False
+    )
+    verified_by_user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    verified_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    verified_date: Mapped[date] = mapped_column(Date, nullable=False)
+    source: Mapped[str] = mapped_column(Text, nullable=False, default="manual")
+    note: Mapped[Optional[str]] = mapped_column(Text)
 
 
 class DeadlineEvent(Base):

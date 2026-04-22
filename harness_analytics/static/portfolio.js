@@ -35,7 +35,35 @@
     { key: "ifwANeCount",            label: "IFW A.NE",     sortable: false, align: "right",  defaultVisible: false, render: (r) => r.ifwANeCount ?? 0, css: "num" },
     { key: "isJac",                  label: "JAC",          sortable: false, align: "center", defaultVisible: false, render: renderBool },
     { key: "officeName",             label: "Office",       sortable: false, align: "left",   defaultVisible: false, render: (r) => r.officeName || "—" },
+    // M7: Prosecution Timeline summary columns. Default visible so the
+    // attorney sees "what's next" without opening every matter. Clicking
+    // the Next Action label opens the matter timeline tab in a new tab.
+    { key: "nextDeadlineDate",       label: "Next Deadline", sortable: true, align: "left",   defaultVisible: true,  render: renderNextDeadline, css: "mono" },
+    { key: "openDeadlineCount",      label: "Open Dl.",     sortable: true,  align: "right",  defaultVisible: true,  render: renderOpenCount, css: "num" },
+    { key: "overdueDeadlineCount",   label: "Overdue",      sortable: true,  align: "right",  defaultVisible: true,  render: renderOverdueCount, css: "num" },
   ];
+
+  function renderNextDeadline(r) {
+    if (!r.nextDeadlineDate) return `<span class="muted">—</span>`;
+    const sev = (r.nextDeadlineSeverity || "").toLowerCase();
+    const cls = sev === "danger" ? "tone-rose" :
+                sev === "warn"   ? "tone-amber" :
+                sev === "info"   ? "tone-blue" : "tone-slate";
+    const label = r.nextDeadlineLabel ? ` ${escapeHtml(r.nextDeadlineLabel)}` : "";
+    const href = r.applicationNumber
+      ? `/portal/matter/${encodeURIComponent(r.applicationNumber)}#prosecution-timeline-card`
+      : "#";
+    return `<a href="${href}" target="_blank" rel="noopener" class="pill ${cls}" style="text-decoration:none;" title="${escapeAttr(r.nextDeadlineLabel || "Open matter timeline")}">${fmtDate(r.nextDeadlineDate)}${label}</a>`;
+  }
+  function renderOpenCount(r) {
+    const n = r.openDeadlineCount || 0;
+    return n === 0 ? `<span class="muted">0</span>` : String(n);
+  }
+  function renderOverdueCount(r) {
+    const n = r.overdueDeadlineCount || 0;
+    if (n === 0) return `<span class="muted">0</span>`;
+    return `<span class="pill tone-rose">${n}</span>`;
+  }
 
   const COLUMN_STORAGE_KEY = "otto.portfolio.columns.v1";
   const SAVED_VIEWS_KEY = "otto.portfolio.savedViews.v1";
@@ -55,6 +83,9 @@
     { key: "rceCount",     label: "RCE Count",    kind: "single" },
     { key: "filingFrom",   label: "Filing ≥",     kind: "date"   },
     { key: "filingTo",     label: "Filing ≤",     kind: "date"   },
+    // M7: timeline-driven filters.
+    { key: "hasOpenDeadlines", label: "Has Open Deadlines", kind: "single" },
+    { key: "dueWithin",        label: "Due Within",         kind: "single" },
   ];
 
   function filterableMeta(key) {
@@ -298,6 +329,15 @@
       { label: "Avg OA Count", value: k.avgOaCount, sub: `${k.appsWithAtLeastOneOa} of ${k.totalApps} received ≥ 1 OA` },
       { label: "Interview Rate", value: k.interviewRatePct, unit: "%", sub: `${k.interviewCount} of ${k.totalApps} matters` },
       { label: "RCE Rate", value: k.rceRatePct, unit: "%", sub: `${k.rceCount} RCE${k.rceCount === 1 ? "" : "s"} filed` },
+      // M7: Deadlines Due (30d) KPI sourced from the patent_applications
+      // view. The "open · overdue" subtitle gives quick context without
+      // forcing the attorney to open the inbox.
+      {
+        label: "Deadlines Due (30d)",
+        value: k.deadlinesDue30d != null ? k.deadlinesDue30d : "—",
+        sub: `${k.openDeadlines || 0} open · ${k.overdueDeadlines || 0} overdue`,
+        subClass: (k.overdueDeadlines || 0) > 0 ? "down" : "",
+      },
     ];
     grid.innerHTML = cards.map((c, i) => `
       <div class="kpi" data-accent="${accents[i]}"${c.tooltip ? ` title="${escapeAttr(c.tooltip)}"` : ""}>
@@ -561,6 +601,11 @@
     if (kind === "single") {
       if (key === "hadInterview") return raw === "true" ? "Yes" : "No";
       if (key === "rceCount") return raw === "gte3" ? "3+" : raw;
+      if (key === "hasOpenDeadlines") return raw === "true" ? "Yes" : "No";
+      if (key === "dueWithin") {
+        if (raw === "overdue") return "Overdue";
+        if (raw === "7" || raw === "30" || raw === "90") return `≤ ${raw} days`;
+      }
     }
     if (kind === "multi") {
       const parts = splitMulti(raw);

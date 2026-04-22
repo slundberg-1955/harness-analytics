@@ -294,6 +294,28 @@ _DEADLINE_INDEXES_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_de_deadline ON deadline_events (deadline_id)",
 ]
 
+# M9: per-deadline verification (attorney spot-check) + per-user ICS feed token.
+_VERIFIED_DEADLINES_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS verified_deadlines (
+    id BIGSERIAL PRIMARY KEY,
+    deadline_id BIGINT NOT NULL REFERENCES computed_deadlines(id) ON DELETE CASCADE,
+    verified_by_user_id INT REFERENCES users(id) ON DELETE SET NULL,
+    verified_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    verified_date DATE NOT NULL,
+    source TEXT NOT NULL DEFAULT 'manual',
+    note TEXT,
+    UNIQUE (deadline_id)
+)
+"""
+
+_VERIFIED_DEADLINES_INDEXES_SQL = [
+    "CREATE INDEX IF NOT EXISTS idx_vd_user ON verified_deadlines (verified_by_user_id)",
+]
+
+_USERS_ICS_TOKEN_SQL = (
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS ics_token TEXT UNIQUE"
+)
+
 
 def _ensure_app_settings_table(engine) -> None:
     with engine.begin() as conn:
@@ -315,7 +337,19 @@ def _ensure_timeline_tables(engine) -> None:
         conn.execute(text(_COMPUTED_DEADLINES_TABLE_SQL))
         conn.execute(text(_DEADLINE_EVENTS_TABLE_SQL))
         conn.execute(text(_SUPERSESSION_MAP_TABLE_SQL))
-        for stmt in _IFW_RULES_INDEXES_SQL + _DEADLINE_INDEXES_SQL:
+        conn.execute(text(_VERIFIED_DEADLINES_TABLE_SQL))
+        # ics_token may not exist on older deployments — add idempotently.
+        try:
+            conn.execute(text(_USERS_ICS_TOKEN_SQL))
+        except Exception:  # noqa: BLE001
+            # `users` may not exist yet on a brand-new install; auth tables
+            # are ensured separately and this column is added on next boot.
+            pass
+        for stmt in (
+            _IFW_RULES_INDEXES_SQL
+            + _DEADLINE_INDEXES_SQL
+            + _VERIFIED_DEADLINES_INDEXES_SQL
+        ):
             conn.execute(text(stmt))
 
 

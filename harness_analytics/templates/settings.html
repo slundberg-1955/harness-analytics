@@ -71,4 +71,60 @@
     </p>
   </form>
 </div>
+
+<div class="card" id="ics-card">
+  <h2>Calendar feed (ICS)</h2>
+  <p class="muted" style="margin:0 0 0.75rem;">
+    Subscribe in Outlook / Google Calendar / Apple Calendar to see open USPTO deadlines for your tenant
+    on your own calendar. The link is personal &mdash; share it only with calendar clients you control.
+    Rotating the token immediately revokes any subscription using the old URL.
+  </p>
+  <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
+    <button type="button" id="ics-show">Show my feed URL</button>
+    <button type="button" id="ics-rotate" class="muted">Rotate token</button>
+    <button type="button" id="ics-copy" hidden>Copy</button>
+  </div>
+  <pre id="ics-url" class="mono" style="margin-top:0.75rem;padding:8px 10px;background:#f6f5f1;border-radius:6px;white-space:pre-wrap;word-break:break-all;display:none;"></pre>
+  <div id="ics-msg" class="muted" style="margin-top:0.5rem;"></div>
+</div>
+
+<script>
+(function () {
+  const showBtn = document.getElementById("ics-show");
+  const rotateBtn = document.getElementById("ics-rotate");
+  const copyBtn = document.getElementById("ics-copy");
+  const urlEl = document.getElementById("ics-url");
+  const msgEl = document.getElementById("ics-msg");
+  if (!showBtn) return;
+
+  function display(data) {
+    urlEl.textContent = data.url;
+    urlEl.style.display = "block";
+    copyBtn.hidden = false;
+    msgEl.textContent = "";
+  }
+  function fail(err) {
+    msgEl.textContent = "Could not load feed URL: " + (err && err.message ? err.message : err);
+  }
+  function load(method) {
+    fetch("/portal/api/me/ics-token" + (method === "POST" ? "/rotate" : ""), {
+      method: method,
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+    }).then((r) => r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status)))
+      .then(display).catch(fail);
+  }
+  showBtn.addEventListener("click", () => load("GET"));
+  rotateBtn.addEventListener("click", () => {
+    if (!confirm("Rotating will break any existing calendar subscription. Continue?")) return;
+    load("POST");
+  });
+  copyBtn.addEventListener("click", () => {
+    if (!urlEl.textContent) return;
+    navigator.clipboard.writeText(urlEl.textContent).then(() => {
+      msgEl.textContent = "Copied to clipboard.";
+    }).catch(() => { msgEl.textContent = "Copy failed."; });
+  });
+})();
+</script>
 {% endblock %}
