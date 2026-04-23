@@ -1,0 +1,27 @@
+[
+  {
+    "prev_kind": "standard_oa",
+    "new_kind": "standard_oa",
+    "note": "A new office action of the same kind supersedes any prior open response window for that rejection."
+  },
+  {
+    "prev_kind": "standard_oa",
+    "new_kind": "hard_noa",
+    "note": "A Notice of Allowance closes any open OA response window."
+  },
+  {
+    "prev_kind": "standard_oa",
+    "new_kind": "appeal_brief",
+    "note": "Filing an appeal brief moves the case off the open OA response track."
+  },
+  {
+    "prev_kind": "appeal_brief",
+    "new_kind": "standard_oa",
+    "note": "A new examiner action after appeal restarts examination and supersedes the brief deadline."
+  },
+  {
+    "prev_kind": "appeal_brief",
+    "new_kind": "hard_noa",
+    "note": "Allowance after appeal closes the appeal brief window."
+  }
+]

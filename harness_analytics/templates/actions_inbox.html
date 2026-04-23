@@ -11,7 +11,22 @@
       <h1>Upcoming Actions</h1>
       <div class="sub">Open USPTO deadlines across the portfolio. Filter, drill in, assign or snooze.</div>
     </div>
-    <div class="ai-meta" id="ai-meta">Loading…</div>
+    <div class="ai-meta-wrap">
+      <div class="ai-views" id="ai-views" hidden>
+        <button type="button" id="ai-views-btn" class="tl-btn tl-btn-ghost" aria-haspopup="true" aria-expanded="false">
+          <span id="ai-views-current">Views</span>
+          <span aria-hidden="true">▾</span>
+        </button>
+        <div class="ai-views-menu" id="ai-views-menu" hidden role="menu">
+          <div class="ai-views-empty muted" id="ai-views-empty">No saved views yet.</div>
+          <ul class="ai-views-list" id="ai-views-list" role="none"></ul>
+          <div class="ai-views-actions">
+            <button type="button" id="ai-views-save" class="tl-btn tl-btn-ghost">Save current as…</button>
+          </div>
+        </div>
+      </div>
+      <div class="ai-meta" id="ai-meta">Loading…</div>
+    </div>
   </div>
 
   <div class="ai-layout">
@@ -42,6 +57,7 @@
         <button type="button" class="ai-chip" data-filter-value="all">Anyone</button>
         <button type="button" class="ai-chip" data-filter-value="me">Assigned to me</button>
         <button type="button" class="ai-chip" data-filter-value="unassigned">Unassigned</button>
+        <button type="button" class="ai-chip" data-filter-value="team" data-min-role="ATTORNEY" hidden>My team</button>
       </div>
     </aside>
 

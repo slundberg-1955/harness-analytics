@@ -21,9 +21,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from harness_analytics.models import IfwRule as IfwRuleRow
+from harness_analytics.models import SupersessionMap as SupersessionMapRow
 from harness_analytics.timeline.calculator import IfwRule
 
 _RULES_JSON = Path(__file__).resolve().parent / "data" / "ifw-rules.json"
+_SUPERSESSION_SEED_JSON = (
+    Path(__file__).resolve().parent / "data" / "supersession_seed.json"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +180,10 @@ def seed_global_rules(db: Session, tenant_id: str = "global") -> int:
     """Upsert every row from the JSON file under the given tenant.
 
     Returns the number of rows inserted or updated. Idempotent.
+
+    Also seeds the default ``supersession_map`` pairs (M13) when the caller
+    is seeding the ``global`` tenant — this keeps the materializer's
+    conservative supersession logic populated out of the box.
     """
     rules = load_seed_rules()
     n = 0
@@ -204,4 +212,61 @@ def seed_global_rules(db: Session, tenant_id: str = "global") -> int:
             existing.updated_at = now
             n += 1
     db.commit()
+    if tenant_id == "global":
+        try:
+            seed_supersession_pairs(db, tenant_id="global")
+        except Exception:  # noqa: BLE001
+            # Don't let supersession seeding break a rule-seed run; the
+            # materializer falls back to "no supersession" if the table is
+            # empty, which is safe (just produces extra closed deadlines).
+            pass
     return n
+
+
+# ---------------------------------------------------------------------------
+# M13: supersession-map seeding
+# ---------------------------------------------------------------------------
+
+
+@lru_cache(maxsize=1)
+def load_supersession_seed() -> list[dict]:
+    if not _SUPERSESSION_SEED_JSON.exists():
+        return []
+    with _SUPERSESSION_SEED_JSON.open("r", encoding="utf-8") as fp:
+        data = json.load(fp)
+    if isinstance(data, dict):
+        return list(data.get("pairs", []))
+    return list(data)
+
+
+def seed_supersession_pairs(db: Session, tenant_id: str = "global") -> int:
+    """Idempotent upsert of default ``(prev_kind, new_kind)`` supersession pairs.
+
+    Returns the number of newly inserted rows. Existing rows are left in
+    place so admin-edited tenant overrides aren't clobbered.
+    """
+    inserted = 0
+    for raw in load_supersession_seed():
+        prev_kind = (raw.get("prev_kind") or "").strip()
+        new_kind = (raw.get("new_kind") or "").strip()
+        if not prev_kind or not new_kind:
+            continue
+        existing = db.scalar(
+            select(SupersessionMapRow).where(
+                SupersessionMapRow.tenant_id == tenant_id,
+                SupersessionMapRow.prev_kind == prev_kind,
+                SupersessionMapRow.new_kind == new_kind,
+            )
+        )
+        if existing is None:
+            db.add(
+                SupersessionMapRow(
+                    tenant_id=tenant_id,
+                    prev_kind=prev_kind,
+                    new_kind=new_kind,
+                )
+            )
+            inserted += 1
+    if inserted:
+        db.commit()
+    return inserted

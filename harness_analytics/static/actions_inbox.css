@@ -118,3 +118,41 @@
   padding: 16px; background: #fcebeb; color: #a32d2d;
   border-radius: var(--ai-radius); font-size: 13px;
 }
+
+/* M12: Saved-views dropdown next to the meta line. */
+.ai-page .ai-meta-wrap {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: flex-end;
+}
+.ai-page .ai-views { position: relative; }
+.ai-page .ai-views-menu {
+  position: absolute; right: 0; top: 100%; margin-top: 4px; z-index: 50;
+  min-width: 240px; max-width: 320px;
+  background: var(--ai-bg); border: 0.5px solid var(--ai-border);
+  border-radius: var(--ai-radius); box-shadow: 0 6px 16px rgba(0,0,0,0.08);
+  padding: 8px 0;
+}
+.ai-page .ai-views-list { list-style: none; margin: 0; padding: 0; max-height: 280px; overflow-y: auto; }
+.ai-page .ai-views-list li {
+  display: flex; align-items: center; gap: 6px; padding: 6px 12px;
+  font-size: 13px; cursor: pointer;
+}
+.ai-page .ai-views-list li:hover { background: var(--ai-bg-secondary); }
+.ai-page .ai-views-list .ai-view-name { flex: 1; }
+.ai-page .ai-views-list .ai-view-default {
+  font-size: 11px; color: var(--ai-text-tertiary); margin-right: 4px;
+}
+.ai-page .ai-views-list .ai-view-default.is-default { color: #c79b1f; }
+.ai-page .ai-views-list .ai-view-default.is-default::before { content: "★"; }
+.ai-page .ai-views-list .ai-view-default::before { content: "☆"; }
+.ai-page .ai-views-list .ai-view-delete {
+  background: none; border: 0; color: var(--ai-text-tertiary); cursor: pointer;
+  font-size: 14px; padding: 0 2px;
+}
+.ai-page .ai-views-list .ai-view-delete:hover { color: #a32d2d; }
+.ai-page .ai-views-empty {
+  padding: 8px 12px; font-size: 12px; color: var(--ai-text-tertiary);
+}
+.ai-page .ai-views-actions {
+  border-top: 0.5px solid var(--ai-border); margin-top: 4px; padding: 6px 8px 2px;
+}
+.ai-page .ai-views-actions .tl-btn { font-size: 12px; }

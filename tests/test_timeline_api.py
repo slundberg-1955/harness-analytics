@@ -176,6 +176,96 @@ def test_admin_rules_requires_admin(monkeypatch: pytest.MonkeyPatch) -> None:
     assert r.status_code in (401, 403, 404)
 
 
+def test_inbox_team_view_requires_authenticated_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    """assignee=team rejects unauthenticated callers (401) — basic-auth callers
+    don't carry a CurrentUser so the team filter has no caller id to roll up."""
+    client = _make_client(monkeypatch)
+    r = client.get(
+        "/portal/api/actions/inbox?assignee=team",
+        auth=("viewer", "test-pw"),
+    )
+    assert r.status_code in (401, 403)
+
+
+def test_saved_views_require_authenticated_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SavedView endpoints rely on a CurrentUser; basic-auth callers should
+    receive 401 from the auth dependency before any DB lookup."""
+    client = _make_client(monkeypatch)
+    r = client.get("/portal/api/me/views?surface=inbox", auth=("viewer", "test-pw"))
+    assert r.status_code in (401, 403)
+    r = client.post(
+        "/portal/api/me/views",
+        json={"surface": "inbox", "name": "x", "params": {}},
+        auth=("viewer", "test-pw"),
+    )
+    assert r.status_code in (401, 403, 400)
+
+
+def test_admin_rule_versions_requires_admin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Version-history endpoints sit behind ADMIN. Either 401 (no CurrentUser)
+    or 403 / 404 (CurrentUser but rule absent) is acceptable wiring proof."""
+    client = _make_client(monkeypatch)
+    r = client.get("/portal/api/admin/rules/1/versions", auth=("viewer", "test-pw"))
+    assert r.status_code in (401, 403, 404)
+    r = client.post(
+        "/portal/api/admin/rules/1/revert/1",
+        auth=("viewer", "test-pw"),
+    )
+    assert r.status_code in (401, 403, 404)
+
+
+def test_diff_fields_helper_detects_field_changes() -> None:
+    """`_diff_fields` should compare diffable fields and ignore unrelated keys."""
+    from harness_analytics.timeline_api import _diff_fields
+
+    g = {
+        "description": "Office Action",
+        "kind": "standard_oa",
+        "ssp_months": 3,
+        "max_months": 6,
+        "extendable": True,
+    }
+    t = dict(g)
+    assert _diff_fields(t, g) == []
+    t["ssp_months"] = 2
+    t["extendable"] = False
+    diff = _diff_fields(t, g)
+    assert "ssp_months" in diff
+    assert "extendable" in diff
+    # Unrelated keys (e.g. id, tenant_id, code) shouldn't appear.
+    t["id"] = 99
+    assert "id" not in _diff_fields(t, g)
+
+
+def test_admin_supersession_requires_admin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Supersession-map endpoints are gated behind ADMIN."""
+    client = _make_client(monkeypatch)
+    r = client.get("/portal/api/admin/supersession", auth=("viewer", "test-pw"))
+    assert r.status_code in (401, 403)
+    r = client.post(
+        "/portal/api/admin/supersession",
+        json={"prev_kind": "standard_oa", "new_kind": "hard_noa"},
+        auth=("viewer", "test-pw"),
+    )
+    assert r.status_code in (401, 403, 409)
+    r = client.delete("/portal/api/admin/supersession/1", auth=("viewer", "test-pw"))
+    assert r.status_code in (401, 403, 404)
+
+
+def test_admin_users_requires_admin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Manager-assignment endpoints are gated behind ADMIN; legacy basic-auth
+    callers without a CurrentUser should be denied."""
+    client = _make_client(monkeypatch)
+    r = client.get("/portal/api/admin/users", auth=("viewer", "test-pw"))
+    assert r.status_code in (401, 403)
+    r = client.put(
+        "/portal/api/admin/users/1/manager",
+        json={"manager_user_id": None},
+        auth=("viewer", "test-pw"),
+    )
+    assert r.status_code in (401, 403, 404)
+
+
 def test_action_post_requires_known_action(monkeypatch: pytest.MonkeyPatch) -> None:
     """POST validation runs before the DB lookup, so a fake session is fine.
 

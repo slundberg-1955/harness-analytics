@@ -217,6 +217,11 @@ class User(Base):
     last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     # M9: per-user opaque token used to sign the personal ICS feed URL.
     ics_token: Mapped[Optional[str]] = mapped_column(Text, unique=True)
+    # M11: supervising user. Used by /actions/inbox?assignee=team to roll up a
+    # supervisor's direct reports' open deadlines.
+    manager_user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
 
 
 class UserSession(Base):
@@ -276,6 +281,36 @@ class IfwRule(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class IfwRuleVersion(Base):
+    """Snapshot of the pre-edit state of an ``ifw_rules`` row (M15).
+
+    Written by ``timeline_api.admin_update_rule`` before applying the patch
+    so the admin UI can show a per-rule history and revert to any version.
+    Revert just enqueues a normal ``PUT`` against the editable fields, which
+    in turn writes a new history row — so revert is itself audited.
+    """
+
+    __tablename__ = "ifw_rule_versions"
+    __table_args__ = (
+        UniqueConstraint(
+            "rule_id", "version", name="uq_ifw_rule_versions_rule_version"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    rule_id: Mapped[int] = mapped_column(
+        ForeignKey("ifw_rules.id", ondelete="CASCADE"), nullable=False
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    snapshot_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    edited_by_user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    edited_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
 
@@ -384,6 +419,39 @@ class DeadlineEvent(Base):
     payload_json: Mapped[Optional[dict]] = mapped_column(JSONB)
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class SavedView(Base):
+    """User-defined named filter snapshot (M12).
+
+    Surface is a free-form namespace (``inbox``, future ``portfolio``, etc.)
+    so we can ship saved views for new pages without a schema change. Only
+    one row per (user, surface) may carry ``is_default = TRUE`` — enforced
+    in the API write path, not via a partial-unique index, so the JSON write
+    path stays straightforward.
+    """
+
+    __tablename__ = "saved_views"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "surface", "name", name="uq_saved_views_user_surface_name"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    surface: Mapped[str] = mapped_column(Text, nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    params_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
 

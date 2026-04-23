@@ -6,9 +6,16 @@
   "use strict";
 
   const VALID_WINDOW = ["7", "30", "90", "all"];
-  const VALID_ASSIGNEE = ["all", "me", "unassigned"];
+  const VALID_ASSIGNEE = ["all", "me", "unassigned", "team"];
   const VALID_SEVERITY = ["all", "danger", "warn", "info"];
   const VALID_STATUS = ["open", "overdue", "snoozed", "all"];
+
+  // M11: role precedence mirrors auth.ROLES so we can decide client-side
+  // whether to show the "My team" chip without round-tripping the server.
+  const ROLE_RANK = { VIEWER: 1, PARALEGAL: 2, ATTORNEY: 3, ADMIN: 4, OWNER: 5 };
+  function roleAtLeast(actual, required) {
+    return (ROLE_RANK[actual] || 0) >= (ROLE_RANK[required] || 99);
+  }
 
   const STATE = {
     window: "30",
@@ -168,11 +175,179 @@
     });
   }
 
+  function revealChipsForRole(role) {
+    document.querySelectorAll("[data-min-role]").forEach((el) => {
+      const required = el.getAttribute("data-min-role");
+      if (roleAtLeast(role, required)) {
+        el.hidden = false;
+      } else {
+        el.hidden = true;
+        // If a hidden chip was the active value, fall back to "all".
+        const group = el.closest("[data-filter-group]");
+        if (!group) return;
+        const groupKey = group.getAttribute("data-filter-group");
+        if (STATE[groupKey] === el.getAttribute("data-filter-value")) {
+          STATE[groupKey] = "all";
+          applyStateToChips();
+        }
+      }
+    });
+  }
+
+  function fetchMe() {
+    return fetch("/portal/api/me", { credentials: "same-origin" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((me) => {
+        if (me && me.role) {
+          revealChipsForRole(me.role);
+          const wrap = document.getElementById("ai-views");
+          if (wrap) wrap.hidden = false;
+        }
+        return me;
+      })
+      .catch(() => null);
+  }
+
+  // ------------------------------------------------------------------
+  // M12: saved views
+  // ------------------------------------------------------------------
+
+  const VIEWS_STATE = { items: [], current: null, loaded: false };
+
+  function applySavedView(view) {
+    if (!view || !view.params) return;
+    Object.keys(STATE).forEach((k) => {
+      if (view.params[k] != null) STATE[k] = String(view.params[k]);
+    });
+    VIEWS_STATE.current = view;
+    const label = document.getElementById("ai-views-current");
+    if (label) label.textContent = view.name;
+    applyStateToChips();
+    writeStateToUrl();
+  }
+
+  function renderViewsMenu() {
+    const list = document.getElementById("ai-views-list");
+    const empty = document.getElementById("ai-views-empty");
+    if (!list || !empty) return;
+    empty.hidden = VIEWS_STATE.items.length > 0;
+    list.innerHTML = VIEWS_STATE.items.map((v) => `
+      <li data-view-id="${v.id}">
+        <button type="button" class="ai-view-default ${v.is_default ? "is-default" : ""}"
+                data-act="default" title="${v.is_default ? "Default view" : "Make default"}"></button>
+        <span class="ai-view-name" data-act="apply">${escHtml(v.name)}</span>
+        <button type="button" class="ai-view-delete" data-act="delete" title="Delete view">×</button>
+      </li>
+    `).join("");
+    list.querySelectorAll("[data-view-id]").forEach((li) => {
+      const id = parseInt(li.getAttribute("data-view-id"), 10);
+      li.querySelector('[data-act="apply"]').addEventListener("click", () => {
+        const v = VIEWS_STATE.items.find((x) => x.id === id);
+        if (!v) return;
+        applySavedView(v);
+        closeViewsMenu();
+        fetchInbox();
+      });
+      li.querySelector('[data-act="default"]').addEventListener("click", (e) => {
+        e.stopPropagation();
+        fetch(`/portal/api/me/views/${id}/default`, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { Accept: "application/json" },
+        }).then((r) => r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status)))
+          .then(() => loadSavedViews().then(renderViewsMenu));
+      });
+      li.querySelector('[data-act="delete"]').addEventListener("click", (e) => {
+        e.stopPropagation();
+        const v = VIEWS_STATE.items.find((x) => x.id === id);
+        if (!v) return;
+        if (!confirm(`Delete saved view "${v.name}"?`)) return;
+        fetch(`/portal/api/me/views/${id}`, {
+          method: "DELETE",
+          credentials: "same-origin",
+        }).then((r) => r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status)))
+          .then(() => loadSavedViews().then(renderViewsMenu));
+      });
+    });
+  }
+
+  function loadSavedViews() {
+    return fetch("/portal/api/me/views?surface=inbox", { credentials: "same-origin" })
+      .then((r) => r.ok ? r.json() : { views: [] })
+      .then((data) => { VIEWS_STATE.items = data.views || []; VIEWS_STATE.loaded = true; })
+      .catch(() => { VIEWS_STATE.items = []; VIEWS_STATE.loaded = true; });
+  }
+
+  function openViewsMenu() {
+    const menu = document.getElementById("ai-views-menu");
+    const btn = document.getElementById("ai-views-btn");
+    if (!menu || !btn) return;
+    renderViewsMenu();
+    menu.hidden = false;
+    btn.setAttribute("aria-expanded", "true");
+  }
+  function closeViewsMenu() {
+    const menu = document.getElementById("ai-views-menu");
+    const btn = document.getElementById("ai-views-btn");
+    if (!menu || !btn) return;
+    menu.hidden = true;
+    btn.setAttribute("aria-expanded", "false");
+  }
+  function toggleViewsMenu() {
+    const menu = document.getElementById("ai-views-menu");
+    if (!menu) return;
+    if (menu.hidden) openViewsMenu(); else closeViewsMenu();
+  }
+
+  function bindViewsMenu() {
+    const btn = document.getElementById("ai-views-btn");
+    const saveBtn = document.getElementById("ai-views-save");
+    if (btn) btn.addEventListener("click", (e) => { e.stopPropagation(); toggleViewsMenu(); });
+    if (saveBtn) saveBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const proposed = (VIEWS_STATE.current && VIEWS_STATE.current.name) || "My view";
+      const name = prompt("Save current filters as:", proposed);
+      if (!name) return;
+      fetch("/portal/api/me/views", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ surface: "inbox", name: name.trim(), params: { ...STATE } }),
+      }).then((r) => r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status)))
+        .then((view) => {
+          VIEWS_STATE.current = view;
+          const label = document.getElementById("ai-views-current");
+          if (label) label.textContent = view.name;
+          return loadSavedViews().then(renderViewsMenu);
+        })
+        .catch((err) => { alert("Could not save view: " + (err && err.message || err)); });
+    });
+    document.addEventListener("click", (e) => {
+      const menu = document.getElementById("ai-views-menu");
+      const wrap = document.getElementById("ai-views");
+      if (!menu || !wrap || menu.hidden) return;
+      if (!wrap.contains(e.target)) closeViewsMenu();
+    });
+  }
+
+  function maybeApplyDefaultView() {
+    // Only auto-apply if the URL had no filter params at all.
+    const params = new URLSearchParams(window.location.search);
+    const anyExplicit = ["window", "assignee", "severity", "status"].some((k) => params.has(k));
+    if (anyExplicit) return;
+    const def = VIEWS_STATE.items.find((v) => v.is_default);
+    if (def) applySavedView(def);
+  }
+
   function init() {
     readStateFromUrl();
     applyStateToChips();
     bindFilterChips();
-    fetchInbox();
+    bindViewsMenu();
+    fetchMe()
+      .then(loadSavedViews)
+      .then(() => { maybeApplyDefaultView(); renderViewsMenu(); })
+      .finally(fetchInbox);
   }
 
   if (document.readyState === "loading") {

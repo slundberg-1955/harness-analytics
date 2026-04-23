@@ -316,6 +316,53 @@ _USERS_ICS_TOKEN_SQL = (
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS ics_token TEXT UNIQUE"
 )
 
+# M11: supervising-user pointer for the team-view inbox.
+_USERS_MANAGER_SQL = (
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS manager_user_id INT "
+    "REFERENCES users(id) ON DELETE SET NULL"
+)
+_USERS_MANAGER_INDEX_SQL = (
+    "CREATE INDEX IF NOT EXISTS idx_users_manager ON users (manager_user_id)"
+)
+
+# M15: edit history for ifw_rules.
+_IFW_RULE_VERSIONS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS ifw_rule_versions (
+    id BIGSERIAL PRIMARY KEY,
+    rule_id INT NOT NULL REFERENCES ifw_rules(id) ON DELETE CASCADE,
+    version INT NOT NULL,
+    snapshot_json JSONB NOT NULL,
+    edited_by_user_id INT REFERENCES users(id) ON DELETE SET NULL,
+    edited_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (rule_id, version)
+)
+"""
+
+_IFW_RULE_VERSIONS_INDEX_SQL = (
+    "CREATE INDEX IF NOT EXISTS idx_ifw_rule_versions_rule "
+    "ON ifw_rule_versions (rule_id, version DESC)"
+)
+
+# M12: per-user named filter snapshots (inbox today, portfolio later).
+_SAVED_VIEWS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS saved_views (
+    id BIGSERIAL PRIMARY KEY,
+    user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    surface TEXT NOT NULL,
+    name TEXT NOT NULL,
+    params_json JSONB NOT NULL,
+    is_default BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (user_id, surface, name)
+)
+"""
+
+_SAVED_VIEWS_INDEX_SQL = (
+    "CREATE INDEX IF NOT EXISTS idx_saved_views_user_surface "
+    "ON saved_views (user_id, surface)"
+)
+
 
 def _ensure_app_settings_table(engine) -> None:
     with engine.begin() as conn:
@@ -344,6 +391,24 @@ def _ensure_timeline_tables(engine) -> None:
         except Exception:  # noqa: BLE001
             # `users` may not exist yet on a brand-new install; auth tables
             # are ensured separately and this column is added on next boot.
+            pass
+        # M11: supervising-user pointer.
+        try:
+            conn.execute(text(_USERS_MANAGER_SQL))
+            conn.execute(text(_USERS_MANAGER_INDEX_SQL))
+        except Exception:  # noqa: BLE001
+            pass
+        # M12: saved views (per-user filter snapshots).
+        try:
+            conn.execute(text(_SAVED_VIEWS_TABLE_SQL))
+            conn.execute(text(_SAVED_VIEWS_INDEX_SQL))
+        except Exception:  # noqa: BLE001
+            pass
+        # M15: edit history for ifw_rules.
+        try:
+            conn.execute(text(_IFW_RULE_VERSIONS_TABLE_SQL))
+            conn.execute(text(_IFW_RULE_VERSIONS_INDEX_SQL))
+        except Exception:  # noqa: BLE001
             pass
         for stmt in (
             _IFW_RULES_INDEXES_SQL

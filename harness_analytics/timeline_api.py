@@ -37,6 +37,8 @@ from harness_analytics.models import (
     DeadlineEvent,
     FileWrapperDocument,
     IfwRule,
+    IfwRuleVersion,
+    SupersessionMap,
     User,
 )
 
@@ -596,7 +598,10 @@ def deadline_action(
 _VALID_WINDOWS = {"7", "30", "90", "all"}
 _VALID_SEVERITIES = {"danger", "warn", "info", "all"}
 _VALID_STATUS = {"open", "overdue", "snoozed", "all"}
-_VALID_ASSIGNEE = {"me", "all", "unassigned"}
+# M11: ``team`` shows every open deadline assigned to the caller's direct
+# reports (users.manager_user_id == caller.id). Reserved for ATTORNEY+.
+_VALID_ASSIGNEE = {"me", "all", "unassigned", "team"}
+_TEAM_VIEW_MIN_ROLE = "ATTORNEY"
 
 
 @router.get("/actions/inbox")
@@ -649,6 +654,39 @@ def actions_inbox(
         q = q.filter(ComputedDeadline.assigned_user_id == user_id)
     elif assignee == "unassigned":
         q = q.filter(ComputedDeadline.assigned_user_id.is_(None))
+    elif assignee == "team":
+        # Supervising attorneys can pull a roll-up of every deadline assigned
+        # to a direct report. Plain VIEWER/PARALEGAL never gets the chip in
+        # the UI; the API enforces the role gate as a backstop.
+        from harness_analytics.auth import role_at_least
+
+        if user_id is None or user is None:
+            raise HTTPException(
+                status_code=401,
+                detail="assignee=team requires an authenticated user session",
+            )
+        if not role_at_least(user.role, _TEAM_VIEW_MIN_ROLE):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "assignee=team requires "
+                    f"{_TEAM_VIEW_MIN_ROLE} or higher"
+                ),
+            )
+        report_ids = [
+            int(rid)
+            for rid in db.scalars(
+                select(User.id).where(User.manager_user_id == user_id)
+            ).all()
+        ]
+        if not report_ids:
+            # No reports → empty inbox rather than 404, so the UI can render
+            # a friendly empty state instead of an error.
+            q = q.filter(ComputedDeadline.assigned_user_id.is_(None)).filter(
+                ComputedDeadline.id == -1
+            )
+        else:
+            q = q.filter(ComputedDeadline.assigned_user_id.in_(report_ids))
 
     deadlines = q.order_by(ComputedDeadline.primary_date.asc()).limit(2000).all()
 
@@ -724,6 +762,63 @@ _RULE_FIELDS_EDITABLE = {
 }
 
 
+# M14: fields whose value is part of the rule "shape" — used to compute the
+# tenant-vs-global diff. Excludes ``id``, ``tenant_id``, ``code``, ``aliases``,
+# ``patent_type_applicability``, and ``updated_at`` because those don't
+# meaningfully differ on a tenant override.
+_RULE_DIFFABLE_FIELDS = (
+    "description",
+    "kind",
+    "ssp_months",
+    "max_months",
+    "due_months_from_grant",
+    "grace_months_from_grant",
+    "from_filing_months",
+    "from_priority_months",
+    "base_months_from_priority",
+    "late_months_from_priority",
+    "extendable",
+    "trigger_label",
+    "user_note",
+    "authority",
+    "warnings",
+    "priority_tier",
+    "active",
+)
+
+
+def _diff_fields(tenant_dict: dict[str, Any], global_dict: dict[str, Any]) -> list[str]:
+    """Return the list of diffable fields whose tenant value != global value."""
+    out: list[str] = []
+    for f in _RULE_DIFFABLE_FIELDS:
+        if tenant_dict.get(f) != global_dict.get(f):
+            out.append(f)
+    return out
+
+
+def _attach_global_parent(
+    db: Session, payload: dict[str, Any], row: IfwRule, tenant: str
+) -> None:
+    """Mutate ``payload`` in place to add ``global_parent`` + ``diff_fields``
+    when a tenant-scoped row has a corresponding global by ``code``.
+
+    No-op for rows that already are global or for tenants without a global
+    counterpart (e.g. tenant invented its own code).
+    """
+    if row.tenant_id == "global" or tenant == "global":
+        return
+    parent = db.scalar(
+        select(IfwRule).where(IfwRule.tenant_id == "global", IfwRule.code == row.code)
+    )
+    if parent is None:
+        payload["global_parent"] = None
+        payload["diff_fields"] = []
+        return
+    parent_dict = _rule_to_dict(parent)
+    payload["global_parent"] = parent_dict
+    payload["diff_fields"] = _diff_fields(payload, parent_dict)
+
+
 def _rule_to_dict(row: IfwRule) -> dict[str, Any]:
     return {
         "id": row.id,
@@ -774,6 +869,7 @@ def admin_list_rules(
     for r in rows:
         d = _rule_to_dict(r)
         d["is_override"] = r.tenant_id == tenant and tenant != "global"
+        _attach_global_parent(db, d, r, tenant)
         rules_payload.append(d)
 
     unmapped_q = (
@@ -815,7 +911,40 @@ def admin_get_rule(
         raise HTTPException(status_code=403, detail="Rule belongs to another tenant")
     out = _rule_to_dict(row)
     out["is_override"] = row.tenant_id == tenant and tenant != "global"
+    _attach_global_parent(db, out, row, tenant)
     return JSONResponse(out)
+
+
+def _snapshot_rule_version(
+    db: Session, target: IfwRule, edited_by_user_id: Optional[int]
+) -> int:
+    """Insert a new ``ifw_rule_versions`` row capturing ``target``'s current state.
+
+    Should be called *before* applying any patch. Returns the version number
+    that was just written. Versions auto-increment per rule_id starting at 1.
+    """
+    current_max = (
+        db.scalar(
+            select(func.coalesce(func.max(IfwRuleVersion.version), 0)).where(
+                IfwRuleVersion.rule_id == target.id
+            )
+        )
+        or 0
+    )
+    version = int(current_max) + 1
+    snapshot = _rule_to_dict(target)
+    # Drop volatile / non-restorable fields so a revert applies cleanly.
+    for k in ("id", "tenant_id", "code", "updated_at"):
+        snapshot.pop(k, None)
+    db.add(
+        IfwRuleVersion(
+            rule_id=target.id,
+            version=version,
+            snapshot_json=snapshot,
+            edited_by_user_id=edited_by_user_id,
+        )
+    )
+    return version
 
 
 def _coerce_field(name: str, value: Any) -> Any:
@@ -908,7 +1037,13 @@ def admin_update_rule(
     else:
         target = row
 
-    # Apply the patch.
+    # M15: snapshot the pre-edit state for the audit trail. Best-effort so
+    # a deployment without the ifw_rule_versions table doesn't break edits.
+    try:
+        _snapshot_rule_version(db, target, edited_by_user_id=user.id)
+    except Exception:  # noqa: BLE001
+        logger.exception("Could not snapshot ifw_rule_versions; continuing with edit")
+
     for k, v in payload.items():
         if k in {"aliases", "warnings", "patent_type_applicability"}:
             if not isinstance(v, list):
@@ -950,8 +1085,260 @@ def admin_update_rule(
 
     out = _rule_to_dict(target)
     out["is_override"] = target.tenant_id == tenant and tenant != "global"
+    _attach_global_parent(db, out, target, tenant)
     out["recompute"] = enqueue_status
     return JSONResponse(out)
+
+
+# ---------------------------------------------------------------------------
+# M15: ifw_rule_versions — per-rule edit history + revert
+# ---------------------------------------------------------------------------
+
+
+_VERSION_LIST_LIMIT = 50
+
+# Mirror of _RULE_FIELDS_EDITABLE but expressed as a flat set so revert can
+# walk the snapshot dict without re-deriving types from coerce.
+_REVERTABLE_FIELDS = set(_RULE_FIELDS_EDITABLE.keys()) | {
+    "aliases",
+    "warnings",
+    "patent_type_applicability",
+}
+
+
+def _version_to_dict(row: IfwRuleVersion) -> dict[str, Any]:
+    snap = row.snapshot_json or {}
+    return {
+        "id": row.id,
+        "rule_id": row.rule_id,
+        "version": row.version,
+        "edited_at": _iso(row.edited_at),
+        "edited_by_user_id": row.edited_by_user_id,
+        "snapshot": snap,
+        # Cheap front-of-list summary so the UI can render "ssp_months: 3 → ?"
+        # without computing a full diff client-side.
+        "summary_fields": [k for k in _RULE_DIFFABLE_FIELDS if k in snap],
+    }
+
+
+@router.get("/admin/rules/{rule_id}/versions")
+def admin_list_rule_versions(
+    rule_id: int,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_role("ADMIN")),
+) -> JSONResponse:
+    row = db.get(IfwRule, rule_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    tenant = user.tenant_id or "global"
+    if row.tenant_id not in (tenant, "global"):
+        raise HTTPException(status_code=403, detail="Rule belongs to another tenant")
+    versions = db.scalars(
+        select(IfwRuleVersion)
+        .where(IfwRuleVersion.rule_id == rule_id)
+        .order_by(IfwRuleVersion.version.desc())
+        .limit(_VERSION_LIST_LIMIT)
+    ).all()
+    return JSONResponse(
+        {
+            "rule_id": rule_id,
+            "versions": [_version_to_dict(v) for v in versions],
+        }
+    )
+
+
+@router.post("/admin/rules/{rule_id}/revert/{version}")
+def admin_revert_rule_version(
+    rule_id: int,
+    version: int,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_role("ADMIN")),
+) -> JSONResponse:
+    """Restore the editable fields of a rule from a saved snapshot.
+
+    Reverting writes a new history row first (so the act of reverting is
+    itself audited) and then enqueues the standard tenant recompute. The
+    snapshot's ``id``/``tenant_id``/``code`` are intentionally never copied
+    back, since those fields aren't editable.
+    """
+    from harness_analytics.timeline.materializer import recompute_for_tenant
+
+    target = db.get(IfwRule, rule_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    tenant = user.tenant_id or "global"
+    if target.tenant_id not in (tenant, "global"):
+        raise HTTPException(status_code=403, detail="Rule belongs to another tenant")
+    snapshot_row = db.scalar(
+        select(IfwRuleVersion).where(
+            IfwRuleVersion.rule_id == rule_id, IfwRuleVersion.version == version
+        )
+    )
+    if snapshot_row is None:
+        raise HTTPException(status_code=404, detail="Version not found")
+    snapshot = snapshot_row.snapshot_json or {}
+
+    try:
+        _snapshot_rule_version(db, target, edited_by_user_id=user.id)
+    except Exception:  # noqa: BLE001
+        logger.exception("Could not snapshot pre-revert version; continuing")
+
+    for k, v in snapshot.items():
+        if k not in _REVERTABLE_FIELDS:
+            continue
+        if k in {"aliases", "warnings", "patent_type_applicability"}:
+            setattr(target, k, [str(x) for x in (v or [])])
+        else:
+            try:
+                setattr(target, k, _coerce_field(k, v))
+            except HTTPException:
+                # An older snapshot might carry a value the current schema
+                # can't accept; fall back to writing the raw value so we
+                # don't drop history fields silently.
+                setattr(target, k, v)
+
+    target.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(target)
+
+    enqueue_status = "queued"
+    try:
+        import asyncio
+
+        from harness_analytics.jobs.queue import enqueue
+
+        asyncio.run(enqueue("timeline_recompute_all", tenant))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not enqueue tenant recompute on revert: %s", exc)
+        try:
+            recompute_for_tenant(db, tenant)
+            enqueue_status = "synchronous"
+        except Exception:  # noqa: BLE001
+            logger.exception("Synchronous recompute fallback failed on revert")
+            enqueue_status = "deferred"
+
+    out = _rule_to_dict(target)
+    out["is_override"] = target.tenant_id == tenant and tenant != "global"
+    _attach_global_parent(db, out, target, tenant)
+    out["recompute"] = enqueue_status
+    out["reverted_to_version"] = version
+    return JSONResponse(out)
+
+
+# ---------------------------------------------------------------------------
+# M13: supersession-map admin
+# ---------------------------------------------------------------------------
+
+
+def _supersession_to_dict(row: "SupersessionMap", tenant: str) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "prev_kind": row.prev_kind,
+        "new_kind": row.new_kind,
+        "tenant_id": row.tenant_id,
+        "is_override": row.tenant_id == tenant and tenant != "global",
+        "is_global": row.tenant_id == "global",
+    }
+
+
+@router.get("/admin/supersession")
+def admin_list_supersession(
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_role("ADMIN")),
+) -> JSONResponse:
+    """Return the merged supersession-map view for the caller's tenant.
+
+    Globals are returned alongside any tenant-specific overrides; the UI
+    distinguishes them via ``is_global`` / ``is_override`` and only allows
+    delete on tenant rows.
+    """
+    from harness_analytics.models import SupersessionMap
+
+    tenant = user.tenant_id or "global"
+    tenants = ["global"] if tenant == "global" else ["global", tenant]
+    rows = db.scalars(
+        select(SupersessionMap)
+        .where(SupersessionMap.tenant_id.in_(tenants))
+        .order_by(SupersessionMap.prev_kind.asc(), SupersessionMap.new_kind.asc())
+    ).all()
+    return JSONResponse(
+        {
+            "tenant_id": tenant,
+            "pairs": [_supersession_to_dict(r, tenant) for r in rows],
+        }
+    )
+
+
+@router.post("/admin/supersession")
+def admin_create_supersession(
+    payload: dict[str, Any] = Body(...),
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_role("ADMIN")),
+) -> JSONResponse:
+    """Create a tenant-scoped supersession pair.
+
+    Globals are seeded by the rules-seed task and are intentionally not
+    writable through this endpoint — admins clone them by re-creating the
+    same pair under their tenant, which then takes precedence. Returns 409
+    if the same pair already exists for this tenant.
+    """
+    from harness_analytics.models import SupersessionMap
+
+    tenant = user.tenant_id or "global"
+    if tenant == "global":
+        raise HTTPException(
+            status_code=403,
+            detail="Global supersession pairs are managed via the seed file",
+        )
+    prev_kind = (payload.get("prev_kind") or "").strip()
+    new_kind = (payload.get("new_kind") or "").strip()
+    if not prev_kind or not new_kind:
+        raise HTTPException(
+            status_code=400, detail="prev_kind and new_kind are required"
+        )
+    existing = db.scalar(
+        select(SupersessionMap).where(
+            SupersessionMap.tenant_id == tenant,
+            SupersessionMap.prev_kind == prev_kind,
+            SupersessionMap.new_kind == new_kind,
+        )
+    )
+    if existing is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Supersession pair already exists for this tenant",
+        )
+    row = SupersessionMap(
+        tenant_id=tenant, prev_kind=prev_kind, new_kind=new_kind
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return JSONResponse(_supersession_to_dict(row, tenant))
+
+
+@router.delete("/admin/supersession/{pair_id}")
+def admin_delete_supersession(
+    pair_id: int,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_role("ADMIN")),
+) -> JSONResponse:
+    from harness_analytics.models import SupersessionMap
+
+    tenant = user.tenant_id or "global"
+    row = db.get(SupersessionMap, pair_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Pair not found")
+    if row.tenant_id == "global":
+        raise HTTPException(
+            status_code=403,
+            detail="Global supersession pairs cannot be deleted via the API",
+        )
+    if row.tenant_id != tenant:
+        raise HTTPException(status_code=403, detail="Pair belongs to another tenant")
+    db.delete(row)
+    db.commit()
+    return JSONResponse({"deleted": pair_id})
 
 
 # ---------------------------------------------------------------------------
@@ -994,3 +1381,264 @@ def rotate_my_ics_token(
     base = str(request.base_url).rstrip("/")
     feed_url = f"{base}/portal/ics/{db_user.id}.ics?token={token}"
     return JSONResponse({"user_id": db_user.id, "token": token, "url": feed_url})
+
+
+# ---------------------------------------------------------------------------
+# M11: who-am-I (used by the inbox UI to decide whether to show the Team
+# chip) + ADMIN/OWNER user-management endpoints for setting manager_user_id
+# ---------------------------------------------------------------------------
+
+
+@router.get("/me")
+def whoami(user: CurrentUser = Depends(current_user)) -> JSONResponse:
+    """Return the caller's basic identity + role.
+
+    Lightweight enough that the inbox UI can call it on every load without
+    affecting page paint; the response intentionally avoids any DB lookups
+    beyond the session check.
+    """
+    return JSONResponse(
+        {
+            "id": user.id,
+            "email": user.email,
+            "name": user.name,
+            "role": user.role,
+            "tenant_id": user.tenant_id,
+        }
+    )
+
+
+def _user_summary(u: User) -> dict[str, Any]:
+    return {
+        "id": u.id,
+        "email": u.email,
+        "name": u.name,
+        "role": u.role,
+        "active": bool(u.active),
+        "manager_user_id": u.manager_user_id,
+    }
+
+
+@router.get("/admin/users")
+def admin_list_users(
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_role("ADMIN")),
+) -> JSONResponse:
+    """List users in the caller's tenant for the manager-assignment UI."""
+    rows = db.scalars(
+        select(User).where(User.tenant_id == user.tenant_id).order_by(User.email.asc())
+    ).all()
+    return JSONResponse(
+        {
+            "tenant_id": user.tenant_id,
+            "users": [_user_summary(u) for u in rows],
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# M12: saved views (per-user named filter snapshots)
+# ---------------------------------------------------------------------------
+
+
+_VALID_SAVED_VIEW_SURFACES = {"inbox", "portfolio"}
+_SAVED_VIEW_NAME_MAX = 80
+
+
+def _saved_view_to_dict(row: "SavedView") -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "surface": row.surface,
+        "name": row.name,
+        "params": row.params_json or {},
+        "is_default": bool(row.is_default),
+        "created_at": _iso(row.created_at),
+        "updated_at": _iso(row.updated_at),
+    }
+
+
+@router.get("/me/views")
+def list_saved_views(
+    surface: str = Query("inbox"),
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+) -> JSONResponse:
+    from harness_analytics.models import SavedView
+
+    if surface not in _VALID_SAVED_VIEW_SURFACES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"surface must be one of {sorted(_VALID_SAVED_VIEW_SURFACES)}",
+        )
+    rows = db.scalars(
+        select(SavedView)
+        .where(SavedView.user_id == user.id, SavedView.surface == surface)
+        .order_by(SavedView.is_default.desc(), SavedView.name.asc())
+    ).all()
+    return JSONResponse(
+        {
+            "surface": surface,
+            "views": [_saved_view_to_dict(r) for r in rows],
+        }
+    )
+
+
+@router.post("/me/views")
+def upsert_saved_view(
+    payload: dict[str, Any] = Body(...),
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+) -> JSONResponse:
+    """Create or replace by ``(user_id, surface, name)``.
+
+    Body: ``{"surface": "inbox", "name": "My week", "params": {...},
+    "is_default": false}``. Names are unique per surface per user; saving
+    with an existing name overwrites the params (intentional — keeps the
+    UI affordance simple).
+    """
+    from harness_analytics.models import SavedView
+
+    surface = (payload.get("surface") or "inbox").strip()
+    if surface not in _VALID_SAVED_VIEW_SURFACES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"surface must be one of {sorted(_VALID_SAVED_VIEW_SURFACES)}",
+        )
+    name = (payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    if len(name) > _SAVED_VIEW_NAME_MAX:
+        raise HTTPException(
+            status_code=400,
+            detail=f"name must be {_SAVED_VIEW_NAME_MAX} characters or less",
+        )
+    params = payload.get("params") or {}
+    if not isinstance(params, dict):
+        raise HTTPException(status_code=400, detail="params must be a JSON object")
+    is_default = bool(payload.get("is_default") or False)
+
+    existing = db.scalar(
+        select(SavedView).where(
+            SavedView.user_id == user.id,
+            SavedView.surface == surface,
+            SavedView.name == name,
+        )
+    )
+    if existing is None:
+        existing = SavedView(
+            user_id=user.id,
+            surface=surface,
+            name=name,
+            params_json=params,
+            is_default=is_default,
+        )
+        db.add(existing)
+    else:
+        existing.params_json = params
+        existing.is_default = is_default
+    if is_default:
+        # Clear default from sibling rows so only one stays sticky.
+        db.flush()
+        db.execute(
+            select(SavedView).where(
+                SavedView.user_id == user.id,
+                SavedView.surface == surface,
+                SavedView.id != existing.id,
+                SavedView.is_default.is_(True),
+            )
+        )
+        for sibling in db.scalars(
+            select(SavedView).where(
+                SavedView.user_id == user.id,
+                SavedView.surface == surface,
+                SavedView.id != existing.id,
+                SavedView.is_default.is_(True),
+            )
+        ).all():
+            sibling.is_default = False
+    db.commit()
+    db.refresh(existing)
+    return JSONResponse(_saved_view_to_dict(existing))
+
+
+@router.delete("/me/views/{view_id}")
+def delete_saved_view(
+    view_id: int,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+) -> JSONResponse:
+    from harness_analytics.models import SavedView
+
+    row = db.get(SavedView, view_id)
+    if row is None or row.user_id != user.id:
+        raise HTTPException(status_code=404, detail="View not found")
+    db.delete(row)
+    db.commit()
+    return JSONResponse({"deleted": view_id})
+
+
+@router.post("/me/views/{view_id}/default")
+def set_default_saved_view(
+    view_id: int,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+) -> JSONResponse:
+    from harness_analytics.models import SavedView
+
+    row = db.get(SavedView, view_id)
+    if row is None or row.user_id != user.id:
+        raise HTTPException(status_code=404, detail="View not found")
+    siblings = db.scalars(
+        select(SavedView).where(
+            SavedView.user_id == user.id,
+            SavedView.surface == row.surface,
+            SavedView.is_default.is_(True),
+            SavedView.id != row.id,
+        )
+    ).all()
+    for s in siblings:
+        s.is_default = False
+    row.is_default = True
+    db.commit()
+    db.refresh(row)
+    return JSONResponse(_saved_view_to_dict(row))
+
+
+@router.put("/admin/users/{user_id}/manager")
+def admin_set_user_manager(
+    user_id: int,
+    payload: dict[str, Any] = Body(...),
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_role("ADMIN")),
+) -> JSONResponse:
+    """Set or clear ``users.manager_user_id`` on a user in the same tenant.
+
+    Body: ``{"manager_user_id": <int|null>}``. Defends against tenant leakage
+    (both target and proposed manager must share the caller's tenant) and
+    against trivial cycles (you cannot be your own manager).
+    """
+    target = db.get(User, user_id)
+    if target is None or target.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=404, detail="User not found")
+    raw = payload.get("manager_user_id")
+    new_manager_id: Optional[int]
+    if raw is None or raw == "":
+        new_manager_id = None
+    else:
+        try:
+            new_manager_id = int(raw)
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400, detail="manager_user_id must be an integer or null"
+            )
+        if new_manager_id == target.id:
+            raise HTTPException(
+                status_code=400, detail="A user cannot manage themselves"
+            )
+        manager = db.get(User, new_manager_id)
+        if manager is None or manager.tenant_id != user.tenant_id:
+            raise HTTPException(status_code=404, detail="Manager not found")
+    target.manager_user_id = new_manager_id
+    db.commit()
+    db.refresh(target)
+    return JSONResponse(_user_summary(target))

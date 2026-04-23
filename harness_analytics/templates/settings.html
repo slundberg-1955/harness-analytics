@@ -72,6 +72,110 @@
   </form>
 </div>
 
+<div class="card" id="team-card" hidden>
+  <h2>Team management</h2>
+  <p class="muted" style="margin:0 0 0.75rem;">
+    Assign each user a manager to enable the &ldquo;My team&rdquo; view on the
+    <a href="/portal/actions">Upcoming Actions</a> inbox. A supervising attorney with at least one
+    direct report sees every open deadline assigned to those reports.
+  </p>
+  <div id="team-msg" class="muted" style="margin-bottom:0.5rem;"></div>
+  <table id="team-table" style="width:100%;border-collapse:collapse;font-size:0.95rem;">
+    <thead>
+      <tr style="text-align:left;border-bottom:1px solid #e6e3da;">
+        <th style="padding:6px 4px;">User</th>
+        <th style="padding:6px 4px;">Role</th>
+        <th style="padding:6px 4px;">Manager</th>
+      </tr>
+    </thead>
+    <tbody id="team-rows">
+      <tr><td colspan="3" class="muted" style="padding:8px 4px;">Loading&hellip;</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+(function () {
+  const card = document.getElementById("team-card");
+  const rowsEl = document.getElementById("team-rows");
+  const msgEl = document.getElementById("team-msg");
+  if (!card || !rowsEl) return;
+  let users = [];
+
+  function escHtml(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+    })[c]);
+  }
+  function roleAtLeast(actual, required) {
+    const rank = { VIEWER: 1, PARALEGAL: 2, ATTORNEY: 3, ADMIN: 4, OWNER: 5 };
+    return (rank[actual] || 0) >= (rank[required] || 99);
+  }
+  function render() {
+    if (!users.length) {
+      rowsEl.innerHTML = '<tr><td colspan="3" class="muted" style="padding:8px 4px;">No users.</td></tr>';
+      return;
+    }
+    const options = (currentId) => users
+      .filter((u) => u.id !== currentId)
+      .map((u) => `<option value="${u.id}"${currentId == null ? "" : ""}>${escHtml(u.name || u.email)}</option>`)
+      .join("");
+    rowsEl.innerHTML = users.map((u) => `
+      <tr data-user-id="${u.id}" style="border-bottom:1px solid #f0ede4;">
+        <td style="padding:6px 4px;">
+          <div><strong>${escHtml(u.name || u.email)}</strong></div>
+          <div class="muted" style="font-size:0.85em;">${escHtml(u.email)}</div>
+        </td>
+        <td style="padding:6px 4px;"><code>${escHtml(u.role)}</code></td>
+        <td style="padding:6px 4px;">
+          <select data-act="manager">
+            <option value="">— None —</option>
+            ${users.filter((m) => m.id !== u.id).map((m) =>
+              `<option value="${m.id}"${m.id === u.manager_user_id ? " selected" : ""}>${escHtml(m.name || m.email)}</option>`
+            ).join("")}
+          </select>
+        </td>
+      </tr>
+    `).join("");
+    rowsEl.querySelectorAll('select[data-act="manager"]').forEach((sel) => {
+      sel.addEventListener("change", () => {
+        const row = sel.closest("[data-user-id]");
+        const userId = parseInt(row.getAttribute("data-user-id"), 10);
+        const raw = sel.value;
+        const body = JSON.stringify({ manager_user_id: raw === "" ? null : parseInt(raw, 10) });
+        msgEl.textContent = "Saving…";
+        fetch(`/portal/api/admin/users/${userId}/manager`, {
+          method: "PUT",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body,
+        }).then((r) => r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status)))
+          .then((updated) => {
+            const idx = users.findIndex((x) => x.id === updated.id);
+            if (idx >= 0) users[idx] = updated;
+            msgEl.textContent = `Updated manager for ${updated.name || updated.email}.`;
+          })
+          .catch((err) => { msgEl.textContent = "Save failed: " + (err && err.message || err); });
+      });
+    });
+  }
+  function load() {
+    fetch("/portal/api/admin/users", { credentials: "same-origin" })
+      .then((r) => r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status)))
+      .then((data) => { users = data.users || []; render(); })
+      .catch((err) => { msgEl.textContent = "Could not load users: " + (err && err.message || err); });
+  }
+  fetch("/portal/api/me", { credentials: "same-origin" })
+    .then((r) => r.ok ? r.json() : null)
+    .then((me) => {
+      if (me && roleAtLeast(me.role, "ADMIN")) {
+        card.hidden = false;
+        load();
+      }
+    });
+})();
+</script>
+
 <div class="card" id="ics-card">
   <h2>Calendar feed (ICS)</h2>
   <p class="muted" style="margin:0 0 0.75rem;">

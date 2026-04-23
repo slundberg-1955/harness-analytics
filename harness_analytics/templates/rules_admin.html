@@ -15,7 +15,13 @@
     <div class="ra-meta" id="ra-meta">Loading…</div>
   </div>
 
-  <div class="ra-layout">
+  <nav class="ra-tabs" role="tablist">
+    <button type="button" class="ra-tab active" data-tab="rules" role="tab" aria-selected="true">Rules</button>
+    <button type="button" class="ra-tab" data-tab="unmapped" role="tab" aria-selected="false">Unmapped</button>
+    <button type="button" class="ra-tab" data-tab="supersession" role="tab" aria-selected="false">Supersession</button>
+  </nav>
+
+  <div class="ra-layout" data-tab-pane="rules">
     <!-- LEFT: rule list + unmapped panel -->
     <aside class="ra-side">
       <div class="ra-side-section">
@@ -44,6 +50,32 @@
     <section class="ra-editor" id="ra-editor">
       <div class="ra-empty">Select a rule from the list to edit it.</div>
     </section>
+  </div>
+
+  <div class="ra-pane" data-tab-pane="unmapped" hidden>
+    <div class="ra-side-title">Unmapped IFW codes</div>
+    <div class="ra-side-hint">Codes seen during materialization without a matching rule. Add a rule on the
+      Rules tab to start computing deadlines from the same code.</div>
+    <div class="ra-unmapped ra-unmapped-full" id="ra-unmapped-full">
+      <div class="ra-empty">Loading…</div>
+    </div>
+  </div>
+
+  <div class="ra-pane" data-tab-pane="supersession" hidden>
+    <div class="ra-side-title">Supersession map</div>
+    <div class="ra-side-hint">When a new milestone of <code>new_kind</code> arrives after a milestone of
+      <code>prev_kind</code>, the materializer marks the older deadline as superseded. Globals are
+      seeded from the bundled JSON; tenant rows are admin-managed and shadow globals at lookup time.</div>
+    <form class="ra-sup-form" id="ra-sup-form">
+      <input type="text" name="prev_kind" id="ra-sup-prev" placeholder="prev_kind (e.g. standard_oa)" autocomplete="off" />
+      <input type="text" name="new_kind" id="ra-sup-new" placeholder="new_kind (e.g. hard_noa)" autocomplete="off" />
+      <button type="submit">Add tenant pair</button>
+    </form>
+    <div id="ra-sup-msg" class="ra-side-hint"></div>
+    <table class="ra-sup-table" id="ra-sup-table">
+      <thead><tr><th>prev_kind</th><th>new_kind</th><th>Scope</th><th></th></tr></thead>
+      <tbody id="ra-sup-rows"><tr><td colspan="4" class="ra-empty">Loading…</td></tr></tbody>
+    </table>
   </div>
 </div>
 
