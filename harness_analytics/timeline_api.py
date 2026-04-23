@@ -644,6 +644,12 @@ def actions_inbox(
 
     if severity != "all":
         q = q.filter(ComputedDeadline.severity == severity)
+    else:
+        # Default "All" view = actionable items only (warn + danger). Purely
+        # informational rows (e.g. ids_phase phase tables anchored to the
+        # filing date) would otherwise flood the Overdue bucket years after
+        # the fact. Click the Info chip to opt back in.
+        q = q.filter(ComputedDeadline.severity != "info")
 
     if assignee == "me":
         if user_id is None:

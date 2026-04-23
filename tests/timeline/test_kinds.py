@@ -122,6 +122,19 @@ def test_ids_phase_emits_phase_table() -> None:
     assert res.rows == ()
 
 
+def test_ids_phase_is_not_materialized_as_a_deadline() -> None:
+    """IDS phases are reference data, not actionable deadlines. The materializer
+    must skip them so they do not appear in `computed_deadlines` (and therefore
+    do not pollute the Upcoming Actions inbox as ``2,000+ days overdue``).
+    """
+    from harness_analytics.timeline.materializer import _result_to_persisted_fields
+
+    rule = _rule(code="IDS", kind="ids_phase")
+    res = compute_deadlines(rule, date(2024, 1, 1), ComputeOptions())
+    assert res.ids_phases  # sanity: the calculator did emit phases
+    assert _result_to_persisted_fields(res) is None
+
+
 # ---------------------------------------------------------------------------
 # priority_later_of (FRPR / Paris Convention)
 # ---------------------------------------------------------------------------

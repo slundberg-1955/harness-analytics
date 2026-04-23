@@ -25,7 +25,7 @@ from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from typing import Iterable, Optional
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from harness_analytics.models import (
@@ -142,13 +142,13 @@ def _result_to_persisted_fields(
             "severity": "warn",
         }
     if result.ids_phases:
-        return {
-            **common,
-            "primary_date": result.trigger,  # informational anchor
-            "primary_label": "IDS phases",
-            "ids_phases_json": [asdict(p) for p in result.ids_phases],
-            "severity": "info",
-        }
+        # Pure-reference result (37 CFR 1.97/1.98 phase windows). These are not
+        # actionable deadlines, just a phase table anchored to the application's
+        # filing date. Do not persist as a `computed_deadlines` row — that would
+        # show up in the inbox as "thousands of days overdue" because the
+        # primary_date would be the filing date. The matter detail page renders
+        # IDS phases on the fly from the rule + filing date instead.
+        return None
     if pr is None:
         return None
     ssp = next(
@@ -247,6 +247,18 @@ def _recompute_internal(db: Session, app: Application) -> RecomputeSummary:
     summary = RecomputeSummary(application_id=app.id)
     tenant_id = app.tenant_id or "global"
     options = _options_for_app(app)
+
+    # 0) Prune previously-materialized rows that we no longer want to keep.
+    #    Today: rows produced by `ids_phase` rules (identified by a non-null
+    #    `ids_phases_json` payload). These were retired in favor of computing
+    #    the phase table on the fly on the matter detail page — keeping them
+    #    around would re-pollute the inbox after a recompute.
+    db.execute(
+        delete(ComputedDeadline).where(
+            ComputedDeadline.application_id == app.id,
+            ComputedDeadline.ids_phases_json.isnot(None),
+        )
+    )
 
     # 1) Document-triggered rules.
     docs = db.scalars(
