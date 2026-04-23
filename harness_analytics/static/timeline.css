@@ -152,14 +152,14 @@
   display: inline-flex; align-items: center; justify-content: center;
   font-family: var(--tl-mono);
 }
-#prosecution-timeline .tl-btn-row { display: flex; gap: 6px; }
-#prosecution-timeline .tl-btn {
+.tl-btn-row { display: flex; gap: 6px; }
+.tl-btn {
   font-size: 12px; padding: 6px 12px;
-  background: var(--tl-bg); border: 0.5px solid var(--tl-border-strong);
-  border-radius: var(--tl-radius); color: var(--tl-text); cursor: pointer;
+  background: var(--tl-bg, #fff); border: 0.5px solid var(--tl-border-strong, rgba(0,0,0,0.3));
+  border-radius: var(--tl-radius, 6px); color: var(--tl-text, #1a1a1a); cursor: pointer;
 }
-#prosecution-timeline .tl-btn-primary { background: var(--tl-accent); color: white; border-color: var(--tl-accent); }
-#prosecution-timeline .tl-btn-ghost   { border-color: var(--tl-border); color: var(--tl-text-secondary); }
+.tl-btn-primary { background: var(--tl-accent, #185fa5); color: white; border-color: var(--tl-accent, #185fa5); }
+.tl-btn-ghost   { border-color: var(--tl-border, rgba(0,0,0,0.15)); color: var(--tl-text-secondary, #5f5e5a); background: var(--tl-bg, #fff); }
 
 #prosecution-timeline .tl-authority {
   font-family: var(--tl-mono); font-size: 11px; color: var(--tl-text-tertiary);
@@ -234,17 +234,4 @@
 .tl-drawer-close { background: none; border: none; font-size: 22px; cursor: pointer; color: #5f5e5a; }
 @media (prefers-color-scheme: dark) {
   .tl-drawer { background: #1a1a1a; color: #ebeae3; }
-}
-
-/* M9: Verified badge */
-.tl-verified-badge,
-#prosecution-timeline .tl-verified-badge {
-  display: inline-flex; align-items: center; gap: 4px;
-  font-size: 10px; font-family: var(--tl-mono, monospace);
-  padding: 2px 8px; margin-left: 8px;
-  border-radius: 999px; letter-spacing: 0.04em;
-  background: var(--tl-success-bg, #e1f5ee);
-  color: var(--tl-success, #0f6e56);
-  border: 1px solid currentColor;
-  text-transform: uppercase; font-weight: 600;
 }

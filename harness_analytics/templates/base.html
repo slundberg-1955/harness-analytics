@@ -24,8 +24,11 @@
     table.spreadsheet-row th, table.spreadsheet-row td { white-space: nowrap; padding: 0.35rem 0.45rem; }
     table.spreadsheet-row th { background: #1f3864; color: #fff; font-weight: 600; }
     .muted { color: var(--muted); font-size: 0.88rem; }
-    a.btn, button { display: inline-block; background: var(--accent); color: #fff !important; padding: 0.45rem 0.9rem; border-radius: 6px; text-decoration: none; font-size: 0.9rem; border: none; cursor: pointer; }
-    a.btn.secondary { background: var(--muted); }
+    /* Default action button look. Scoped to `.btn` (and bare submit buttons
+       that haven't opted into a custom class) so it doesn't bulldoze chips,
+       tabs, ghost buttons, and other custom controls. */
+    a.btn, button.btn, button[type="submit"]:not([class]) { display: inline-block; background: var(--accent); color: #fff; padding: 0.45rem 0.9rem; border-radius: 6px; text-decoration: none; font-size: 0.9rem; border: none; cursor: pointer; }
+    a.btn.secondary, button.btn.secondary { background: var(--muted); }
     input[type="text"] { padding: 0.45rem 0.6rem; border: 1px solid var(--border); border-radius: 6px; min-width: 220px; }
     pre.xml { max-height: 420px; overflow: auto; background: #1e1e1e; color: #d4d4d4; padding: 1rem; border-radius: 6px; font-size: 0.78rem; white-space: pre-wrap; word-break: break-all; }
     .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem 1rem; }
