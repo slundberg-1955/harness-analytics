@@ -451,13 +451,40 @@ def _id_for_rule_code(code: str, tenant_id: str):
 
 
 def recompute_for_tenant(db: Session, tenant_id: str = "global") -> int:
-    """Recompute every application in a tenant. Used by the Arq bulk task."""
-    apps = db.scalars(
-        select(Application).where(Application.tenant_id == tenant_id)
-    ).all()
+    """Recompute every application in a tenant.
+
+    Stream-friendly: loads only application IDs upfront and fetches each app
+    one at a time, expunging session state after every commit. This keeps
+    memory bounded for portfolio-scale backfills (~26k apps) and emits a
+    progress line to stdout every ``_PROGRESS_EVERY`` apps so a tee'd log
+    file shows movement before the run completes.
+    """
+    app_ids = [
+        i for (i,) in db.execute(
+            select(Application.id).where(Application.tenant_id == tenant_id)
+        ).all()
+    ]
+    total = len(app_ids)
+    logger.info("timeline-recompute start: tenant=%s apps=%d", tenant_id, total)
+    print(f"timeline-recompute start: tenant={tenant_id!r} apps={total}", flush=True)
     count = 0
-    for app in apps:
+    for aid in app_ids:
+        app = db.get(Application, aid)
+        if app is None:
+            continue
         _recompute_internal(db, app)
         db.commit()
+        # Free the per-app working set (Application + FileWrapperDocuments +
+        # ComputedDeadlines just upserted) so the long-running session does
+        # not balloon to multi-GB on a 26k-app tenant.
+        db.expunge_all()
         count += 1
+        if count % _PROGRESS_EVERY == 0 or count == total:
+            print(
+                f"  [{count}/{total}] apps recomputed",
+                flush=True,
+            )
     return count
+
+
+_PROGRESS_EVERY = 100
