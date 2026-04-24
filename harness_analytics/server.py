@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -20,6 +23,8 @@ from harness_analytics.timeline_api import (
     ics_router as timeline_ics_router,
     router as timeline_api_router,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_db_url(url: str) -> str:
@@ -58,18 +63,36 @@ async def _lifespan(_app: FastAPI):
             _maybe_spawn_timeline_backfill()
         except Exception:  # noqa: BLE001
             pass
-    yield
+
+        # Optional in-process daily scheduler for the same recompute.
+        # Enable by setting ``TIMELINE_DAILY_RECOMPUTE_HOUR_UTC`` to an
+        # integer 0-23. The task sleeps until the next occurrence of
+        # that hour (UTC) and then re-uses the same subprocess +
+        # lockfile machinery as the one-shot backfill, so multiple
+        # uvicorn workers cannot stack overlapping runs.
+        try:
+            scheduler_task = _start_daily_recompute_scheduler()
+        except Exception:  # noqa: BLE001
+            scheduler_task = None
+    else:
+        scheduler_task = None
+    try:
+        yield
+    finally:
+        if scheduler_task is not None:
+            scheduler_task.cancel()
 
 
 _BACKFILL_LOCK_PATH = "/tmp/harness_timeline_backfill.lock"
 _BACKFILL_LOG_PATH = "/tmp/harness_timeline_backfill.log"
+_SCHEDULER_STATE_PATH = "/tmp/harness_timeline_scheduler.state"
 
 
-def _maybe_spawn_timeline_backfill() -> None:
-    flag = (os.environ.get("BACKFILL_TIMELINE_ON_START") or "").strip().lower()
-    if flag not in {"1", "true", "yes", "on"}:
-        return
-
+def _spawn_timeline_recompute(*, reason: str) -> dict | None:
+    """Fire a detached ``timeline-recompute`` subprocess if one isn't already
+    running. Returns a small status dict on spawn, ``None`` if a live
+    sibling owned the lockfile and nothing was started.
+    """
     import subprocess
     import sys
 
@@ -81,12 +104,16 @@ def _maybe_spawn_timeline_backfill() -> None:
             pid_text = Path(_BACKFILL_LOCK_PATH).read_text().strip().splitlines()[0]
             pid = int(pid_text)
             if Path(f"/proc/{pid}").exists():
-                return
+                return None
         except Exception:  # noqa: BLE001
             pass
 
     tenant_id = (os.environ.get("BACKFILL_TIMELINE_TENANT") or "global").strip() or "global"
     log = open(_BACKFILL_LOG_PATH, "ab", buffering=0)
+    started_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    log.write(
+        f"\n=== {started_at} spawn reason={reason} tenant={tenant_id} ===\n".encode()
+    )
     proc = subprocess.Popen(
         [
             sys.executable,
@@ -104,10 +131,82 @@ def _maybe_spawn_timeline_backfill() -> None:
     )
     try:
         Path(_BACKFILL_LOCK_PATH).write_text(
-            f"{proc.pid}\ntenant={tenant_id}\nstarted_at={os.popen('date -u +%FT%TZ').read().strip()}\n"
+            f"{proc.pid}\ntenant={tenant_id}\nstarted_at={started_at}\nreason={reason}\n"
         )
     except Exception:  # noqa: BLE001
         pass
+    return {"pid": proc.pid, "tenant": tenant_id, "started_at": started_at, "reason": reason}
+
+
+def _maybe_spawn_timeline_backfill() -> None:
+    flag = (os.environ.get("BACKFILL_TIMELINE_ON_START") or "").strip().lower()
+    if flag not in {"1", "true", "yes", "on"}:
+        return
+    _spawn_timeline_recompute(reason="startup-backfill")
+
+
+def _parse_recompute_hour() -> int | None:
+    raw = (os.environ.get("TIMELINE_DAILY_RECOMPUTE_HOUR_UTC") or "").strip()
+    if not raw:
+        return None
+    try:
+        hour = int(raw)
+    except ValueError:
+        return None
+    if 0 <= hour <= 23:
+        return hour
+    return None
+
+
+def _next_recompute_at(now: datetime, hour_utc: int) -> datetime:
+    target = now.replace(hour=hour_utc, minute=0, second=0, microsecond=0)
+    if target <= now:
+        target = target + timedelta(days=1)
+    return target
+
+
+def _write_scheduler_state(next_at: datetime, hour_utc: int) -> None:
+    try:
+        Path(_SCHEDULER_STATE_PATH).write_text(
+            f"hour_utc={hour_utc}\nnext_run_at={next_at.strftime('%Y-%m-%dT%H:%M:%SZ')}\n"
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+async def _daily_recompute_loop(hour_utc: int) -> None:
+    logger.info(
+        "timeline daily-recompute scheduler enabled; will fire at %02d:00 UTC each day",
+        hour_utc,
+    )
+    while True:
+        now = datetime.now(timezone.utc)
+        next_at = _next_recompute_at(now, hour_utc)
+        _write_scheduler_state(next_at, hour_utc)
+        sleep_seconds = max(1.0, (next_at - now).total_seconds())
+        try:
+            await asyncio.sleep(sleep_seconds)
+        except asyncio.CancelledError:
+            raise
+        try:
+            spawned = _spawn_timeline_recompute(reason="daily-scheduler")
+            if spawned is None:
+                logger.info("daily recompute skipped: a sibling run is already in flight")
+            else:
+                logger.info("daily recompute spawned: pid=%s", spawned.get("pid"))
+        except Exception:  # noqa: BLE001
+            logger.exception("daily recompute spawn failed; will retry tomorrow")
+
+
+def _start_daily_recompute_scheduler() -> asyncio.Task | None:
+    hour = _parse_recompute_hour()
+    if hour is None:
+        return None
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+    return loop.create_task(_daily_recompute_loop(hour))
 
 
 def create_app() -> FastAPI:
@@ -173,6 +272,16 @@ def create_app() -> FastAPI:
                     tail = fh.read().decode("utf-8", errors="replace")
                 out["log_tail"] = tail
                 out["log_size"] = end
+            scheduler_hour = _parse_recompute_hour()
+            if scheduler_hour is not None:
+                out["scheduler"] = {
+                    "enabled": True,
+                    "hour_utc": scheduler_hour,
+                }
+                if Path(_SCHEDULER_STATE_PATH).exists():
+                    out["scheduler"]["state"] = Path(_SCHEDULER_STATE_PATH).read_text()
+            else:
+                out["scheduler"] = {"enabled": False}
         except Exception as exc:  # noqa: BLE001
             out["error"] = str(exc)
         return JSONResponse(out)
