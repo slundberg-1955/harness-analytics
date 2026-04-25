@@ -281,3 +281,111 @@ def test_action_post_requires_known_action(monkeypatch: pytest.MonkeyPatch) -> N
         auth=("viewer", "test-pw"),
     )
     assert r.status_code in (401, 404)
+
+
+# ---------------------------------------------------------------------------
+# M0009: docket cross-off / NAR plumbing
+# ---------------------------------------------------------------------------
+
+
+def test_nar_and_un_nar_are_recognized_actions() -> None:
+    """The action vocabulary should include the new NAR verbs without the
+    DB lookup having to fire."""
+    from harness_analytics.timeline_api import _ALLOWED_ACTIONS
+
+    assert "nar" in _ALLOWED_ACTIONS
+    assert "un-nar" in _ALLOWED_ACTIONS
+
+
+def test_inbox_status_nar_is_valid() -> None:
+    """``status=nar`` is a first-class inbox filter alongside open/overdue/snoozed."""
+    from harness_analytics.timeline_api import _VALID_STATUS
+
+    assert "nar" in _VALID_STATUS
+    # Default status remains 'open' so NAR'd items don't leak in by default.
+    assert "open" in _VALID_STATUS
+
+
+def test_inbox_rejects_unknown_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _make_client(monkeypatch)
+    r = client.get(
+        "/portal/api/actions/inbox?status=BOGUS",
+        auth=("viewer", "test-pw"),
+    )
+    assert r.status_code == 400
+    assert "status" in r.json()["detail"].lower()
+
+
+def test_inbox_accepts_status_nar(monkeypatch: pytest.MonkeyPatch) -> None:
+    """status=nar should not be rejected by query validation. The fake
+    session returns no rows, so the response is a 200 with empty buckets."""
+    client = _make_client(monkeypatch)
+    r = client.get(
+        "/portal/api/actions/inbox?status=nar",
+        auth=("viewer", "test-pw"),
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["filters_applied"]["status"] == "nar"
+
+
+def test_diff_fields_picks_up_close_arrays() -> None:
+    """The new close-condition arrays + variant_key should appear in the
+    diff so admins can see when a tenant override has tuned its
+    cross-off rules differently from the global seed."""
+    from harness_analytics.timeline_api import _diff_fields
+
+    g = {
+        "description": "Office Action",
+        "kind": "standard_oa",
+        "variant_key": "",
+        "close_complete_codes": ["A..."],
+        "close_nar_codes": ["NOA"],
+    }
+    t = dict(g)
+    t["close_complete_codes"] = ["A...", "RCEX"]
+    diff = _diff_fields(t, g)
+    assert "close_complete_codes" in diff
+    # Unchanged fields shouldn't appear.
+    assert "close_nar_codes" not in diff
+
+
+def test_rule_to_dict_surfaces_new_columns() -> None:
+    """``_rule_to_dict`` must round-trip the new variant_key + close arrays
+    so the admin UI can render and edit them."""
+    from types import SimpleNamespace
+
+    from harness_analytics.timeline_api import _rule_to_dict
+
+    row = SimpleNamespace(
+        id=1,
+        tenant_id="global",
+        code="CTNF",
+        variant_key="non-final-office-action-response",
+        close_complete_codes=["A...", "RCEX"],
+        close_nar_codes=["NOA", "ABN"],
+        description="x",
+        kind="standard_oa",
+        aliases=[],
+        ssp_months=3,
+        max_months=6,
+        due_months_from_grant=None,
+        grace_months_from_grant=None,
+        from_filing_months=None,
+        from_priority_months=None,
+        base_months_from_priority=None,
+        late_months_from_priority=None,
+        extendable=True,
+        trigger_label="Mailing date",
+        user_note="",
+        authority="35 USC X",
+        warnings=[],
+        priority_tier=None,
+        patent_type_applicability=["UTILITY"],
+        active=True,
+        updated_at=None,
+    )
+    out = _rule_to_dict(row)
+    assert out["variant_key"] == "non-final-office-action-response"
+    assert out["close_complete_codes"] == ["A...", "RCEX"]
+    assert out["close_nar_codes"] == ["NOA", "ABN"]

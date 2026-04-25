@@ -40,6 +40,27 @@
       default:       return "tl-pill-muted";
     }
   }
+  // M0009: status pills override severity for terminal states so NAR /
+  // COMPLETED visually separate from open warn/danger items.
+  function statusPillClass(status, sev) {
+    const s = (status || "").toUpperCase();
+    if (s === "NAR")        return "tl-pill-info tl-pill-nar";
+    if (s === "COMPLETED")  return "tl-pill-success";
+    if (s === "SUPERSEDED") return "tl-pill-muted";
+    return pillClass(sev);
+  }
+  // M0009: friendlier action labels for the history list.
+  function actionLabel(action) {
+    switch ((action || "").toUpperCase()) {
+      case "AUTO_COMPLETE": return "Auto-completed by rule";
+      case "AUTO_NAR":      return "Auto-NAR'd by rule";
+      case "NAR":           return "Marked NAR";
+      case "UN_NAR":        return "Reopened from NAR";
+      case "REOPEN":        return "Reopened";
+      case "COMPLETE":      return "Completed";
+      default:              return action || "";
+    }
+  }
 
   function renderRwCard(rw) {
     const sevCls = severityClass(rw.severity);
@@ -99,7 +120,7 @@
               · trigger ${fmtDate(rw.trigger_date)}
             </div>
           </div>
-          <span class="tl-pill ${pillClass(rw.severity)}">
+          <span class="tl-pill ${statusPillClass(rw.status, rw.severity)}">
             <span class="tl-pill-dot"></span>${escHtml(rw.status || "OPEN")}
           </span>
           ${rw.verified ? `<span class="tl-verified-badge" title="Verified ${escHtml((rw.verified.verified_at || "").slice(0, 10))}">\u2713 Verified</span>` : ""}
@@ -143,7 +164,7 @@
       <div class="tl-info-card" data-deadline-id="${info.id}">
         <div class="tl-info-card-head">
           <div class="tl-info-card-title">${escHtml(info.description || info.rule_code)}</div>
-          <span class="tl-pill ${pillClass(info.severity)}"><span class="tl-pill-dot"></span>${escHtml(info.status || "OPEN")}</span>
+          <span class="tl-pill ${statusPillClass(info.status, info.severity)}"><span class="tl-pill-dot"></span>${escHtml(info.status || "OPEN")}</span>
         </div>
         <div class="tl-info-card-body">
           <div><strong>${escHtml(info.primary_label || "Primary")}:</strong> ${fmtDate(info.primary_date)}</div>
@@ -269,10 +290,26 @@
               <td style="text-align:right;">${r.fee_usd != null ? fmtMoney(r.fee_usd) : "—"}</td></tr>`).join("");
         const history = (cd.history || []).map((h) => `
           <div style="padding:8px 0;border-bottom:0.5px solid rgba(0,0,0,0.1);">
-            <div><strong>${escHtml(h.action)}</strong> ${h.user ? `by ${escHtml(h.user.name)}` : ""}</div>
+            <div><strong>${escHtml(actionLabel(h.action))}</strong> ${h.user ? `by ${escHtml(h.user.name)}` : ""}</div>
             <div class="tl-mono" style="font-size:11px;color:#888;">${escHtml(h.occurred_at || "")}</div>
             ${Object.keys(h.payload || {}).length ? `<details><summary>payload</summary><pre style="font-size:11px;overflow-x:auto;">${escHtml(JSON.stringify(h.payload, null, 2))}</pre></details>` : ""}
           </div>`).join("");
+        // M0009: render the "Closed by rule …" subtitle in the drawer when
+        // the deadline carries close_info (auto-close audit triplet).
+        const ci = cd.close_info;
+        const closeBlock = ci ? `
+          <div style="margin-top:6px;padding:8px;background:rgba(0,0,0,0.03);border-radius:4px;">
+            <div><strong>${escHtml(
+              ci.disposition === "auto_complete" ? "Auto-completed by rule" :
+              ci.disposition === "auto_nar" ? "Auto-NAR'd by rule" :
+              ci.disposition === "manual_nar" ? "Marked NAR (manual)" :
+              ci.disposition === "manual_complete" ? "Marked complete (manual)" :
+              "Closed"
+            )}</strong></div>
+            ${ci.matched_pattern ? `<div class="tl-mono" style="font-size:11px;">pattern: ${escHtml(ci.matched_pattern)}</div>` : ""}
+            ${ci.closed_by_ifw_document_id ? `<div class="tl-mono" style="font-size:11px;">IFW doc #${ci.closed_by_ifw_document_id}</div>` : ""}
+            ${ci.closed_at ? `<div class="tl-mono" style="font-size:11px;color:#888;">at ${escHtml(ci.closed_at)}</div>` : ""}
+          </div>` : "";
         body.innerHTML = `
           <div><strong>${escHtml(cd.application_title || "")}</strong></div>
           <div class="tl-mono" style="font-size:11px;color:#888;margin-bottom:12px;">${escHtml(cd.application_number || "")}</div>
@@ -281,6 +318,7 @@
           </div>
           <div>Trigger: ${fmtDate(cd.trigger_date)} (${escHtml(cd.trigger_label || "")})</div>
           <div>Status: ${escHtml(cd.status)}</div>
+          ${closeBlock}
           ${cd.authority ? `<div class="tl-authority" style="margin-top:8px;">${escHtml(cd.authority)}</div>` : ""}
           ${rows ? `<table class="tl-eot" style="margin-top:14px;width:100%;border-collapse:collapse;"><thead><tr><th>Step</th><th>Date</th><th style="text-align:right;">Fee</th></tr></thead><tbody>${rows}</tbody></table>` : ""}
           <h4 style="margin-top:18px;">History</h4>

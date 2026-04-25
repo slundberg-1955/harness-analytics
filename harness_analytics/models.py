@@ -247,12 +247,29 @@ class UserSession(Base):
 class IfwRule(Base):
     __tablename__ = "ifw_rules"
     __table_args__ = (
-        UniqueConstraint("tenant_id", "code", name="uq_ifw_rules_tenant_code"),
+        UniqueConstraint(
+            "tenant_id", "code", "variant_key",
+            name="uq_ifw_rules_tenant_code_variant",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     tenant_id: Mapped[str] = mapped_column(Text, nullable=False, default="global")
     code: Mapped[str] = mapped_column(Text, nullable=False)
+    # Same triggering IFW code can drive multiple due-item variants (e.g. CTNF
+    # → "Non-Final OA Response" and "Non-Final OA with RR Response"). Empty
+    # string is the legacy single-variant default; the unique key above keeps
+    # back-compat for rows that don't need a variant.
+    variant_key: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # Auto-close conditions (M0009): IFW codes that should auto-flip an OPEN
+    # deadline to COMPLETED or NAR when they appear after the trigger date.
+    # ``"A..."`` is a prefix wildcard matching any code starting with ``A.``.
+    close_complete_codes: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), nullable=False, default=list
+    )
+    close_nar_codes: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), nullable=False, default=list
+    )
     aliases: Mapped[Optional[list[str]]] = mapped_column(ARRAY(Text))
     description: Mapped[str] = mapped_column(Text, nullable=False)
     kind: Mapped[str] = mapped_column(Text, nullable=False)
@@ -361,6 +378,14 @@ class ComputedDeadline(Base):
         ForeignKey("prosecution_events.id", ondelete="SET NULL")
     )
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    # Auto-close audit (M0009): which IFW doc closed the deadline, the
+    # rule pattern that matched ("A..." or an exact code), and the disposition
+    # taken. Manual complete/NAR actions populate ``closed_disposition`` only.
+    closed_by_ifw_document_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("file_wrapper_documents.id", ondelete="SET NULL")
+    )
+    closed_by_rule_pattern: Mapped[Optional[str]] = mapped_column(Text)
+    closed_disposition: Mapped[Optional[str]] = mapped_column(Text)
     superseded_by: Mapped[Optional[int]] = mapped_column(
         ForeignKey("computed_deadlines.id", ondelete="SET NULL")
     )
