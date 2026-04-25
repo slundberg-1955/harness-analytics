@@ -460,6 +460,16 @@ def _recompute_internal(db: Session, app: Application) -> RecomputeSummary:
     # if the most recent event for this deadline is identical.
     _apply_auto_close_pass(db, app, summary)
 
+    # 4.6) App-level close shortcut for hard_noa deadlines (M0009 follow-up).
+    # The spreadsheet-driven auto-close pass above is IFW-code-driven; for
+    # NOA specifically the set of "issue fee paid" / "patent issued" IFW
+    # codes varies by corpus and we may miss some. As a belt-and-suspenders
+    # fallback: if the application has ``issue_date`` populated (the biblio
+    # XML definitively says the patent issued), any still-OPEN hard_noa
+    # deadline is trivially complete. Same idea for explicit abandonment
+    # text on the application status — that's NAR.
+    _apply_app_level_close_shortcut(db, app, summary)
+
     # 5) Conservative supersession: when a new doc-triggered rule of kind X
     # arrives and an older OPEN deadline of kind Y is in (Y, X) of
     # supersession_map, mark the older one SUPERSEDED.
@@ -604,6 +614,103 @@ def _apply_auto_close_pass(
                 deadline_id=cd.id,
                 action=action,
                 payload_json=payload,
+            )
+        )
+
+
+def _apply_app_level_close_shortcut(
+    db: Session, app: Application, summary: RecomputeSummary
+) -> None:
+    """App-level fallback close for ``hard_noa`` deadlines.
+
+    The IFW-code-driven auto-close pass handles the common case (NOA
+    deadline → matching ISSUE.NTF / ISSUE.FEE / ABN IFW doc). But the
+    exact USPTO IFW code vocabulary for issue events varies by corpus
+    and some environments don't reliably emit them. This shortcut covers
+    the gap using durable application-level state:
+
+    * ``applications.issue_date IS NOT NULL`` → the patent issued, any
+      OPEN ``hard_noa`` deadline is complete (``app_issued`` disposition).
+    * ``applications.application_status_text`` contains "abandon" →
+      the case is abandoned, any OPEN ``hard_noa`` deadline is NAR
+      (``app_abandoned`` disposition).
+
+    Idempotent: gated by ``status == 'OPEN'``. Skipped when the deadline
+    already has a ``closed_disposition`` set (so it never downgrades an
+    auto-complete / manual-complete).
+    """
+    issued = app.issue_date is not None
+    abandoned = bool(
+        app.application_status_text
+        and "abandon" in app.application_status_text.lower()
+    )
+    if not issued and not abandoned:
+        return
+    open_rows = db.scalars(
+        select(ComputedDeadline).where(
+            ComputedDeadline.application_id == app.id,
+            ComputedDeadline.status == "OPEN",
+        )
+    ).all()
+    if not open_rows:
+        return
+    rule_ids = {row.rule_id for row in open_rows}
+    rules: dict[int, IfwRuleRow] = {
+        r.id: r
+        for r in db.scalars(
+            select(IfwRuleRow).where(IfwRuleRow.id.in_(rule_ids))
+        ).all()
+    }
+    now = datetime.now(timezone.utc)
+    for cd in open_rows:
+        rule = rules.get(cd.rule_id)
+        if rule is None or rule.kind != "hard_noa":
+            continue
+        if issued:
+            cd.status = "COMPLETED"
+            cd.completed_at = now
+            cd.closed_disposition = "auto_complete"
+            cd.closed_by_rule_pattern = "app_issued"
+            action = "AUTO_COMPLETE"
+            summary.deadlines_auto_completed += 1
+            payload = {
+                "matched_pattern": "app_issued",
+                "issue_date": _iso_for_audit(app.issue_date),
+                "patent_number": app.patent_number,
+                "rule_id": rule.id,
+                "rule_code": rule.code,
+            }
+        else:  # abandoned
+            cd.status = "NAR"
+            cd.completed_at = now
+            cd.closed_disposition = "auto_nar"
+            cd.closed_by_rule_pattern = "app_abandoned"
+            action = "AUTO_NAR"
+            summary.deadlines_auto_nar += 1
+            payload = {
+                "matched_pattern": "app_abandoned",
+                "application_status_text": app.application_status_text,
+                "rule_id": rule.id,
+                "rule_code": rule.code,
+            }
+        latest = db.scalar(
+            select(DeadlineEvent)
+            .where(DeadlineEvent.deadline_id == cd.id)
+            .order_by(
+                DeadlineEvent.occurred_at.desc(), DeadlineEvent.id.desc()
+            )
+            .limit(1)
+        )
+        if (
+            latest is not None
+            and latest.action == action
+            and (latest.payload_json or {}).get("matched_pattern")
+            == payload["matched_pattern"]
+        ):
+            continue
+        db.add(
+            DeadlineEvent(
+                deadline_id=cd.id, action=action, payload_json=payload
             )
         )
 

@@ -815,6 +815,54 @@
       "complete_codes": ["A...", "PET", "TRACK1.FEE"],
       "nar_codes": ["CTNF", "NOA", "ABN"],
       "notes": null
+    },
+    {
+      "code": "NOA",
+      "variant_key": "",
+      "description": "Notice of Allowance",
+      "complete_codes": ["ISSUE.NTF", "ISSUE.FEE", "RCEX", "RCE", "WFE"],
+      "nar_codes": ["ABN", "EXPR.ABN"],
+      "notes": "Patent issuance (ISSUE.NTF) or issue-fee payment (ISSUE.FEE/WFE) closes. RCE after NOA withdraws allowance — also closes. Abandonment NARs. NOTE: exact IFW codes for issue-fee payment are not in the original spreadsheet; the materializer has a belt-and-suspenders shortcut that auto-completes any hard_noa deadline whose applications.issue_date is populated."
+    },
+    {
+      "code": "FRPR",
+      "variant_key": "",
+      "description": "Foreign filing priority (Paris Convention)",
+      "complete_codes": [],
+      "nar_codes": ["ABN", "EXPR.ABN"],
+      "notes": "Informational soft window; nothing in the IFW reliably signals the foreign filing. Abandonment NARs. Attorneys manually mark complete."
+    },
+    {
+      "code": "PCT",
+      "variant_key": "",
+      "description": "PCT national stage entry",
+      "complete_codes": [],
+      "nar_codes": ["ABN", "EXPR.ABN"],
+      "notes": "National stage entry is signaled by the application's existence itself, not an IFW document. Abandonment NARs."
+    },
+    {
+      "code": "MISMTH4",
+      "variant_key": "",
+      "description": "4-year maintenance fee",
+      "complete_codes": ["MF.PAID"],
+      "nar_codes": ["PTA.EXPIRED", "EXPIR"],
+      "notes": "Maintenance fee payment closes; patent expiration NARs."
+    },
+    {
+      "code": "MISMTH8",
+      "variant_key": "",
+      "description": "8-year maintenance fee",
+      "complete_codes": ["MF.PAID"],
+      "nar_codes": ["PTA.EXPIRED", "EXPIR"],
+      "notes": "Maintenance fee payment closes; patent expiration NARs."
+    },
+    {
+      "code": "MISMTH12",
+      "variant_key": "",
+      "description": "12-year maintenance fee",
+      "complete_codes": ["MF.PAID"],
+      "nar_codes": ["PTA.EXPIRED", "EXPIR"],
+      "notes": "Maintenance fee payment closes; patent expiration NARs."
     }
   ]
 }

@@ -23,10 +23,31 @@ def test_docket_close_seed_loads() -> None:
     # Spot-check a few canonical rows.
     by_key = {(c["code"], c["variant_key"]): c for c in conditions}
     assert ("CTNF", "non-final-office-action-response") in by_key
-    assert ("NOA" not in {c["code"] for c in conditions})  # NOA is a closer, not a triggering rule
     ctnf_response = by_key[("CTNF", "non-final-office-action-response")]
     assert "A..." in ctnf_response["complete_codes"]
     assert "NOA" in ctnf_response["nar_codes"]
+
+
+def test_docket_close_seed_covers_noa_and_maintenance() -> None:
+    """M0009 follow-up: NOA wasn't in the spreadsheet, so its close
+    conditions were empty and the auto-close pass skipped it. The seed
+    now carries entries for NOA + FRPR + PCT + all three maintenance
+    windows, all with ``variant_key=""`` so they update the existing
+    rule rows rather than inserting disconnected auto_close_only rows.
+    """
+    conditions = load_docket_close_seed()
+    by_key = {(c["code"], c["variant_key"]): c for c in conditions}
+    for code in ("NOA", "FRPR", "PCT", "MISMTH4", "MISMTH8", "MISMTH12"):
+        assert (code, "") in by_key, f"missing ({code}, '') in seed"
+    noa = by_key[("NOA", "")]
+    # NOA close patterns should include issuance / fee payment / RCE.
+    assert "ISSUE.NTF" in noa["complete_codes"]
+    assert "RCE" in noa["complete_codes"] or "RCEX" in noa["complete_codes"]
+    assert "ABN" in noa["nar_codes"]
+    # Maintenance rules NAR on expiration.
+    mth4 = by_key[("MISMTH4", "")]
+    assert "MF.PAID" in mth4["complete_codes"]
+    assert any("EXPIR" in c for c in mth4["nar_codes"])
 
 
 def test_seed_creates_variant_rows_for_shared_triggering_codes() -> None:
