@@ -1740,3 +1740,46 @@ def admin_set_user_manager(
     db.commit()
     db.refresh(target)
     return JSONResponse(_user_summary(target))
+
+
+# ---------------------------------------------------------------------------
+# M0009 follow-up: ADMIN-only endpoint that fires a tenant-wide timeline
+# recompute on demand. Same machinery the lifespan uses for the optional
+# ``BACKFILL_TIMELINE_ON_START`` boot job — just exposed via HTTP so the
+# operator can kick a one-shot backfill without redeploying with a
+# different env var. Idempotent via the existing lockfile, so concurrent
+# clicks no-op rather than stacking.
+# ---------------------------------------------------------------------------
+
+
+@router.post("/admin/timeline/backfill")
+def admin_trigger_timeline_backfill(
+    user: CurrentUser = Depends(require_role("ADMIN")),
+) -> JSONResponse:
+    """Spawn the detached ``timeline-recompute`` subprocess for the caller's
+    tenant. Returns immediately; tail progress at ``/health/backfill``.
+
+    409 if a recompute is already in flight (lockfile pointed at a live
+    PID). 200 otherwise with the spawned PID + start time.
+    """
+    from harness_analytics.server import _spawn_timeline_recompute
+
+    spawned = _spawn_timeline_recompute(reason=f"admin-trigger:user={user.id}")
+    if spawned is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "A recompute is already running. Tail /health/backfill for "
+                "progress; retry once that run completes."
+            ),
+        )
+    return JSONResponse(
+        {
+            "status": "spawned",
+            "pid": spawned.get("pid"),
+            "tenant": spawned.get("tenant"),
+            "started_at": spawned.get("started_at"),
+            "reason": spawned.get("reason"),
+            "log": "/health/backfill",
+        }
+    )
