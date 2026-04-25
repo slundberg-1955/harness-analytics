@@ -375,6 +375,15 @@ def _recompute_internal(db: Session, app: Application) -> RecomputeSummary:
     # 2) Filing-date triggered rules (FRPR, IDS, FILING_DATE soft window).
     if app.filing_date:
         for code in _FILING_TRIGGERED:
+            # FRPR (Paris Convention foreign-filing window) only applies to
+            # originally-filed US applications. If this matter already claims
+            # priority from a foreign filing (ForeignPriorityList -> populates
+            # earliest_priority_date) or a prior US case (ParentContinuityList
+            # -> populates continuity_child_of_prior_us), the 12-month Paris
+            # window has no legal effect here. Skip generation; any pre-
+            # existing rows are NAR'd by ``_apply_paris_window_close`` below.
+            if code == "FRPR" and _frpr_not_applicable(app):
+                continue
             rule = get_rule(db, code, tenant_id)
             if rule is None:
                 continue
@@ -469,6 +478,18 @@ def _recompute_internal(db: Session, app: Application) -> RecomputeSummary:
     # deadline is trivially complete. Same idea for explicit abandonment
     # text on the application status — that's NAR.
     _apply_app_level_close_shortcut(db, app, summary)
+
+    # 4.7) FRPR (Paris Convention) lifecycle close.
+    # Two cases handled here, both as app-level rather than IFW-driven because
+    # nothing in the file wrapper reliably signals either condition:
+    #   * Matter has any priority claim (foreign or domestic continuity) ->
+    #     NAR with disposition "no_paris_window". Belt-and-suspenders cleanup
+    #     for rows generated before the priority data was ingested.
+    #   * Today is past the computed primary_date (12 months from filing) ->
+    #     COMPLETED with disposition "deadline_passed". The legal window has
+    #     elapsed; whether or not foreign filings actually happened is
+    #     unknowable from the IFW, but the deadline is no longer actionable.
+    _apply_paris_window_close(db, app, summary)
 
     # 5) Conservative supersession: when a new doc-triggered rule of kind X
     # arrives and an older OPEN deadline of kind Y is in (Y, X) of
@@ -721,6 +742,118 @@ def _iso_for_audit(value) -> Optional[str]:
     if isinstance(value, datetime):
         return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     return value.isoformat()
+
+
+def _frpr_not_applicable(app: Application) -> bool:
+    """True when the matter already claims priority -- so no Paris Convention
+    foreign-filing window applies. ``earliest_priority_date`` covers both
+    DomesticPriority/DomesticBenefit and ForeignPriority entries (see
+    ``xml_parser.earliest_priority_date_from_root``); the continuity flag
+    covers ParentContinuityList entries that reference a prior US parent
+    without a separate priority/benefit claim line.
+    """
+    if app.earliest_priority_date is not None:
+        return True
+    if getattr(app, "continuity_child_of_prior_us", False):
+        return True
+    return False
+
+
+def _apply_paris_window_close(
+    db: Session, app: Application, summary: RecomputeSummary
+) -> None:
+    """Auto-close OPEN FRPR deadlines via two app-level rules.
+
+    1. If the matter now has any priority claim, the deadline never should
+       have been generated -> NAR (disposition ``no_paris_window``).
+    2. Else if today is past ``primary_date`` (filing + 12 months), the
+       window has legally expired -> COMPLETED (disposition
+       ``deadline_passed``). The corresponding audit event is
+       ``AUTO_DEADLINE_PASSED`` so the lifecycle is distinguishable from a
+       human or IFW-code-driven complete in the history.
+
+    Idempotent: only OPEN rows are touched, so re-running is a no-op once a
+    deadline has been auto-closed.
+    """
+    from harness_analytics.models import IfwRule as IfwRuleRow
+
+    open_rows = db.scalars(
+        select(ComputedDeadline).where(
+            ComputedDeadline.application_id == app.id,
+            ComputedDeadline.status == "OPEN",
+        )
+    ).all()
+    if not open_rows:
+        return
+    rule_ids = {row.rule_id for row in open_rows}
+    rules: dict[int, IfwRuleRow] = {
+        r.id: r
+        for r in db.scalars(
+            select(IfwRuleRow).where(IfwRuleRow.id.in_(rule_ids))
+        ).all()
+    }
+    has_priority = _frpr_not_applicable(app)
+    today = date.today()
+    now = datetime.now(timezone.utc)
+    for cd in open_rows:
+        rule = rules.get(cd.rule_id)
+        if rule is None or rule.code != "FRPR":
+            continue
+
+        if has_priority:
+            cd.status = "NAR"
+            cd.completed_at = now
+            cd.closed_disposition = "auto_nar"
+            cd.closed_by_rule_pattern = "no_paris_window"
+            action = "AUTO_NAR"
+            payload = {
+                "matched_pattern": "no_paris_window",
+                "earliest_priority_date": _iso_for_audit(
+                    app.earliest_priority_date
+                ),
+                "continuity_child_of_prior_us": bool(
+                    getattr(app, "continuity_child_of_prior_us", False)
+                ),
+                "rule_id": rule.id,
+                "rule_code": rule.code,
+            }
+            summary.deadlines_auto_nar += 1
+        elif cd.primary_date is not None and cd.primary_date < today:
+            cd.status = "COMPLETED"
+            cd.completed_at = now
+            cd.closed_disposition = "deadline_passed"
+            cd.closed_by_rule_pattern = "paris_window_passed"
+            action = "AUTO_DEADLINE_PASSED"
+            payload = {
+                "matched_pattern": "paris_window_passed",
+                "primary_date": _iso_for_audit(cd.primary_date),
+                "rule_id": rule.id,
+                "rule_code": rule.code,
+            }
+            summary.deadlines_auto_completed += 1
+        else:
+            continue
+
+        latest = db.scalar(
+            select(DeadlineEvent)
+            .where(DeadlineEvent.deadline_id == cd.id)
+            .order_by(
+                DeadlineEvent.occurred_at.desc(), DeadlineEvent.id.desc()
+            )
+            .limit(1)
+        )
+        if (
+            latest is not None
+            and latest.action == action
+            and (latest.payload_json or {}).get("matched_pattern")
+            == payload["matched_pattern"]
+        ):
+            continue
+        db.add(
+            DeadlineEvent(
+                deadline_id=cd.id, action=action, payload_json=payload
+            )
+        )
 
 
 def _id_for_rule_code(code: str, tenant_id: str):

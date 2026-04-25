@@ -830,7 +830,7 @@
       "description": "Foreign filing priority (Paris Convention)",
       "complete_codes": [],
       "nar_codes": ["ABN", "EXPR.ABN"],
-      "notes": "Informational soft window; nothing in the IFW reliably signals the foreign filing. Abandonment NARs. Attorneys manually mark complete."
+      "notes": "Lifecycle handled by materializer._apply_paris_window_close: (1) deadline is not generated at all when the matter has any priority claim (foreign priority or continuity-bag parent); (2) once today is past primary_date (filing + 12mo), the row is auto-COMPLETED with disposition 'deadline_passed' and event 'AUTO_DEADLINE_PASSED'. ABN / EXPR.ABN still NAR the row through the IFW-code-driven auto-close pass."
     },
     {
       "code": "PCT",

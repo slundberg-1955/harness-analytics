@@ -346,3 +346,149 @@ def test_app_level_shortcut_no_op_when_app_still_pending() -> None:
 
     assert open_rows[0].status == "OPEN"
     assert session.added == []
+
+
+# ---------------------------------------------------------------------------
+# _frpr_not_applicable + _apply_paris_window_close (Paris Convention lifecycle)
+# ---------------------------------------------------------------------------
+
+
+def _app(
+    *,
+    earliest_priority_date=None,
+    continuity_child_of_prior_us=False,
+    filing_date=date(2020, 1, 4),
+    issue_date=None,
+    application_status_text=None,
+    patent_number=None,
+):
+    return SimpleNamespace(
+        id=42,
+        filing_date=filing_date,
+        issue_date=issue_date,
+        patent_number=patent_number,
+        application_status_text=application_status_text,
+        earliest_priority_date=earliest_priority_date,
+        continuity_child_of_prior_us=continuity_child_of_prior_us,
+    )
+
+
+def _frpr_cd(id_, rule_id, *, primary_date, status="OPEN"):
+    return SimpleNamespace(
+        id=id_,
+        rule_id=rule_id,
+        status=status,
+        primary_date=primary_date,
+        completed_at=None,
+        closed_disposition=None,
+        closed_by_rule_pattern=None,
+    )
+
+
+def _frpr_rule(id_):
+    return SimpleNamespace(id=id_, code="FRPR", kind="priority_later_of")
+
+
+def test_frpr_not_applicable_with_foreign_priority() -> None:
+    from harness_analytics.timeline.materializer import _frpr_not_applicable
+
+    assert _frpr_not_applicable(_app(earliest_priority_date=date(2019, 5, 1)))
+
+
+def test_frpr_not_applicable_with_continuity_parent() -> None:
+    from harness_analytics.timeline.materializer import _frpr_not_applicable
+
+    assert _frpr_not_applicable(_app(continuity_child_of_prior_us=True))
+
+
+def test_frpr_not_applicable_for_originally_filed_app() -> None:
+    from harness_analytics.timeline.materializer import _frpr_not_applicable
+
+    assert not _frpr_not_applicable(_app())
+
+
+def test_paris_window_close_nars_when_app_has_priority_claim() -> None:
+    from harness_analytics.timeline.materializer import (
+        RecomputeSummary,
+        _apply_paris_window_close,
+    )
+
+    app = _app(earliest_priority_date=date(2019, 5, 1))
+    open_rows = [_frpr_cd(700, rule_id=11, primary_date=date(2099, 1, 1))]
+    rules = {11: _frpr_rule(11)}
+    session = _StubSession(open_rows, rules)
+    summary = RecomputeSummary(application_id=42)
+
+    _apply_paris_window_close(session, app, summary)
+
+    assert open_rows[0].status == "NAR"
+    assert open_rows[0].closed_disposition == "auto_nar"
+    assert open_rows[0].closed_by_rule_pattern == "no_paris_window"
+    assert summary.deadlines_auto_nar == 1
+    assert len(session.added) == 1
+    assert session.added[0].action == "AUTO_NAR"
+    assert session.added[0].payload_json["matched_pattern"] == "no_paris_window"
+
+
+def test_paris_window_close_completes_when_window_has_passed() -> None:
+    from harness_analytics.timeline.materializer import (
+        RecomputeSummary,
+        _apply_paris_window_close,
+    )
+
+    # No priority claim -> falls into the "deadline_passed" branch when
+    # primary_date is in the past.
+    app = _app()
+    open_rows = [_frpr_cd(701, rule_id=11, primary_date=date(2021, 1, 4))]
+    rules = {11: _frpr_rule(11)}
+    session = _StubSession(open_rows, rules)
+    summary = RecomputeSummary(application_id=42)
+
+    _apply_paris_window_close(session, app, summary)
+
+    assert open_rows[0].status == "COMPLETED"
+    assert open_rows[0].closed_disposition == "deadline_passed"
+    assert open_rows[0].closed_by_rule_pattern == "paris_window_passed"
+    assert summary.deadlines_auto_completed == 1
+    assert len(session.added) == 1
+    assert session.added[0].action == "AUTO_DEADLINE_PASSED"
+
+
+def test_paris_window_close_leaves_open_when_window_still_in_future() -> None:
+    from harness_analytics.timeline.materializer import (
+        RecomputeSummary,
+        _apply_paris_window_close,
+    )
+
+    app = _app()
+    open_rows = [_frpr_cd(702, rule_id=11, primary_date=date(2099, 1, 4))]
+    rules = {11: _frpr_rule(11)}
+    session = _StubSession(open_rows, rules)
+    summary = RecomputeSummary(application_id=42)
+
+    _apply_paris_window_close(session, app, summary)
+
+    assert open_rows[0].status == "OPEN"
+    assert summary.deadlines_auto_completed == 0
+    assert summary.deadlines_auto_nar == 0
+    assert session.added == []
+
+
+def test_paris_window_close_ignores_non_frpr_deadlines() -> None:
+    from harness_analytics.timeline.materializer import (
+        RecomputeSummary,
+        _apply_paris_window_close,
+    )
+
+    app = _app(earliest_priority_date=date(2019, 5, 1))
+    # rule code is NOT "FRPR" — should be left alone even though primary_date
+    # is in the past and the app has a priority claim.
+    open_rows = [_frpr_cd(703, rule_id=11, primary_date=date(2021, 1, 4))]
+    rules = {11: SimpleNamespace(id=11, code="CTNF", kind="response")}
+    session = _StubSession(open_rows, rules)
+    summary = RecomputeSummary(application_id=42)
+
+    _apply_paris_window_close(session, app, summary)
+
+    assert open_rows[0].status == "OPEN"
+    assert session.added == []
