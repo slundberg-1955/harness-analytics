@@ -272,6 +272,7 @@
     renderBarsChart();
     renderDonut();
     renderSignals();
+    renderAllowedFollowingResponse();
     renderFilterChips();
     renderBody();
     renderFoot();
@@ -531,6 +532,54 @@
         applyLevel();
       });
     });
+  }
+
+  // ---------------------------------------------------------------------
+  // % Allowed Following Response (CTNF response speed → allowance rate)
+  // ---------------------------------------------------------------------
+  function renderAllowedFollowingResponse() {
+    const container = document.getElementById("afr-chart");
+    const legend = document.getElementById("afr-legend");
+    if (!container || !legend) return;
+    const data = state.charts && state.charts.allowedFollowingResponse;
+
+    if (!data || !data.buckets || !data.countedEvents) {
+      container.innerHTML = '<div class="empty-chart">No CTNF responses with a known outcome in the current selection.</div>';
+      legend.innerHTML = "";
+      return;
+    }
+
+    const buckets = data.buckets;
+    const maxCount = Math.max(...buckets.map((b) => b.count)) || 1;
+
+    container.innerHTML = `
+      <div class="histogram">
+        ${buckets.map((b) => {
+          const widthPct = Math.max(b.count > 0 ? 1 : 0, Math.round((b.count / maxCount) * 100));
+          const rateStr = b.allowanceRate == null ? "—" : `${b.allowanceRate}%`;
+          const title = `${b.label} · ${b.count.toLocaleString()} responses · ${b.allowedCount.toLocaleString()} allowed (${rateStr})`;
+          return `
+            <div class="hist-row" title="${escapeAttr(title)}">
+              <div class="hist-row-label">${escapeHtml(b.label)}</div>
+              <div class="hist-row-bar-wrap">
+                <div class="hist-row-bar" style="width:${widthPct}%"></div>
+              </div>
+              <div class="hist-row-count">${b.count.toLocaleString()}</div>
+              <div class="hist-row-pct">${rateStr}</div>
+            </div>`;
+        }).join("")}
+      </div>`;
+
+    const counted = data.countedEvents || 0;
+    const overall = data.overallAllowanceRate == null ? "—" : `${data.overallAllowanceRate}%`;
+    const excludedPending = data.excludedPending || 0;
+    const excludedUnknown = data.excludedUnknown || 0;
+    const excludedTotal = excludedPending + excludedUnknown;
+    legend.innerHTML = `
+      <span class="legend-dot"><span class="dot" style="background:var(--blue-600)"></span>${counted.toLocaleString()} CTNF responses (allowed + abandoned)</span>
+      <span class="legend-dot legend-stat">Overall <strong>${overall}</strong></span>
+      ${excludedTotal ? `<span class="legend-dot"><span class="dot" style="background:var(--slate-200)"></span>${excludedTotal.toLocaleString()} excluded (pending)</span>` : ""}
+    `;
   }
 
   // ---------------------------------------------------------------------

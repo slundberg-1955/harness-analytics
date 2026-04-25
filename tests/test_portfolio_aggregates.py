@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from harness_analytics.portfolio_aggregates import (
     STATUS_PILL,
+    compute_allowed_following_response,
     compute_charts,
     compute_kpis,
     compute_status_mix,
@@ -247,3 +248,100 @@ def test_prosecution_signals_noa_within_90_pct() -> None:
     # Only interviewed rows factor into the pct; 1 of 2 = 50%.
     assert signals["noaWithin90DaysOfInterviewPct"] == 50.0
     assert signals["continuationTotal"] == 3
+
+
+# ---------------------------------------------------------------------------
+# % Allowed Following Response
+# ---------------------------------------------------------------------------
+def _ev(app_no: str, days: int) -> dict:
+    return {"application_number": app_no, "days_to_respond": days}
+
+
+def test_afr_allowed_in_correct_bucket() -> None:
+    rows = [_row("A", status=150)]  # patented
+    out = compute_allowed_following_response([_ev("A", 20)], rows)
+    b0 = out["buckets"][0]
+    assert b0["label"] == "0–30 days"
+    assert b0["count"] == 1
+    assert b0["allowedCount"] == 1
+    assert b0["allowanceRate"] == 100.0
+    assert out["overallAllowanceRate"] == 100.0
+    assert out["countedEvents"] == 1
+    assert out["excludedPending"] == 0
+
+
+def test_afr_abandoned_drops_rate() -> None:
+    rows = [_row("A", status=161, status_text="Abandoned", days_to_noa=None)]
+    out = compute_allowed_following_response([_ev("A", 75)], rows)
+    b = next(x for x in out["buckets"] if x["label"] == "61–90 days")
+    assert b["count"] == 1
+    assert b["allowedCount"] == 0
+    assert b["allowanceRate"] == 0.0
+
+
+def test_afr_pending_excluded() -> None:
+    rows = [_row("A", status=41, status_text="Non-Final", days_to_noa=None)]
+    out = compute_allowed_following_response([_ev("A", 45)], rows)
+    assert out["countedEvents"] == 0
+    assert out["excludedPending"] == 1
+    assert out["totalEvents"] == 1
+    assert all(b["count"] == 0 for b in out["buckets"])
+    assert out["overallAllowanceRate"] is None
+
+
+def test_afr_multiple_events_per_application() -> None:
+    rows = [_row("A", status=150)]
+    events = [_ev("A", 30), _ev("A", 95)]
+    out = compute_allowed_following_response(events, rows)
+    bucket_counts = {b["label"]: b["count"] for b in out["buckets"]}
+    assert bucket_counts["0–30 days"] == 1
+    assert bucket_counts["91–120 days"] == 1
+    assert out["countedEvents"] == 2
+    assert out["overallAllowanceRate"] == 100.0
+
+
+def test_afr_first_noa_date_classifies_as_allowed() -> None:
+    # Application has no terminal status code yet but first_noa_date is set
+    # (e.g. NOA mailed but issue fee not yet recorded). Should still count
+    # as allowed, matching _CHM_ALLOWED_STATUS_CODES semantics.
+    row = _row("A", status=None, status_text=None, days_to_noa=400)
+    row["first_noa_date"] = "2024-01-01"
+    out = compute_allowed_following_response([_ev("A", 50)], [row])
+    b = next(x for x in out["buckets"] if x["label"] == "31–60 days")
+    assert b["count"] == 1
+    assert b["allowedCount"] == 1
+
+
+def test_afr_unknown_application_excluded() -> None:
+    out = compute_allowed_following_response([_ev("Z", 30)], [])
+    assert out["totalEvents"] == 1
+    assert out["countedEvents"] == 0
+    assert out["excludedUnknown"] == 1
+
+
+def test_afr_over_180_bucket_catches_long_tail() -> None:
+    rows = [_row("A", status=150)]
+    out = compute_allowed_following_response([_ev("A", 365)], rows)
+    long_tail = next(x for x in out["buckets"] if x["label"] == "> 180 days")
+    assert long_tail["count"] == 1
+    assert long_tail["maxDays"] is None
+
+
+def test_afr_negative_or_missing_days_dropped() -> None:
+    rows = [_row("A", status=150)]
+    events = [
+        _ev("A", -5),
+        {"application_number": "A", "days_to_respond": None},
+        _ev("A", 30),
+    ]
+    out = compute_allowed_following_response(events, rows)
+    assert out["totalEvents"] == 1
+    assert out["countedEvents"] == 1
+
+
+def test_afr_empty_inputs() -> None:
+    out = compute_allowed_following_response([], [])
+    assert out["totalEvents"] == 0
+    assert out["countedEvents"] == 0
+    assert out["overallAllowanceRate"] is None
+    assert all(b["count"] == 0 for b in out["buckets"])

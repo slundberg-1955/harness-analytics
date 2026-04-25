@@ -25,6 +25,7 @@ from harness_analytics import app_settings
 from harness_analytics.db import get_db
 from harness_analytics.portfolio_aggregates import (
     STATUS_PILL,
+    compute_allowed_following_response,
     compute_charts,
     compute_kpis,
     status_label,
@@ -381,6 +382,66 @@ def _iso(v: Any) -> Optional[str]:
     return str(v)
 
 
+_CTNF_RESPONSE_EVENTS_SQL = """
+SELECT
+    a.application_number AS application_number,
+    fwd.mail_room_date::date AS oa_date,
+    resp.transaction_date AS response_date,
+    (resp.transaction_date - fwd.mail_room_date::date) AS days_to_respond
+FROM applications a
+JOIN file_wrapper_documents fwd
+  ON fwd.application_id = a.id
+ AND UPPER(fwd.document_code) = 'CTNF'
+ AND fwd.mail_room_date IS NOT NULL
+JOIN LATERAL (
+    SELECT pe.transaction_date
+      FROM prosecution_events pe
+     WHERE pe.application_id = a.id
+       AND pe.event_type IN ('RESPONSE_NONFINAL', 'RESPONSE_FINAL', 'RCE')
+       AND pe.transaction_date >= fwd.mail_room_date::date
+       AND pe.transaction_date < COALESCE(
+           (SELECT MIN(fwd2.mail_room_date::date)
+              FROM file_wrapper_documents fwd2
+             WHERE fwd2.application_id = a.id
+               AND UPPER(fwd2.document_code) IN ('CTNF', 'CTFR', 'NOA')
+               AND fwd2.mail_room_date IS NOT NULL
+               AND fwd2.mail_room_date::date > fwd.mail_room_date::date),
+           DATE '9999-12-31'
+       )
+     ORDER BY pe.transaction_date, COALESCE(pe.seq_order, 0)
+     LIMIT 1
+) resp ON TRUE
+"""
+
+
+def _fetch_ctnf_response_events(
+    db: Session, application_numbers: list[str]
+) -> list[dict[str, Any]]:
+    """Return one event per (CTNF, first matching response) pair.
+
+    Each event is shaped for ``compute_allowed_following_response``:
+    ``{application_number, oa_date, response_date, days_to_respond}``.
+    The lateral subquery applies the same OA→response pairing rules as
+    ``extension_metrics._first_response_date`` (response must fall before
+    the next CTNF/CTFR/NOA mail date).
+    """
+    nums = [str(n) for n in application_numbers if n]
+    if not nums:
+        return []
+    placeholders: list[str] = []
+    binds: dict[str, Any] = {}
+    for i, num in enumerate(nums):
+        name = f"app_{i}"
+        placeholders.append(f":{name}")
+        binds[name] = num
+    sql = _CTNF_RESPONSE_EVENTS_SQL + (
+        f" WHERE a.application_number IN ({', '.join(placeholders)})"
+    )
+    result = db.execute(text(sql), binds)
+    cols = list(result.keys())
+    return [dict(zip(cols, r)) for r in result.fetchall()]
+
+
 def _fetch_rows(
     db: Session, params: dict[str, Any], cap: int | None = None
 ) -> list[dict[str, Any]]:
@@ -481,6 +542,13 @@ def portfolio(
     end = start + pageSize
     page_rows = all_rows[start:end]
 
+    app_numbers = [r["application_number"] for r in all_rows if r.get("application_number")]
+    ctnf_events = _fetch_ctnf_response_events(db, app_numbers)
+    charts = compute_charts(all_rows)
+    charts["allowedFollowingResponse"] = compute_allowed_following_response(
+        ctnf_events, all_rows
+    )
+
     return JSONResponse(
         {
             "rows": [_row_to_json(r) for r in page_rows],
@@ -490,7 +558,7 @@ def portfolio(
             "aggregateRowCap": cap if cap and cap > 0 else None,
             "capped": capped,
             "kpis": compute_kpis(all_rows),
-            "charts": compute_charts(all_rows),
+            "charts": charts,
             "statusPill": {str(k): v for k, v in STATUS_PILL.items()},
         }
     )

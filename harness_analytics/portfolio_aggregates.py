@@ -344,6 +344,115 @@ def compute_prosecution_signals(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+# Buckets for "% Allowed Following Response". Aligned to the 3-month CTNF
+# statutory deadline plus the available extension months (the same horizon
+# extension_metrics.py already uses for late-response buckets).
+_RESPONSE_SPEED_BUCKETS: tuple[tuple[str, int, int], ...] = (
+    ("0–30 days", 0, 30),
+    ("31–60 days", 31, 60),
+    ("61–90 days", 61, 90),
+    ("91–120 days", 91, 120),
+    ("121–150 days", 121, 150),
+    ("151–180 days", 151, 180),
+    ("> 180 days", 181, 10**9),
+)
+
+
+def compute_allowed_following_response(
+    events: list[dict[str, Any]],
+    rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """% Allowed Following Response: CTNF response speed → eventual allowance.
+
+    Each event is one (CTNF, applicant response) pair with
+    ``days_to_respond`` and the source ``application_id``. We classify the
+    application's outcome via the same convention as the Traditional rate
+    (allowed = status 150/93/159 or first_noa_date set; abandoned = status
+    161; everything else is pending and excluded from both numerator and
+    denominator). Then bucket events by speed and emit allowance rate per
+    bucket.
+    """
+
+    by_app: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        num = r.get("application_number")
+        if num is None:
+            continue
+        by_app[str(num)] = r
+
+    def _outcome(app_num: str) -> str:
+        r = by_app.get(app_num)
+        if r is None:
+            return "unknown"
+        code = r.get("application_status_code")
+        if code in _CHM_ALLOWED_STATUS_CODES or r.get("first_noa_date"):
+            return "allowed"
+        if code == 161:
+            return "abandoned"
+        return "pending"
+
+    bucket_counts = [0] * len(_RESPONSE_SPEED_BUCKETS)
+    bucket_allowed = [0] * len(_RESPONSE_SPEED_BUCKETS)
+    excluded_pending = 0
+    excluded_unknown = 0
+    total_events = 0
+
+    for ev in events:
+        days = ev.get("days_to_respond")
+        app_num = ev.get("application_number")
+        if days is None or app_num is None:
+            continue
+        try:
+            d = int(days)
+        except (TypeError, ValueError):
+            continue
+        if d < 0:
+            continue
+        total_events += 1
+        outcome = _outcome(str(app_num))
+        if outcome == "pending":
+            excluded_pending += 1
+            continue
+        if outcome == "unknown":
+            excluded_unknown += 1
+            continue
+        for i, (_label, lo, hi) in enumerate(_RESPONSE_SPEED_BUCKETS):
+            if lo <= d <= hi:
+                bucket_counts[i] += 1
+                if outcome == "allowed":
+                    bucket_allowed[i] += 1
+                break
+
+    buckets: list[dict[str, Any]] = []
+    for i, (label, lo, hi) in enumerate(_RESPONSE_SPEED_BUCKETS):
+        count = bucket_counts[i]
+        allowed = bucket_allowed[i]
+        rate = round(100.0 * allowed / count, 1) if count else None
+        buckets.append(
+            {
+                "label": label,
+                "minDays": lo,
+                "maxDays": None if hi >= 10**9 else hi,
+                "count": count,
+                "allowedCount": allowed,
+                "allowanceRate": rate,
+            }
+        )
+
+    counted = sum(bucket_counts)
+    overall_allowed = sum(bucket_allowed)
+    overall_rate = round(100.0 * overall_allowed / counted, 1) if counted else None
+
+    return {
+        "buckets": buckets,
+        "totalEvents": total_events,
+        "countedEvents": counted,
+        "excludedPending": excluded_pending,
+        "excludedUnknown": excluded_unknown,
+        "overallAllowanceRate": overall_rate,
+    }
+
+
 def compute_charts(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "daysToNoaHistogram": compute_days_to_noa_histogram(rows),
