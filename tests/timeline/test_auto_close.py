@@ -185,3 +185,164 @@ def test_choose_close_match_handles_datetime_mail_room() -> None:
     )
     assert result is not None
     assert result[0] == "auto_complete"
+
+
+# ---------------------------------------------------------------------------
+# _apply_app_level_close_shortcut: belt-and-suspenders for NOA / hard_noa
+# deadlines on apps that definitively issued or abandoned.
+# ---------------------------------------------------------------------------
+
+
+class _StubSession:
+    """Fake Session enough to exercise _apply_app_level_close_shortcut.
+
+    Records ``db.add(...)`` calls and serves two fixed ``scalars(...)``
+    results: the OPEN deadlines, then the rule lookup for those deadlines.
+    Subsequent ``scalars()`` calls (for the event-dedupe lookup) return an
+    empty iterator. ``scalar()`` for the latest-event lookup returns None.
+    """
+
+    def __init__(self, open_rows, rules_by_id):
+        self._queue = [open_rows, list(rules_by_id.values())]
+        self.added = []
+
+    def scalars(self, *_a, **_kw):
+        if self._queue:
+            rows = self._queue.pop(0)
+        else:
+            rows = []
+
+        class _Iter:
+            def __init__(self, r):
+                self._r = r
+
+            def all(self):
+                return list(self._r)
+
+        return _Iter(rows)
+
+    def scalar(self, *_a, **_kw):
+        return None
+
+    def add(self, obj):
+        self.added.append(obj)
+
+
+def _cd(id_, rule_id, status="OPEN"):
+    return SimpleNamespace(
+        id=id_,
+        rule_id=rule_id,
+        status=status,
+        completed_at=None,
+        closed_disposition=None,
+        closed_by_rule_pattern=None,
+    )
+
+
+def _rule(id_, kind):
+    return SimpleNamespace(id=id_, code="NOA", kind=kind)
+
+
+def test_app_level_shortcut_completes_hard_noa_when_issued() -> None:
+    from harness_analytics.timeline.materializer import (
+        RecomputeSummary,
+        _apply_app_level_close_shortcut,
+    )
+
+    app = SimpleNamespace(
+        id=1,
+        issue_date=date(2024, 3, 1),
+        patent_number="US10,000,000",
+        application_status_text="Patented Case",
+    )
+    open_rows = [_cd(100, rule_id=7)]
+    rules = {7: _rule(7, "hard_noa")}
+    session = _StubSession(open_rows, rules)
+    summary = RecomputeSummary(application_id=1)
+
+    _apply_app_level_close_shortcut(session, app, summary)
+
+    assert open_rows[0].status == "COMPLETED"
+    assert open_rows[0].closed_disposition == "auto_complete"
+    assert open_rows[0].closed_by_rule_pattern == "app_issued"
+    assert summary.deadlines_auto_completed == 1
+    # One DeadlineEvent was appended with AUTO_COMPLETE action.
+    assert len(session.added) == 1
+    assert session.added[0].action == "AUTO_COMPLETE"
+
+
+def test_app_level_shortcut_nars_hard_noa_when_abandoned() -> None:
+    from harness_analytics.timeline.materializer import (
+        RecomputeSummary,
+        _apply_app_level_close_shortcut,
+    )
+
+    app = SimpleNamespace(
+        id=1,
+        issue_date=None,
+        patent_number=None,
+        application_status_text="Abandoned -- Failure to Respond to Office Action",
+    )
+    open_rows = [_cd(200, rule_id=9)]
+    rules = {9: _rule(9, "hard_noa")}
+    session = _StubSession(open_rows, rules)
+    summary = RecomputeSummary(application_id=1)
+
+    _apply_app_level_close_shortcut(session, app, summary)
+
+    assert open_rows[0].status == "NAR"
+    assert open_rows[0].closed_disposition == "auto_nar"
+    assert open_rows[0].closed_by_rule_pattern == "app_abandoned"
+    assert summary.deadlines_auto_nar == 1
+
+
+def test_app_level_shortcut_leaves_non_hard_noa_alone() -> None:
+    """The shortcut is intentionally narrow: only ``hard_noa`` rules are
+    eligible. An OA response window should be untouched even if the app
+    has issued, because the attorney may still need to take some action
+    (e.g. post-allowance amendment).
+    """
+    from harness_analytics.timeline.materializer import (
+        RecomputeSummary,
+        _apply_app_level_close_shortcut,
+    )
+
+    app = SimpleNamespace(
+        id=1,
+        issue_date=date(2024, 3, 1),
+        patent_number="US10,000,000",
+        application_status_text="Patented Case",
+    )
+    open_rows = [_cd(300, rule_id=11)]
+    rules = {11: _rule(11, "standard_oa")}
+    session = _StubSession(open_rows, rules)
+    summary = RecomputeSummary(application_id=1)
+
+    _apply_app_level_close_shortcut(session, app, summary)
+
+    assert open_rows[0].status == "OPEN"
+    assert summary.deadlines_auto_completed == 0
+    assert session.added == []
+
+
+def test_app_level_shortcut_no_op_when_app_still_pending() -> None:
+    from harness_analytics.timeline.materializer import (
+        RecomputeSummary,
+        _apply_app_level_close_shortcut,
+    )
+
+    app = SimpleNamespace(
+        id=1,
+        issue_date=None,
+        patent_number=None,
+        application_status_text="Non Final Action Mailed",
+    )
+    open_rows = [_cd(400, rule_id=13)]
+    rules = {13: _rule(13, "hard_noa")}
+    session = _StubSession(open_rows, rules)
+    summary = RecomputeSummary(application_id=1)
+
+    _apply_app_level_close_shortcut(session, app, summary)
+
+    assert open_rows[0].status == "OPEN"
+    assert session.added == []
