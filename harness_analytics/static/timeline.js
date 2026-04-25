@@ -49,16 +49,28 @@
     if (s === "SUPERSEDED") return "tl-pill-muted";
     return pillClass(sev);
   }
+  // FRPR / Paris-Convention follow-up: rows auto-cleared because the
+  // 12-month window elapsed carry close_info.disposition === "deadline_passed".
+  // Render a friendlier label than the raw status so attorneys can tell at
+  // a glance that nothing was filed -- the calendar entry just expired.
+  function statusPillText(status, closeInfo) {
+    const s = (status || "").toUpperCase();
+    if (s === "COMPLETED" && closeInfo && closeInfo.disposition === "deadline_passed") {
+      return "Deadline Passed";
+    }
+    return s || "OPEN";
+  }
   // M0009: friendlier action labels for the history list.
   function actionLabel(action) {
     switch ((action || "").toUpperCase()) {
-      case "AUTO_COMPLETE": return "Auto-completed by rule";
-      case "AUTO_NAR":      return "Auto-NAR'd by rule";
-      case "NAR":           return "Marked NAR";
-      case "UN_NAR":        return "Reopened from NAR";
-      case "REOPEN":        return "Reopened";
-      case "COMPLETE":      return "Completed";
-      default:              return action || "";
+      case "AUTO_COMPLETE":         return "Auto-completed by rule";
+      case "AUTO_NAR":              return "Auto-NAR'd by rule";
+      case "AUTO_DEADLINE_PASSED":  return "Auto-cleared (deadline passed)";
+      case "NAR":                   return "Marked NAR";
+      case "UN_NAR":                return "Reopened from NAR";
+      case "REOPEN":                return "Reopened";
+      case "COMPLETE":              return "Completed";
+      default:                      return action || "";
     }
   }
 
@@ -121,7 +133,7 @@
             </div>
           </div>
           <span class="tl-pill ${statusPillClass(rw.status, rw.severity)}">
-            <span class="tl-pill-dot"></span>${escHtml(rw.status || "OPEN")}
+            <span class="tl-pill-dot"></span>${escHtml(statusPillText(rw.status, rw.close_info))}
           </span>
           ${rw.verified ? `<span class="tl-verified-badge" title="Verified ${escHtml((rw.verified.verified_at || "").slice(0, 10))}">\u2713 Verified</span>` : ""}
         </div>
@@ -164,7 +176,7 @@
       <div class="tl-info-card" data-deadline-id="${info.id}">
         <div class="tl-info-card-head">
           <div class="tl-info-card-title">${escHtml(info.description || info.rule_code)}</div>
-          <span class="tl-pill ${statusPillClass(info.status, info.severity)}"><span class="tl-pill-dot"></span>${escHtml(info.status || "OPEN")}</span>
+          <span class="tl-pill ${statusPillClass(info.status, info.severity)}"><span class="tl-pill-dot"></span>${escHtml(statusPillText(info.status, info.close_info))}</span>
         </div>
         <div class="tl-info-card-body">
           <div><strong>${escHtml(info.primary_label || "Primary")}:</strong> ${fmtDate(info.primary_date)}</div>
@@ -302,6 +314,7 @@
             <div><strong>${escHtml(
               ci.disposition === "auto_complete" ? "Auto-completed by rule" :
               ci.disposition === "auto_nar" ? "Auto-NAR'd by rule" :
+              ci.disposition === "deadline_passed" ? "Deadline passed (auto-cleared)" :
               ci.disposition === "manual_nar" ? "Marked NAR (manual)" :
               ci.disposition === "manual_complete" ? "Marked complete (manual)" :
               "Closed"
@@ -317,7 +330,7 @@
             ${cd.verified ? `<span class="tl-verified-badge" title="Verified by ${escHtml((cd.verified.verified_by && cd.verified.verified_by.name) || "attorney")} on ${escHtml((cd.verified.verified_at || "").slice(0, 10))}">\u2713 Verified</span>` : ""}
           </div>
           <div>Trigger: ${fmtDate(cd.trigger_date)} (${escHtml(cd.trigger_label || "")})</div>
-          <div>Status: ${escHtml(cd.status)}</div>
+          <div>Status: ${escHtml(statusPillText(cd.status, cd.close_info))}</div>
           ${closeBlock}
           ${cd.authority ? `<div class="tl-authority" style="margin-top:8px;">${escHtml(cd.authority)}</div>` : ""}
           ${rows ? `<table class="tl-eot" style="margin-top:14px;width:100%;border-collapse:collapse;"><thead><tr><th>Step</th><th>Date</th><th style="text-align:right;">Fee</th></tr></thead><tbody>${rows}</tbody></table>` : ""}
