@@ -1,0 +1,820 @@
+{
+  "conditions": [
+    {
+      "code": "CTNF",
+      "variant_key": "non-final-office-action-response",
+      "description": "Non Final Office Action Response Due",
+      "complete_codes": ["A...", "AMSB", "A.AF", "RCEX", "RCE", "N.APP"],
+      "nar_codes": ["CTNF", "CTFR", "CTAV", "CTEQ", "EX.A", "NOA", "ABN", "EXPR.ABN", "NRES"],
+      "notes": "Applicant response or RCE/Appeal = Complete. Any superseding Office action, allowance, or abandonment = NAR."
+    },
+    {
+      "code": "CTNF",
+      "variant_key": "non-final-office-action-with-rr-response",
+      "description": "Non Final Office Action with RR Response Due",
+      "complete_codes": ["A...", "AMSB", "A.AF", "N.APP", "RCEX"],
+      "nar_codes": ["CTNF", "CTFR", "CTAV", "EX.A", "NOA", "ABN", "EXPR.ABN"],
+      "notes": "Same as non-final OA; restriction-election handled under CTRS rules when present."
+    },
+    {
+      "code": "CTFR",
+      "variant_key": "final-office-action-response",
+      "description": "Final Office Action Response Due",
+      "complete_codes": ["A.AF", "AMSB", "RCEX", "RCE", "N.APP", "PRE.APBR"],
+      "nar_codes": ["CTAV", "CTNF", "NOA", "ABN", "EXPR.ABN", "NRES"],
+      "notes": "After-final amendment, RCE, Notice of Appeal, or Pre-Appeal Brief Request = Complete. CTAV restarts as advisory."
+    },
+    {
+      "code": "CTAV",
+      "variant_key": "advisory-action-response",
+      "description": "Advisory Action Response Due",
+      "complete_codes": ["AMSB", "A.AF", "RCEX", "RCE", "N.APP", "APBR"],
+      "nar_codes": ["CTNF", "NOA", "ABN", "EXPR.ABN"],
+      "notes": "Advisory Action response is a continuation of the final OA window."
+    },
+    {
+      "code": "CTEQ",
+      "variant_key": "ex-parte-quayle-response",
+      "description": "Ex Parte Quayle Response Due",
+      "complete_codes": ["A.QU", "A...", "AMSB"],
+      "nar_codes": ["CTNF", "CTFR", "NOA", "ABN", "EXPR.ABN"],
+      "notes": "Ex Parte Quayle sets a 3-month shortened period."
+    },
+    {
+      "code": "CTRS",
+      "variant_key": "restriction-requirement-response",
+      "description": "Restriction Requirement Response Due",
+      "complete_codes": ["A...", "AMSB", "EL...", "ELECTION"],
+      "nar_codes": ["CTNF", "CTFR", "NOA", "ABN", "EXPR.ABN"],
+      "notes": "Election (with or without traverse) = Complete."
+    },
+    {
+      "code": "CTRS",
+      "variant_key": "prioritzed-exam-restriction-requirement-response",
+      "description": "Prioritzed Exam Restriction Requirement Response Due",
+      "complete_codes": ["A...", "AMSB", "ELECTION"],
+      "nar_codes": ["CTNF", "NOA", "ABN", "TRACK1.DENY"],
+      "notes": "Track I denial or completion of Track I status resolves the prioritized-exam item."
+    },
+    {
+      "code": "OA.FAI",
+      "variant_key": "response-to-first-action-interview-oa-summary",
+      "description": "Response to First Action Interview OA Summary Due",
+      "complete_codes": ["A...", "AMSB", "FAI.RESP"],
+      "nar_codes": ["CTNF", "CTFR", "NOA", "ABN"],
+      "notes": "First Action Interview pilot."
+    },
+    {
+      "code": "OA.FAI.PRELM",
+      "variant_key": "response-to-pre-interview-communication",
+      "description": "Response to Pre Interview Communication Due",
+      "complete_codes": ["FAI.REQ", "A...", "AMSB"],
+      "nar_codes": ["CTNF", "CTFR", "NOA", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "EX.A",
+      "variant_key": "non-final-office-action-response",
+      "description": "Non Final Office Action Response Due",
+      "complete_codes": ["A...", "AMSB"],
+      "nar_codes": ["CTNF", "CTFR", "NOA", "ABN", "EXPR.ABN"],
+      "notes": "Examiner's Amendment after Allowance — 1-month response window."
+    },
+    {
+      "code": "APEA",
+      "variant_key": "appeal-forwarding-fee",
+      "description": "Appeal Forwarding Fee Due",
+      "complete_codes": ["APFF"],
+      "nar_codes": ["ABN", "EXPR.ABN", "APD1", "APD2", "APD3"],
+      "notes": "Appeal Forwarding Fee payment closes. Board decision or abandonment moots."
+    },
+    {
+      "code": "APEA",
+      "variant_key": "reply-brief",
+      "description": "Reply Brief Due",
+      "complete_codes": ["APRB"],
+      "nar_codes": ["APD1", "APD2", "APD3", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "APEA",
+      "variant_key": "request-for-oral-hearing",
+      "description": "Request for Oral Hearing Due",
+      "complete_codes": ["ROH"],
+      "nar_codes": ["APD1", "APD2", "APD3", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "APEA",
+      "variant_key": "petition-to-review-failure-to-designate-ngr",
+      "description": "Petition to Review Failure to Designate NGR Due",
+      "complete_codes": ["PET"],
+      "nar_codes": ["APD1", "APD2", "APD3", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "APND",
+      "variant_key": "response-to-notice-of-defective-notice-of-appeal",
+      "description": "Response to Notice of Defective Notice of Appeal Due",
+      "complete_codes": ["N.APP", "A..."],
+      "nar_codes": ["ABN", "EXPR.ABN"],
+      "notes": "Corrected Notice of Appeal filed closes."
+    },
+    {
+      "code": "APBD",
+      "variant_key": "notice-of-non-compliant-appeal-brief-response",
+      "description": "Notice of Non Compliant Appeal Brief Response Due",
+      "complete_codes": ["APBR"],
+      "nar_codes": ["ABN", "APD1", "APD2", "APD3"],
+      "notes": null
+    },
+    {
+      "code": "AP.PRE.DEF",
+      "variant_key": "response-to-non-compliant-brief-req-for-review",
+      "description": "Response to Non Compliant Brief Req for Review Due",
+      "complete_codes": ["APBR", "PRE.APBR"],
+      "nar_codes": ["ABN", "APD1"],
+      "notes": null
+    },
+    {
+      "code": "AP.PRE.DEC",
+      "variant_key": "request-doe-rehearing-or-reopen-prosecution",
+      "description": "Request doe Rehearing or Reopen Prosecution Due",
+      "complete_codes": ["P.REH", "A...", "RCEX"],
+      "nar_codes": ["CTNF", "CTFR", "NOA", "ABN"],
+      "notes": "Pre-Appeal Brief Decision — rehearing request, amendment, or RCE closes."
+    },
+    {
+      "code": "APDA",
+      "variant_key": "appeal-to-cafc",
+      "description": "Appeal to CAFC Due",
+      "complete_codes": ["CAFC.APPEAL", "NOTICE.APPEAL.CAFC"],
+      "nar_codes": ["ABN", "PTA"],
+      "notes": "CAFC appeal filed closes. If no appeal and deadline passes without issue/abandonment, item auto-NARs."
+    },
+    {
+      "code": "APDP",
+      "variant_key": "appeal-to-cafc",
+      "description": "Appeal to CAFC Due",
+      "complete_codes": ["CAFC.APPEAL"],
+      "nar_codes": ["ABN", "PTA"],
+      "notes": null
+    },
+    {
+      "code": "APDR",
+      "variant_key": "reversed-with-ngr-req-rehearing-or-reopen",
+      "description": "Reversed with NGR Req Rehearing or Reopen Due",
+      "complete_codes": ["P.REH", "A...", "RCEX"],
+      "nar_codes": ["CTNF", "CTFR", "ABN"],
+      "notes": "Reversed decision with new grounds of rejection."
+    },
+    {
+      "code": "APDS.NGR",
+      "variant_key": "review-requirement-for-appeal-dismissed-and-docket-as-needed",
+      "description": "Review Requirement for Appeal Dismissed and Docket as needed",
+      "complete_codes": ["REVIEW.COMPLETE"],
+      "nar_codes": ["ABN"],
+      "notes": "Review-type docket item; cleared by attorney action or superseding event."
+    },
+    {
+      "code": "APD1",
+      "variant_key": "review-to-avoid-unintentional-abandonment-after-decision",
+      "description": "Review to Avoid Unintentional Abandonment After Decision Due",
+      "complete_codes": ["REVIEW.COMPLETE", "A...", "RCEX", "P.REH"],
+      "nar_codes": ["ABN", "EXPR.ABN"],
+      "notes": "Board decision — review and docket further action."
+    },
+    {
+      "code": "APD2",
+      "variant_key": "review-to-avoid-unintentional-abandonment-after-decision",
+      "description": "Review to Avoid Unintentional Abandonment After Decision Due",
+      "complete_codes": ["REVIEW.COMPLETE", "A...", "RCEX", "P.REH"],
+      "nar_codes": ["ABN", "EXPR.ABN"],
+      "notes": "Same as APD1."
+    },
+    {
+      "code": "APD3",
+      "variant_key": "review-to-avoid-unintentional-abandonment-after-decision",
+      "description": "Review to Avoid Unintentional Abandonment After Decision Due",
+      "complete_codes": ["REVIEW.COMPLETE", "A...", "RCEX", "P.REH"],
+      "nar_codes": ["ABN", "EXPR.ABN"],
+      "notes": "Same as APD1."
+    },
+    {
+      "code": "APNH.VA",
+      "variant_key": "response-to-notice-to-confirm-or-waive-hearing-attendance",
+      "description": "Response to Notice to Confirm or Waive Hearing Attendance Due",
+      "complete_codes": ["HEAR.CONF", "ROH"],
+      "nar_codes": ["APD1", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "APOR",
+      "variant_key": "review-order-re-oral-hearing-and-docket-as-req-d",
+      "description": "Review Order re Oral Hearing and Docket as Req'd",
+      "complete_codes": ["REVIEW.COMPLETE"],
+      "nar_codes": ["ABN"],
+      "notes": null
+    },
+    {
+      "code": "AP_DK_M",
+      "variant_key": "review-notice-from-ptab-and-docket-as-req-d",
+      "description": "Review Notice from PTAB and Docket as Req'd",
+      "complete_codes": ["REVIEW.COMPLETE"],
+      "nar_codes": ["ABN"],
+      "notes": null
+    },
+    {
+      "code": "CTMS",
+      "variant_key": "review-appeal-dismissed-and-docket-as-req-d",
+      "description": "Review Appeal Dismissed and Docket as Req'd Due",
+      "complete_codes": ["REVIEW.COMPLETE"],
+      "nar_codes": ["ABN"],
+      "notes": null
+    },
+    {
+      "code": "CTMS",
+      "variant_key": "review-record-of-oral-hearing",
+      "description": "Review Record of Oral Hearing",
+      "complete_codes": ["REVIEW.COMPLETE"],
+      "nar_codes": ["APD1", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "ABN",
+      "variant_key": "petition-to-withdraw-abandonment",
+      "description": "Petition to Withdraw Abandonment Due",
+      "complete_codes": ["PTAWD", "PET"],
+      "nar_codes": ["EXPR.ABN", "ABN.FINAL"],
+      "notes": "Petition to withdraw abandonment filed = Complete. Express abandonment or statutory window closure = NAR."
+    },
+    {
+      "code": "NTC.A.NONCPL",
+      "variant_key": "non-compliant-amendment-extendible-response",
+      "description": "Non Compliant Amendment Extendible Response Due",
+      "complete_codes": ["AMSB", "A..."],
+      "nar_codes": ["CTNF", "CTFR", "NOA", "ABN"],
+      "notes": "Non-compliant amendment notice — corrected amendment closes."
+    },
+    {
+      "code": "NTC.A.NONCPL",
+      "variant_key": "non-compliant-amendment-non-extendible-response",
+      "description": "Non Compliant Amendment Non Extendible Response Due",
+      "complete_codes": ["AMSB", "A..."],
+      "nar_codes": ["CTNF", "CTFR", "NOA", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "NTC.A.NONCPL",
+      "variant_key": "non-compliant-amendment-response-after-allowance-no-new-period",
+      "description": "Non Compliant Amendment Response Due After Allowance No New Period",
+      "complete_codes": ["AMSB", "A..."],
+      "nar_codes": ["ISSUE.FEE", "PTA", "ABN"],
+      "notes": "After-allowance non-compliant amendment — issue fee payment + issuance forces NAR."
+    },
+    {
+      "code": "NTC.A.NONCPL",
+      "variant_key": "non-compliant-amendment-response-after-final-no-new-period",
+      "description": "Non Compliant Amendment Response Due After Final No New Period",
+      "complete_codes": ["AMSB", "A.AF"],
+      "nar_codes": ["CTAV", "NOA", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "NTC.MISS.PRT",
+      "variant_key": "missing-parts-response",
+      "description": "Missing Parts Response Due",
+      "complete_codes": ["MP.RESP", "A...", "ADS.COR", "DRW", "POA", "DECL", "FEE.PAY"],
+      "nar_codes": ["CTNF", "NOA", "ABN", "EXPR.ABN", "NTC.OMIT.APP"],
+      "notes": "Missing parts response, corrected ADS, declaration, drawings, or fee payment closes."
+    },
+    {
+      "code": "NTC.MISS.PRT",
+      "variant_key": "missing-parts-response-prioritized-examination",
+      "description": "Missing Parts Response Due Prioritized Examination",
+      "complete_codes": ["MP.RESP", "TRACK1.FEE"],
+      "nar_codes": ["CTNF", "NOA", "ABN", "TRACK1.DENY"],
+      "notes": null
+    },
+    {
+      "code": "NTC.OMIT.APP",
+      "variant_key": "omitted-items-response",
+      "description": "Omitted Items Response Due",
+      "complete_codes": ["A...", "AMSB"],
+      "nar_codes": ["CTNF", "NOA", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "NTC.OMIT.APP",
+      "variant_key": "supplemental-declaration-specification",
+      "description": "Supplemental Declaration Specification Due",
+      "complete_codes": ["DECL", "A..."],
+      "nar_codes": ["CTNF", "NOA", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "NT.CR.APP.PA",
+      "variant_key": "corrected-papers",
+      "description": "Corrected Papers Due",
+      "complete_codes": ["CRFR", "A...", "ADS.COR"],
+      "nar_codes": ["CTNF", "NOA", "ABN"],
+      "notes": "Corrected papers filed closes. Most common: corrected ADS, drawings, declaration."
+    },
+    {
+      "code": "NT.CR.APP.PA",
+      "variant_key": "corrected-papers-no-extensions",
+      "description": "Corrected Papers Due No Extensions",
+      "complete_codes": ["CRFR", "A..."],
+      "nar_codes": ["ABN"],
+      "notes": "Non-extendible window — missing it will cause abandonment unless other recovery."
+    },
+    {
+      "code": "NT.CR.APP.PA",
+      "variant_key": "corrected-papers-prioritized-exam",
+      "description": "Corrected Papers Due Prioritized Exam",
+      "complete_codes": ["CRFR", "A..."],
+      "nar_codes": ["CTNF", "NOA", "ABN", "TRACK1.DENY"],
+      "notes": null
+    },
+    {
+      "code": "NT.CR.APP.PA",
+      "variant_key": "corrected-papers-sequence-listing",
+      "description": "Corrected Papers Due Sequence Listing",
+      "complete_codes": ["SEQ", "A..."],
+      "nar_codes": ["CTNF", "NOA", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "NT.CR.APP.PA",
+      "variant_key": "corrected-power-of-attorney",
+      "description": "Corrected Power of Attorney Due",
+      "complete_codes": ["POA", "A..."],
+      "nar_codes": ["ABN", "PTA"],
+      "notes": null
+    },
+    {
+      "code": "NT.INC.REPLY",
+      "variant_key": "reponse-to-notice-of-incomplete-reply",
+      "description": "Reponse to Notice of Incomplete Reply Due",
+      "complete_codes": ["A...", "AMSB"],
+      "nar_codes": ["CTNF", "CTFR", "NOA", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "NT.INCPL.APP",
+      "variant_key": "response-to-notice-of-incomplete-application",
+      "description": "Response to Notice of Incomplete Application Due",
+      "complete_codes": ["A...", "AMSB"],
+      "nar_codes": ["NTC.MISS.PRT", "CTNF", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "371.FEE.M912",
+      "variant_key": "non-final-office-action-response",
+      "description": "Non Final Office Action Response Due",
+      "complete_codes": ["A...", "AMSB", "FEE.PAY"],
+      "nar_codes": ["CTNF", "NOA", "ABN", "NTC.MISS.PRT"],
+      "notes": "371 national stage fee/missing parts — fee payment + compliant papers close."
+    },
+    {
+      "code": "371.FEE.M923",
+      "variant_key": "response-to-insufficiency-under-37-cfr-1-492-or-1-495",
+      "description": "Response to Insufficiency under 37 CFR 1 492 or 1 495 Due",
+      "complete_codes": ["A...", "FEE.PAY"],
+      "nar_codes": ["CTNF", "NOA", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "371.RES.DEF",
+      "variant_key": "response-to-notice-of-missing-requirements",
+      "description": "Response to Notice of Missing Requirements Due",
+      "complete_codes": ["A...", "AMSB"],
+      "nar_codes": ["CTNF", "NOA", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "371.RES.DEF",
+      "variant_key": "response-to-notification-of-defective-response",
+      "description": "Response to Notification of Defective Response Due",
+      "complete_codes": ["A...", "AMSB"],
+      "nar_codes": ["CTNF", "NOA", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "371.RQ.M922",
+      "variant_key": "sequence-listing",
+      "description": "Sequence Listing Due",
+      "complete_codes": ["SEQ", "A..."],
+      "nar_codes": ["CTNF", "NOA", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "SEQ.REQ.DISC",
+      "variant_key": "sequence-listing",
+      "description": "Sequence Listing Due",
+      "complete_codes": ["SEQ"],
+      "nar_codes": ["CTNF", "NOA", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "CRFD",
+      "variant_key": "response-to-report-of-defective-sequence-listing",
+      "description": "Response to Report of Defective Sequence Listing Due",
+      "complete_codes": ["SEQ", "A..."],
+      "nar_codes": ["CTNF", "NOA", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "PETDEC",
+      "variant_key": "request-for-reconsideration-of-petition",
+      "description": "Request for Reconsideration of Petition Due",
+      "complete_codes": ["PET", "P.REH"],
+      "nar_codes": ["PET.GRANT", "ABN"],
+      "notes": "Reconsideration request filed closes."
+    },
+    {
+      "code": "PET.DEC.OIPE",
+      "variant_key": "request-for-reconsideration-of-petition",
+      "description": "Request for Reconsideration of Petition Due",
+      "complete_codes": ["PET", "P.REH"],
+      "nar_codes": ["PET.GRANT", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "PET.DEC.TC",
+      "variant_key": "request-for-reconsideration-of-petition",
+      "description": "Request for Reconsideration of Petition Due",
+      "complete_codes": ["PET", "P.REH"],
+      "nar_codes": ["PET.GRANT", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "PET.OP.DEC",
+      "variant_key": "request-for-reconsideration-of-petition",
+      "description": "Request for Reconsideration of Petition Due",
+      "complete_codes": ["PET", "P.REH"],
+      "nar_codes": ["PET.GRANT", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "PET.DEC.COCI",
+      "variant_key": "review-dismissed-petition-decision-for-certificate-of-correction",
+      "description": "Review Dismissed Petition Decision for Certificate of Correction",
+      "complete_codes": ["REVIEW.COMPLETE", "PET"],
+      "nar_codes": ["CDEN", "COCI.ISSUED"],
+      "notes": null
+    },
+    {
+      "code": "PET.DEC.PUBS",
+      "variant_key": "req-for-recon-of-petition-decision-dismissed",
+      "description": "Req for Recon of Petition decision Dismissed Due",
+      "complete_codes": ["PET", "P.REH"],
+      "nar_codes": ["PET.GRANT", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "PGA9.DEC",
+      "variant_key": "req-for-recon-of-dismissed-req-for-corrected-app-pub",
+      "description": "Req for Recon of Dismissed Req for Corrected App Pub Due",
+      "complete_codes": ["PET", "P.REH"],
+      "nar_codes": ["PUB.CORR", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "PGEA.D",
+      "variant_key": "req-for-recon-of-petition-for-express-abandonment",
+      "description": "Req for Recon of Petition for Express Abandonment Due",
+      "complete_codes": ["PET", "P.REH"],
+      "nar_codes": ["EXPR.ABN", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "PD.PRE.NTC",
+      "variant_key": "response-to-notice-of-improper-submission-of-request",
+      "description": "Response to Notice of Improper Submission of Request Due",
+      "complete_codes": ["A...", "PET"],
+      "nar_codes": ["ABN"],
+      "notes": null
+    },
+    {
+      "code": "CDEN",
+      "variant_key": "review-denied-petition-decision-for-certificate-of-correction",
+      "description": "Review Denied Petition Decision for Certificate of Correction",
+      "complete_codes": ["REVIEW.COMPLETE", "P.REH"],
+      "nar_codes": ["COCI.ISSUED", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "PPH.PET.652",
+      "variant_key": "pph-decision-expected-reminder",
+      "description": "PPH Decision Expected Reminder",
+      "complete_codes": ["PPH.DECISION", "PET.GRANT", "PET.DEC.DISMISS"],
+      "nar_codes": ["ABN", "CTNF"],
+      "notes": "PPH petition decision received closes the reminder."
+    },
+    {
+      "code": "PPH.DECISION",
+      "variant_key": "decision-on-petition-received-pph-status-check",
+      "description": "Decision on Petition Received PPH Status Check",
+      "complete_codes": ["REVIEW.COMPLETE"],
+      "nar_codes": ["ABN", "CTNF"],
+      "notes": null
+    },
+    {
+      "code": "PPH.DECISION",
+      "variant_key": "review-dismissed-decision-on-petition-pph",
+      "description": "Review Dismissed Decision on Petition PPH",
+      "complete_codes": ["REVIEW.COMPLETE", "PET"],
+      "nar_codes": ["ABN", "CTNF"],
+      "notes": null
+    },
+    {
+      "code": "A.NE.AFCP.D",
+      "variant_key": "decision-on-afcp-2-0-expected",
+      "description": "Decision on AFCP 2 0 Expected",
+      "complete_codes": ["CTAV", "NOA", "A.AF"],
+      "nar_codes": ["ABN", "CTFR"],
+      "notes": "AFCP 2.0 decision arrives as Advisory, NOA, or comments; closes the expectation."
+    },
+    {
+      "code": "M327",
+      "variant_key": "review-office-comm-and-docket-as-req-d",
+      "description": "Review Office Comm and Docket as Req'd",
+      "complete_codes": ["REVIEW.COMPLETE"],
+      "nar_codes": ["ABN"],
+      "notes": null
+    },
+    {
+      "code": "M327",
+      "variant_key": "response-to-misc-comm-to-applicant-m370",
+      "description": "Response to Misc Comm to Applicant M370 Due",
+      "complete_codes": ["A..."],
+      "nar_codes": ["CTNF", "NOA", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "M327",
+      "variant_key": "response-to-improper-letter-of-express-abandonment",
+      "description": "Response to Improper Letter of Express Abandonment Due",
+      "complete_codes": ["A...", "PET"],
+      "nar_codes": ["EXPR.ABN", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "M905",
+      "variant_key": "corrected-papers-sequence-listing",
+      "description": "Corrected Papers Due Sequence Listing",
+      "complete_codes": ["SEQ", "A..."],
+      "nar_codes": ["CTNF", "NOA", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "M905",
+      "variant_key": "response-to-notice-of-missing-requirements",
+      "description": "Response to Notice of Missing Requirements Due",
+      "complete_codes": ["A...", "AMSB"],
+      "nar_codes": ["CTNF", "NOA", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "M905",
+      "variant_key": "response-to-notification-of-missing-requirements",
+      "description": "Response to Notification of Missing Requirements Due",
+      "complete_codes": ["A...", "AMSB"],
+      "nar_codes": ["CTNF", "NOA", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "L.SP",
+      "variant_key": "review-letter-of-suspension-and-docket-as-req-d",
+      "description": "Review Letter of Suspension and Docket as Req'd",
+      "complete_codes": ["REVIEW.COMPLETE"],
+      "nar_codes": ["CTNF", "NOA", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "L_R IN",
+      "variant_key": "review-comm-re-aero-and-space-activities-and-docket-as-needed",
+      "description": "Review Comm Re: Aero and Space Activities and Docket as Needed",
+      "complete_codes": ["REVIEW.COMPLETE"],
+      "nar_codes": ["ABN"],
+      "notes": null
+    },
+    {
+      "code": "MAINR",
+      "variant_key": "review-maintenance-fee-reminder-and-docket-as-req-d",
+      "description": "Review Maintenance Fee Reminder and Docket as Req'd",
+      "complete_codes": ["MF.PAID", "REVIEW.COMPLETE"],
+      "nar_codes": ["PTA.EXPIRED"],
+      "notes": "Maintenance fee paid closes; patent expiration NARs."
+    },
+    {
+      "code": "PA..",
+      "variant_key": "power-of-attorney",
+      "description": "Power of Attorney Due",
+      "complete_codes": ["POA"],
+      "nar_codes": ["ABN", "PTA"],
+      "notes": null
+    },
+    {
+      "code": "N572",
+      "variant_key": "corrected-power-of-attorney",
+      "description": "Corrected Power of Attorney Due",
+      "complete_codes": ["POA"],
+      "nar_codes": ["ABN", "PTA"],
+      "notes": null
+    },
+    {
+      "code": "N578",
+      "variant_key": "review-denial-of-request-for-withdrawal-of-attorney-or-agent",
+      "description": "Review Denial of Request for Withdrawal of Attorney or Agent",
+      "complete_codes": ["REVIEW.COMPLETE", "POA"],
+      "nar_codes": ["ABN"],
+      "notes": null
+    },
+    {
+      "code": "NFEE",
+      "variant_key": "response-to-notice-requiring-excess-claims-fees",
+      "description": "Response to Notice Requiring Excess Claims Fees Due",
+      "complete_codes": ["FEE.PAY", "A..."],
+      "nar_codes": ["CTNF", "NOA", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "NRES",
+      "variant_key": "restarted-period-for-final-office-action-response",
+      "description": "Restarted Period for Final Office Action Response Due",
+      "complete_codes": ["A.AF", "AMSB", "RCEX", "N.APP"],
+      "nar_codes": ["CTAV", "CTNF", "NOA", "ABN"],
+      "notes": "Superseding restart window — treat like CTFR."
+    },
+    {
+      "code": "NRES",
+      "variant_key": "restarted-period-for-prioritized-exam-non-final-oa-response",
+      "description": "Restarted Period for Prioritized Exam Non Final OA Response Due",
+      "complete_codes": ["A...", "AMSB"],
+      "nar_codes": ["CTNF", "NOA", "ABN", "TRACK1.DENY"],
+      "notes": null
+    },
+    {
+      "code": "NTC.PUB",
+      "variant_key": "derivation-proceeding-petition-pre-grant",
+      "description": "Derivation Proceeding Petition Pre Grant Due",
+      "complete_codes": ["PET.DERIVATION"],
+      "nar_codes": ["PTA", "ABN"],
+      "notes": "Pre-grant window for derivation petition."
+    },
+    {
+      "code": "RXCERT",
+      "variant_key": "ex-parte-reexamination-certificate-received",
+      "description": "Ex Parte Reexamination Certificate Received?",
+      "complete_codes": ["REXCERT.ISSUED"],
+      "nar_codes": ["ABN"],
+      "notes": "Reexam certificate issuance closes."
+    },
+    {
+      "code": "RXNIRC",
+      "variant_key": "ex-parte-reexamination-certificate-received",
+      "description": "Ex Parte Reexamination Certificate Received?",
+      "complete_codes": ["REXCERT.ISSUED"],
+      "nar_codes": ["ABN"],
+      "notes": null
+    },
+    {
+      "code": "RXNIRC",
+      "variant_key": "submit-comments-on-reasons-for-patentability-confirm",
+      "description": "Submit Comments on Reasons for Patentability Confirm Due",
+      "complete_codes": ["A...", "COMMENTS.FILED"],
+      "nar_codes": ["REXCERT.ISSUED", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "RXINCR",
+      "variant_key": "response-to-notice-of-incomplete-ex-parte-reexam-request",
+      "description": "Response to Notice of Incomplete Ex Parte Reexam Request Due",
+      "complete_codes": ["A..."],
+      "nar_codes": ["REXREQ.DENIED", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "RXAPDFA",
+      "variant_key": "review-decision-on-req-for-rehearing-reexam-and-docket",
+      "description": "Review Decision on Req for Rehearing Reexam and Docket",
+      "complete_codes": ["REVIEW.COMPLETE", "P.REH"],
+      "nar_codes": ["REXCERT.ISSUED", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "RXPTDI",
+      "variant_key": "review-reexam-petition-dec-dismissed-2m-deadline",
+      "description": "Review Reexam Petition Dec Dismissed 2M deadline",
+      "complete_codes": ["REVIEW.COMPLETE", "PET"],
+      "nar_codes": ["ABN"],
+      "notes": null
+    },
+    {
+      "code": "RXREXO",
+      "variant_key": "patent-owner-statement",
+      "description": "Patent Owner Statement Due",
+      "complete_codes": ["POS.FILED", "A..."],
+      "nar_codes": ["REXCERT.ISSUED"],
+      "notes": "Patent Owner Statement filed closes."
+    },
+    {
+      "code": "TRIAL.REQ.D",
+      "variant_key": "petitioner-s-req-for-rehearing-under-37-cfr-42-71d-2",
+      "description": "Petitioner's Req for Rehearing under 37 CFR 42 71d 2 Due",
+      "complete_codes": ["P.REH"],
+      "nar_codes": ["TRIAL.TERMINATED"],
+      "notes": null
+    },
+    {
+      "code": "TRIAL.REQ.G",
+      "variant_key": "initial-conference-call-with-board",
+      "description": "Initial Conference Call with Board Due",
+      "complete_codes": ["CONF.COMPLETE"],
+      "nar_codes": ["TRIAL.TERMINATED"],
+      "notes": null
+    },
+    {
+      "code": "TRIAL.REQ.G",
+      "variant_key": "motion-to-request-joinder",
+      "description": "Motion to Request Joinder Due",
+      "complete_codes": ["MOTION.FILED"],
+      "nar_codes": ["TRIAL.TERMINATED"],
+      "notes": null
+    },
+    {
+      "code": "TRIAL.REQ.G",
+      "variant_key": "objection-to-evidence-filed-during-prelim-proceedings",
+      "description": "Objection to Evidence Filed During Prelim Proceedings Due",
+      "complete_codes": ["OBJECTION.FILED"],
+      "nar_codes": ["TRIAL.TERMINATED"],
+      "notes": null
+    },
+    {
+      "code": "R48.REQ.DIS",
+      "variant_key": "response-improper-submission-of-req-under-37-cfr-1-48d",
+      "description": "Response IMPROPER SUBMISSION OF Req UNDER 37 CFR 1 48d Due",
+      "complete_codes": ["A...", "R48.REQ"],
+      "nar_codes": ["ABN"],
+      "notes": null
+    },
+    {
+      "code": "R48.REQ.DIS",
+      "variant_key": "response-to-improper-submission-of-req-under-37-cfr-1-48a",
+      "description": "Response to IMPROPER SUBMISSION of Req UNDER 37 CFR 1 48a Due",
+      "complete_codes": ["A...", "R48.REQ"],
+      "nar_codes": ["ABN"],
+      "notes": null
+    },
+    {
+      "code": "R48.REQ.DIS",
+      "variant_key": "response-to-improper-submission-of-req-under-1-48f",
+      "description": "Response to IMPROPER SUBmission OF Req under 1 48f Due",
+      "complete_codes": ["A...", "R48.REQ"],
+      "nar_codes": ["ABN"],
+      "notes": null
+    },
+    {
+      "code": "PEFN",
+      "variant_key": "review-notice-of-improper-req-and-docket-as-req-d",
+      "description": "Review Notice of Improper Req and Docket as Req'd",
+      "complete_codes": ["REVIEW.COMPLETE", "A..."],
+      "nar_codes": ["ABN"],
+      "notes": null
+    },
+    {
+      "code": "SREXR.NTC",
+      "variant_key": "resubmit-authorization-to-permit-access-to-search-results",
+      "description": "Resubmit Authorization to Permit Access to Search Results Due",
+      "complete_codes": ["AUTH.FILED", "A..."],
+      "nar_codes": ["CTNF", "NOA", "ABN"],
+      "notes": null
+    },
+    {
+      "code": "TERM.PTO.NFD",
+      "variant_key": "response-to-notice-of-final-determination",
+      "description": "Response to Notice of Final Determination Due",
+      "complete_codes": ["A...", "PET"],
+      "nar_codes": ["ABN"],
+      "notes": null
+    },
+    {
+      "code": "TERM.RQR.INF",
+      "variant_key": "response-to-req-for-information-under-37-c-f-r-1-750",
+      "description": "Response to Req for Information under 37 C F R 1 750 Due",
+      "complete_codes": ["A...", "INFO.RESP"],
+      "nar_codes": ["ABN"],
+      "notes": null
+    },
+    {
+      "code": "TRACK1.DENY",
+      "variant_key": "response-to-dec-re-req-for-track-i-denied",
+      "description": "Response to Dec re Req for Track I Denied Due",
+      "complete_codes": ["A...", "PET", "TRACK1.FEE"],
+      "nar_codes": ["CTNF", "NOA", "ABN"],
+      "notes": null
+    }
+  ]
+}

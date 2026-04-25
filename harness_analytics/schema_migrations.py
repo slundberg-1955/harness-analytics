@@ -191,7 +191,10 @@ CREATE TABLE IF NOT EXISTS ifw_rules (
     id SERIAL PRIMARY KEY,
     tenant_id TEXT NOT NULL DEFAULT 'global',
     code TEXT NOT NULL,
+    variant_key TEXT NOT NULL DEFAULT '',
     aliases TEXT[],
+    close_complete_codes TEXT[] NOT NULL DEFAULT '{}',
+    close_nar_codes TEXT[] NOT NULL DEFAULT '{}',
     description TEXT NOT NULL,
     kind TEXT NOT NULL,
     ssp_months INT,
@@ -213,7 +216,7 @@ CREATE TABLE IF NOT EXISTS ifw_rules (
     active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now(),
-    UNIQUE (tenant_id, code)
+    UNIQUE (tenant_id, code, variant_key)
 )
 """
 
@@ -253,6 +256,9 @@ CREATE TABLE IF NOT EXISTS computed_deadlines (
     status TEXT NOT NULL DEFAULT 'OPEN',
     completed_event_id INT REFERENCES prosecution_events(id) ON DELETE SET NULL,
     completed_at TIMESTAMPTZ,
+    closed_by_ifw_document_id BIGINT REFERENCES file_wrapper_documents(id) ON DELETE SET NULL,
+    closed_by_rule_pattern TEXT,
+    closed_disposition TEXT,
     superseded_by BIGINT REFERENCES computed_deadlines(id) ON DELETE SET NULL,
     assigned_user_id INT REFERENCES users(id) ON DELETE SET NULL,
     snoozed_until DATE,
@@ -363,10 +369,109 @@ _SAVED_VIEWS_INDEX_SQL = (
     "ON saved_views (user_id, surface)"
 )
 
+# 0009: docket cross-off / NAR feature.
+#
+# ``ifw_rules`` grows ``variant_key`` (so the same triggering code can drive
+# multiple due-item variants) plus the two ``close_*_codes`` arrays consumed
+# by the materializer's auto-close pass. ``computed_deadlines`` grows three
+# audit columns and a ``(tenant_id, status, primary_date)`` index that backs
+# the inbox filter without a full scan.
+_DOCKET_CLOSE_IFW_RULES_COLS = (
+    ("variant_key", "TEXT NOT NULL DEFAULT ''"),
+    ("close_complete_codes", "TEXT[] NOT NULL DEFAULT '{}'"),
+    ("close_nar_codes", "TEXT[] NOT NULL DEFAULT '{}'"),
+)
+_DOCKET_CLOSE_DEADLINE_COLS = (
+    (
+        "closed_by_ifw_document_id",
+        "BIGINT REFERENCES file_wrapper_documents(id) ON DELETE SET NULL",
+    ),
+    ("closed_by_rule_pattern", "TEXT"),
+    ("closed_disposition", "TEXT"),
+)
+_DEADLINES_STATUS_TENANT_INDEX_SQL = (
+    "CREATE INDEX IF NOT EXISTS idx_deadlines_status_tenant "
+    "ON computed_deadlines (tenant_id, status, primary_date)"
+)
+_IFW_RULES_VARIANT_UNIQUE_SQL = (
+    "ALTER TABLE ifw_rules "
+    "ADD CONSTRAINT uq_ifw_rules_tenant_code_variant "
+    "UNIQUE (tenant_id, code, variant_key)"
+)
+_IFW_RULES_DROP_LEGACY_UNIQUE_SQL = (
+    "ALTER TABLE ifw_rules DROP CONSTRAINT IF EXISTS uq_ifw_rules_tenant_code"
+)
+
 
 def _ensure_app_settings_table(engine) -> None:
     with engine.begin() as conn:
         conn.execute(text(_APP_SETTINGS_TABLE_SQL))
+
+
+def _ensure_docket_close_columns(engine) -> None:
+    """Idempotently add the 0009 docket cross-off / NAR columns + index.
+
+    Mirrors :file:`migrations/versions/0009_docket_cross_off.py` for
+    deployments that boot without applying Alembic migrations (the dev
+    container, the railway.toml init job, etc.). Safe to run on every
+    startup — every step is gated by an information_schema check.
+
+    Steps, in order:
+
+    1. Append ``variant_key`` / ``close_complete_codes`` / ``close_nar_codes``
+       to ``ifw_rules`` if missing.
+    2. Swap the legacy ``uq_ifw_rules_tenant_code`` unique constraint for
+       ``uq_ifw_rules_tenant_code_variant`` once ``variant_key`` exists.
+    3. Append ``closed_by_ifw_document_id`` / ``closed_by_rule_pattern`` /
+       ``closed_disposition`` to ``computed_deadlines`` if missing.
+    4. Create the ``idx_deadlines_status_tenant`` composite index.
+    """
+    insp = inspect(engine)
+    with engine.begin() as conn:
+        if insp.has_table("ifw_rules"):
+            existing = {c["name"] for c in insp.get_columns("ifw_rules")}
+            for col, ddl in _DOCKET_CLOSE_IFW_RULES_COLS:
+                if col not in existing:
+                    conn.execute(
+                        text(f"ALTER TABLE ifw_rules ADD COLUMN {col} {ddl}")
+                    )
+                    logger.info("Added column ifw_rules.%s", col)
+            try:
+                uniques = {
+                    u["name"] for u in insp.get_unique_constraints("ifw_rules")
+                }
+            except Exception:  # noqa: BLE001
+                uniques = set()
+            if "uq_ifw_rules_tenant_code_variant" not in uniques:
+                # Drop the legacy two-column key first (best-effort: the
+                # constraint name might already be missing on hand-rolled
+                # schemas).
+                try:
+                    conn.execute(text(_IFW_RULES_DROP_LEGACY_UNIQUE_SQL))
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    conn.execute(text(_IFW_RULES_VARIANT_UNIQUE_SQL))
+                    logger.info(
+                        "Created unique uq_ifw_rules_tenant_code_variant"
+                    )
+                except Exception:  # noqa: BLE001
+                    # If the constraint already exists under a different name
+                    # we don't want to abort startup.
+                    logger.exception(
+                        "Could not add uq_ifw_rules_tenant_code_variant"
+                    )
+        if insp.has_table("computed_deadlines"):
+            existing = {c["name"] for c in insp.get_columns("computed_deadlines")}
+            for col, ddl in _DOCKET_CLOSE_DEADLINE_COLS:
+                if col not in existing:
+                    conn.execute(
+                        text(
+                            f"ALTER TABLE computed_deadlines ADD COLUMN {col} {ddl}"
+                        )
+                    )
+                    logger.info("Added column computed_deadlines.%s", col)
+            conn.execute(text(_DEADLINES_STATUS_TENANT_INDEX_SQL))
 
 
 def _ensure_auth_tables(engine) -> None:
@@ -851,6 +956,16 @@ def ensure_schema_migrations() -> None:
                 "INTEGER NOT NULL DEFAULT 0",
             )
         _ensure_app_settings_table(engine)
+        # 0009: docket cross-off / NAR. Run after _ensure_timeline_tables has
+        # created ifw_rules + computed_deadlines, so the helper just needs to
+        # add the new columns + swap the unique key.
+        try:
+            _ensure_docket_close_columns(engine)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "_ensure_docket_close_columns failed; continuing — "
+                "Alembic 0009 will catch it up"
+            )
         _ensure_patent_applications_view(engine)
         _backfill_applicant_names_once(engine)
         _backfill_has_child_continuation_once(engine)

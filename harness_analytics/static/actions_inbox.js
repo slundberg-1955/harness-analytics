@@ -8,7 +8,9 @@
   const VALID_WINDOW = ["7", "30", "90", "all"];
   const VALID_ASSIGNEE = ["all", "me", "unassigned", "team"];
   const VALID_SEVERITY = ["all", "danger", "warn", "info"];
-  const VALID_STATUS = ["open", "overdue", "snoozed", "all"];
+  // M0009: ``nar`` lets the inbox show only items that have been NAR'd
+  // (manual or automatic). Default ``open`` continues to exclude NAR.
+  const VALID_STATUS = ["open", "overdue", "snoozed", "nar", "all"];
 
   // M11: role precedence mirrors auth.ROLES so we can decide client-side
   // whether to show the "My team" chip without round-tripping the server.

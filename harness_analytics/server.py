@@ -49,6 +49,18 @@ async def _lifespan(_app: FastAPI):
                     seed_global_rules(db, tenant_id="global")
             except Exception:  # noqa: BLE001
                 pass
+            # Seed docket cross-off / NAR close conditions (M0009). Same
+            # best-effort wrapper as the rules seed — we never want a missing
+            # seed file or transient DB hiccup to block the lifespan.
+            try:
+                from harness_analytics.timeline.rules_repo import (
+                    seed_close_conditions,
+                )
+
+                with SessionLocal() as db:
+                    seed_close_conditions(db, tenant_id="global")
+            except Exception:  # noqa: BLE001
+                pass
         except Exception:  # noqa: BLE001
             pass
 

@@ -28,6 +28,9 @@ _RULES_JSON = Path(__file__).resolve().parent / "data" / "ifw-rules.json"
 _SUPERSESSION_SEED_JSON = (
     Path(__file__).resolve().parent / "data" / "supersession_seed.json"
 )
+_DOCKET_CLOSE_SEED_JSON = (
+    Path(__file__).resolve().parent / "data" / "docket_close_conditions.json"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -270,3 +273,102 @@ def seed_supersession_pairs(db: Session, tenant_id: str = "global") -> int:
     if inserted:
         db.commit()
     return inserted
+
+
+# ---------------------------------------------------------------------------
+# 0009: docket cross-off / NAR seeding
+# ---------------------------------------------------------------------------
+
+
+@lru_cache(maxsize=1)
+def load_docket_close_seed() -> list[dict]:
+    """Load the bundled ``docket_close_conditions.json`` shipped with the repo.
+
+    Empty if the file is missing — keeps tests + dev environments without the
+    seed file from blowing up on import.
+    """
+    if not _DOCKET_CLOSE_SEED_JSON.exists():
+        return []
+    with _DOCKET_CLOSE_SEED_JSON.open("r", encoding="utf-8") as fp:
+        data = json.load(fp)
+    if isinstance(data, dict):
+        return list(data.get("conditions", []))
+    return list(data)
+
+
+# Sentinel ``kind`` for rule rows that exist *only* to drive auto-close on a
+# triggering code that the calculator doesn't materialize. The materializer's
+# kind dispatch (``timeline/calculator.py``) silently returns an empty result
+# for unrecognized kinds, so seeding under this sentinel is safe — the
+# auto-close pass only reads ``close_*_codes`` regardless of ``kind``.
+DOCKET_CLOSE_ONLY_KIND = "auto_close_only"
+
+
+def seed_close_conditions(
+    db: Session, tenant_id: str = "global"
+) -> dict[str, int]:
+    """Upsert every entry from ``docket_close_conditions.json`` into ``ifw_rules``.
+
+    For each ``(code, variant_key)``:
+
+    * If a row exists, update only the close-condition arrays + description.
+      We intentionally do **not** overwrite ``kind`` / months / extendable so
+      that hand-tuned production rules aren't reset on every boot.
+    * If no row exists, insert a minimal one carrying the close arrays under
+      ``kind=DOCKET_CLOSE_ONLY_KIND``. The calculator treats unknown kinds as
+      "no deadline computed", so these rows participate in the auto-close
+      pass without polluting the inbox.
+
+    Rows whose triggering code is blank are skipped with a warning (out of v1
+    scope). Returns ``{inserted, updated, skipped}``.
+
+    Idempotent — safe to call on every container start.
+    """
+    inserted = 0
+    updated = 0
+    skipped = 0
+    for raw in load_docket_close_seed():
+        code = (raw.get("code") or "").strip()
+        variant_key = (raw.get("variant_key") or "").strip()
+        if not code:
+            logger.warning(
+                "seed_close_conditions: blank triggering code for %r — skipping",
+                raw.get("description") or "(no description)",
+            )
+            skipped += 1
+            continue
+        complete = list(raw.get("complete_codes") or [])
+        nar = list(raw.get("nar_codes") or [])
+        description = (raw.get("description") or code).strip()
+        existing = db.scalar(
+            select(IfwRuleRow).where(
+                IfwRuleRow.tenant_id == tenant_id,
+                IfwRuleRow.code == code,
+                IfwRuleRow.variant_key == variant_key,
+            )
+        )
+        if existing is None:
+            db.add(
+                IfwRuleRow(
+                    tenant_id=tenant_id,
+                    code=code,
+                    variant_key=variant_key,
+                    description=description,
+                    kind=DOCKET_CLOSE_ONLY_KIND,
+                    trigger_label="Docket cross-off rule",
+                    authority="harness-internal",
+                    close_complete_codes=complete,
+                    close_nar_codes=nar,
+                )
+            )
+            inserted += 1
+        else:
+            existing.close_complete_codes = complete
+            existing.close_nar_codes = nar
+            if description and existing.description != description:
+                existing.description = description
+            existing.updated_at = datetime.now(timezone.utc)
+            updated += 1
+    if inserted or updated:
+        db.commit()
+    return {"inserted": inserted, "updated": updated, "skipped": skipped}

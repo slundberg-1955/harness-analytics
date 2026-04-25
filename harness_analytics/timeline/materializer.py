@@ -33,6 +33,7 @@ from harness_analytics.models import (
     ComputedDeadline,
     DeadlineEvent,
     FileWrapperDocument,
+    IfwRule as IfwRuleRow,
     SupersessionMap,
     UnmappedIfwCode,
 )
@@ -55,11 +56,76 @@ _ISSUE_TRIGGERED = {"MISMTH4", "MISMTH8", "MISMTH12"}
 _PRIORITY_TRIGGERED = {"PCT"}
 
 
+def _match_code(pattern: str, code: str) -> bool:
+    """Return True if ``pattern`` matches ``code``.
+
+    Patterns are either an exact code (``"NOA"``) or a trailing-dot prefix
+    wildcard (``"A..."`` matches ``A.NE``, ``A.AF``, ``AMSB``, …). ``...``
+    is only honored at the end; embedded ``...`` is treated literally.
+    """
+    if not pattern or not code:
+        return False
+    if pattern.endswith("..."):
+        return code.startswith(pattern[:-3])
+    return pattern == code
+
+
+def _choose_close_match(
+    *,
+    deadline_trigger_date: date,
+    complete_patterns: Iterable[str],
+    nar_patterns: Iterable[str],
+    docs: Iterable["FileWrapperDocument"],
+) -> Optional[tuple[str, "FileWrapperDocument", str]]:
+    """Pure picker: return ``(disposition, winning_doc, matched_pattern)`` or ``None``.
+
+    Walks ``docs`` ordered by ``(mail_room_date, id)`` ascending; only docs
+    strictly after the deadline trigger participate. The first matching doc
+    wins; same-day matches prefer ``complete`` over ``nar`` so a single doc
+    that satisfies both lists collapses to the friendlier disposition.
+
+    Side-effect free — the materializer wraps this with the I/O bits so the
+    decision logic stays unit-testable without a DB.
+    """
+    complete_patterns = list(complete_patterns or ())
+    nar_patterns = list(nar_patterns or ())
+    if not complete_patterns and not nar_patterns:
+        return None
+    sorted_docs = sorted(
+        (d for d in docs if d.mail_room_date is not None),
+        key=lambda d: (
+            d.mail_room_date.date() if isinstance(d.mail_room_date, datetime)
+            else d.mail_room_date,
+            d.id or 0,
+        ),
+    )
+    for doc in sorted_docs:
+        doc_date = (
+            doc.mail_room_date.date()
+            if isinstance(doc.mail_room_date, datetime)
+            else doc.mail_room_date
+        )
+        if doc_date is None or doc_date <= deadline_trigger_date:
+            continue
+        code = (doc.document_code or "").strip()
+        if not code:
+            continue
+        for pat in complete_patterns:
+            if _match_code(pat, code):
+                return ("auto_complete", doc, pat)
+        for pat in nar_patterns:
+            if _match_code(pat, code):
+                return ("auto_nar", doc, pat)
+    return None
+
+
 @dataclass
 class RecomputeSummary:
     application_id: int
     deadlines_written: int = 0
     deadlines_superseded: int = 0
+    deadlines_auto_completed: int = 0
+    deadlines_auto_nar: int = 0
     unmapped_codes: int = 0
 
 
@@ -381,6 +447,19 @@ def _recompute_internal(db: Session, app: Application) -> RecomputeSummary:
             )
             summary.deadlines_written += 1
 
+    # 4.5) Auto-close pass: rule-driven docket cross-off (M0009).
+    # Runs *before* supersession so that:
+    #   • SUPERSEDED never overwrites NAR (the supersession loop only touches
+    #     status='OPEN' rows, so deadlines this pass already flipped to
+    #     COMPLETED or NAR are off-limits to it).
+    #   • AUTO_NAR never overwrites AUTO_COMPLETE — both branches of the
+    #     picker key off the same (status='OPEN') filter, and ``complete``
+    #     wins on same-day ties inside ``_choose_close_match``.
+    # Idempotent: re-running just no-ops because the OPEN filter excludes
+    # already-closed rows. We also skip enqueuing a duplicate AUTO_* event
+    # if the most recent event for this deadline is identical.
+    _apply_auto_close_pass(db, app, summary)
+
     # 5) Conservative supersession: when a new doc-triggered rule of kind X
     # arrives and an older OPEN deadline of kind Y is in (Y, X) of
     # supersession_map, mark the older one SUPERSEDED.
@@ -428,6 +507,113 @@ def _recompute_internal(db: Session, app: Application) -> RecomputeSummary:
                     summary.deadlines_superseded += 1
 
     return summary
+
+
+def _apply_auto_close_pass(
+    db: Session, app: Application, summary: RecomputeSummary
+) -> None:
+    """Auto-close OPEN deadlines whose IFW history matches their rule's
+    ``close_complete_codes`` / ``close_nar_codes``.
+
+    Only OPEN deadlines participate — already-closed rows are intentionally
+    skipped so re-running the materializer can't downgrade COMPLETED→NAR or
+    NAR→OPEN. The audit trail mirrors a manual ``complete`` action: row
+    columns flip + a ``DeadlineEvent`` of action ``AUTO_COMPLETE`` /
+    ``AUTO_NAR`` is appended with the matched code, pattern, and IFW doc
+    pointer.
+    """
+    open_rows = db.scalars(
+        select(ComputedDeadline).where(
+            ComputedDeadline.application_id == app.id,
+            ComputedDeadline.status == "OPEN",
+        )
+    ).all()
+    if not open_rows:
+        return
+    docs = db.scalars(
+        select(FileWrapperDocument).where(
+            FileWrapperDocument.application_id == app.id
+        )
+    ).all()
+    if not docs:
+        return
+    rule_ids = {row.rule_id for row in open_rows}
+    rules: dict[int, IfwRuleRow] = {
+        r.id: r
+        for r in db.scalars(
+            select(IfwRuleRow).where(IfwRuleRow.id.in_(rule_ids))
+        ).all()
+    }
+    now = datetime.now(timezone.utc)
+    for cd in open_rows:
+        rule = rules.get(cd.rule_id)
+        if rule is None:
+            continue
+        complete = list(rule.close_complete_codes or ())
+        nar = list(rule.close_nar_codes or ())
+        if not complete and not nar:
+            continue
+        match = _choose_close_match(
+            deadline_trigger_date=cd.trigger_date,
+            complete_patterns=complete,
+            nar_patterns=nar,
+            docs=docs,
+        )
+        if match is None:
+            continue
+        disposition, doc, pattern = match
+        is_complete = disposition == "auto_complete"
+        cd.status = "COMPLETED" if is_complete else "NAR"
+        cd.completed_at = now
+        cd.closed_by_ifw_document_id = doc.id
+        cd.closed_by_rule_pattern = pattern
+        cd.closed_disposition = disposition
+        action = "AUTO_COMPLETE" if is_complete else "AUTO_NAR"
+        if is_complete:
+            summary.deadlines_auto_completed += 1
+        else:
+            summary.deadlines_auto_nar += 1
+        # Belt-and-suspenders dedupe: even though the OPEN filter above
+        # makes re-runs no-op, double-check the most recent event so we
+        # never write two consecutive identical AUTO_* rows.
+        latest = db.scalar(
+            select(DeadlineEvent)
+            .where(DeadlineEvent.deadline_id == cd.id)
+            .order_by(
+                DeadlineEvent.occurred_at.desc(), DeadlineEvent.id.desc()
+            )
+            .limit(1)
+        )
+        payload = {
+            "matched_code": (doc.document_code or "").strip(),
+            "matched_pattern": pattern,
+            "ifw_document_id": doc.id,
+            "mail_room_date": _iso_for_audit(doc.mail_room_date),
+            "rule_id": rule.id,
+            "rule_code": rule.code,
+            "variant_key": rule.variant_key,
+        }
+        if (
+            latest is not None
+            and latest.action == action
+            and (latest.payload_json or {}).get("ifw_document_id") == doc.id
+        ):
+            continue
+        db.add(
+            DeadlineEvent(
+                deadline_id=cd.id,
+                action=action,
+                payload_json=payload,
+            )
+        )
+
+
+def _iso_for_audit(value) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return value.isoformat()
 
 
 def _id_for_rule_code(code: str, tenant_id: str):

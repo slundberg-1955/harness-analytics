@@ -52,6 +52,7 @@
 #prosecution-timeline .tl-pill-warn    { background: var(--tl-warning-bg); color: var(--tl-warning); }
 #prosecution-timeline .tl-pill-info    { background: var(--tl-accent-bg);  color: var(--tl-accent);  }
 #prosecution-timeline .tl-pill-success { background: var(--tl-success-bg); color: var(--tl-success); }
+.tl-pill-nar { font-style: italic; opacity: 0.85; }
 #prosecution-timeline .tl-pill-muted   { background: var(--tl-bg-tertiary); color: var(--tl-text-tertiary); }
 
 /* disclaimer */

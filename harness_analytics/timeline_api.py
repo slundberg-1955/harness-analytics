@@ -184,6 +184,22 @@ def _serialize_deadline(
         # applied the 0005 migration; we don't want to break the timeline UI.
         verified_payload = None
 
+    # M0009: surface the close-audit triplet in one field when the deadline
+    # is in a terminal state. The matter / inbox UI uses ``close_info`` to
+    # render the "Closed by rule X" subtitle without a second query.
+    close_info: Optional[dict[str, Any]] = None
+    if cd.status in {"COMPLETED", "NAR"} and (
+        cd.closed_disposition
+        or cd.closed_by_rule_pattern
+        or cd.closed_by_ifw_document_id is not None
+    ):
+        close_info = {
+            "disposition": cd.closed_disposition,
+            "matched_pattern": cd.closed_by_rule_pattern,
+            "closed_by_ifw_document_id": cd.closed_by_ifw_document_id,
+            "closed_at": _iso(cd.completed_at),
+        }
+
     payload: dict[str, Any] = {
         "id": cd.id,
         "application_id": cd.application_id,
@@ -212,6 +228,7 @@ def _serialize_deadline(
         "user_note": rule.user_note if rule else None,
         "computed_at": _iso(cd.computed_at),
         "verified": verified_payload,
+        "close_info": close_info,
     }
 
     if include_history:
@@ -449,9 +466,12 @@ def deadline_detail(
 
 # M9: 'verify' / 'unverify' join the existing action verbs so they share the
 # same audit trail, role gate, and shape on the wire.
+# M0009: 'nar' / 'un-nar' add the manual NAR ("No Action Required")
+# lifecycle alongside complete/reopen.
 _ALLOWED_ACTIONS = {
     "assign", "complete", "snooze", "unsnooze", "note", "reopen",
     "verify", "unverify",
+    "nar", "un-nar",
 }
 
 
@@ -501,7 +521,48 @@ def deadline_action(
         audit_payload["before"]["status"] = cd.status
         cd.status = "COMPLETED"
         cd.completed_at = datetime.now(timezone.utc)
+        cd.closed_disposition = "manual_complete"
         audit_payload["after"]["status"] = "COMPLETED"
+        audit_payload["after"]["closed_disposition"] = "manual_complete"
+
+    elif action == "nar":
+        # Manual "No Action Required". Distinct from `complete` so dashboards
+        # can split out items the attorney consciously stamped as not needing
+        # work. A free-text reason is required so the audit row carries
+        # context.
+        if cd.status not in {"OPEN", "SUPERSEDED"}:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Cannot NAR deadline in status {cd.status!r}",
+            )
+        reason = (payload.get("reason") or "").strip()
+        if not reason:
+            raise HTTPException(
+                status_code=400, detail="nar requires non-empty 'reason'"
+            )
+        audit_payload["before"]["status"] = cd.status
+        cd.status = "NAR"
+        cd.completed_at = datetime.now(timezone.utc)
+        cd.closed_disposition = "manual_nar"
+        audit_payload["after"]["status"] = "NAR"
+        audit_payload["after"]["closed_disposition"] = "manual_nar"
+        audit_payload["after"]["reason"] = reason
+
+    elif action == "un-nar":
+        # Reverse a manual NAR back to OPEN. Distinct verb from REOPEN so the
+        # history is clear about which terminal state we came from.
+        if cd.status != "NAR":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Cannot un-NAR deadline in status {cd.status!r}",
+            )
+        audit_payload["before"]["status"] = cd.status
+        cd.status = "OPEN"
+        cd.completed_at = None
+        cd.closed_by_ifw_document_id = None
+        cd.closed_by_rule_pattern = None
+        cd.closed_disposition = None
+        audit_payload["after"]["status"] = "OPEN"
 
     elif action == "snooze":
         until_raw = payload.get("until")
@@ -534,6 +595,11 @@ def deadline_action(
         audit_payload["before"]["status"] = cd.status
         cd.status = "OPEN"
         cd.completed_at = None
+        # Clear close-audit columns so a reopened row doesn't carry stale
+        # auto-close metadata from a prior recompute.
+        cd.closed_by_ifw_document_id = None
+        cd.closed_by_rule_pattern = None
+        cd.closed_disposition = None
         audit_payload["after"]["status"] = "OPEN"
 
     elif action == "verify":
@@ -597,7 +663,7 @@ def deadline_action(
 
 _VALID_WINDOWS = {"7", "30", "90", "all"}
 _VALID_SEVERITIES = {"danger", "warn", "info", "all"}
-_VALID_STATUS = {"open", "overdue", "snoozed", "all"}
+_VALID_STATUS = {"open", "overdue", "snoozed", "nar", "all"}
 # M11: ``team`` shows every open deadline assigned to the caller's direct
 # reports (users.manager_user_id == caller.id). Reserved for ATTORNEY+.
 _VALID_ASSIGNEE = {"me", "all", "unassigned", "team"}
@@ -637,6 +703,10 @@ def actions_inbox(
         )
     elif status == "snoozed":
         q = q.filter(ComputedDeadline.snoozed_until >= today)
+    elif status == "nar":
+        # M0009: pull only NAR'd items (manual or auto). Default ``open``
+        # remains NAR-excluding so the inbox doesn't flood with closed work.
+        q = q.filter(ComputedDeadline.status == "NAR")
 
     if window != "all":
         cutoff = today + timedelta(days=int(window))
@@ -767,6 +837,20 @@ _RULE_FIELDS_EDITABLE = {
     "late_months_from_priority": (int, type(None)),
 }
 
+# M0009: ``variant_key`` is part of the unique key
+# ``(tenant_id, code, variant_key)`` so it is **creation-only** — the admin
+# update path silently ignores it. The two ``close_*_codes`` arrays are
+# editable like ``aliases``: passed in as JSON arrays and persisted as text
+# arrays. They live in their own list (not ``_RULE_FIELDS_EDITABLE``) so the
+# array branch in ``admin_update_rule`` knows to coerce them as lists.
+_RULE_FIELDS_ARRAY_EDITABLE = {
+    "aliases",
+    "warnings",
+    "patent_type_applicability",
+    "close_complete_codes",
+    "close_nar_codes",
+}
+
 
 # M14: fields whose value is part of the rule "shape" — used to compute the
 # tenant-vs-global diff. Excludes ``id``, ``tenant_id``, ``code``, ``aliases``,
@@ -790,6 +874,12 @@ _RULE_DIFFABLE_FIELDS = (
     "warnings",
     "priority_tier",
     "active",
+    # M0009: variant_key + close arrays participate in the diff so an admin
+    # can see at a glance when a tenant override has tuned its docket
+    # cross-off rules differently from the global seed.
+    "variant_key",
+    "close_complete_codes",
+    "close_nar_codes",
 )
 
 
@@ -830,6 +920,11 @@ def _rule_to_dict(row: IfwRule) -> dict[str, Any]:
         "id": row.id,
         "tenant_id": row.tenant_id,
         "code": row.code,
+        "variant_key": getattr(row, "variant_key", "") or "",
+        "close_complete_codes": list(
+            getattr(row, "close_complete_codes", None) or []
+        ),
+        "close_nar_codes": list(getattr(row, "close_nar_codes", None) or []),
         "description": row.description,
         "kind": row.kind,
         "aliases": list(row.aliases or []),
@@ -1051,13 +1146,14 @@ def admin_update_rule(
         logger.exception("Could not snapshot ifw_rule_versions; continuing with edit")
 
     for k, v in payload.items():
-        if k in {"aliases", "warnings", "patent_type_applicability"}:
+        if k in _RULE_FIELDS_ARRAY_EDITABLE:
             if not isinstance(v, list):
                 raise HTTPException(status_code=400, detail=f"{k} must be a list")
             setattr(target, k, [str(x) for x in v])
         elif k in _RULE_FIELDS_EDITABLE:
             setattr(target, k, _coerce_field(k, v))
-        # silently ignore unknown keys (forward-compat)
+        # `variant_key` is part of the unique key — it cannot be patched.
+        # Silently ignore unknown keys (forward-compat).
 
     target.updated_at = datetime.now(timezone.utc)
     db.commit()
@@ -1105,11 +1201,7 @@ _VERSION_LIST_LIMIT = 50
 
 # Mirror of _RULE_FIELDS_EDITABLE but expressed as a flat set so revert can
 # walk the snapshot dict without re-deriving types from coerce.
-_REVERTABLE_FIELDS = set(_RULE_FIELDS_EDITABLE.keys()) | {
-    "aliases",
-    "warnings",
-    "patent_type_applicability",
-}
+_REVERTABLE_FIELDS = set(_RULE_FIELDS_EDITABLE.keys()) | _RULE_FIELDS_ARRAY_EDITABLE
 
 
 def _version_to_dict(row: IfwRuleVersion) -> dict[str, Any]:
@@ -1192,7 +1284,7 @@ def admin_revert_rule_version(
     for k, v in snapshot.items():
         if k not in _REVERTABLE_FIELDS:
             continue
-        if k in {"aliases", "warnings", "patent_type_applicability"}:
+        if k in _RULE_FIELDS_ARRAY_EDITABLE:
             setattr(target, k, [str(x) for x in (v or [])])
         else:
             try:
