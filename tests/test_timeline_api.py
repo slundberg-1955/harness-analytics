@@ -350,6 +350,14 @@ def test_diff_fields_picks_up_close_arrays() -> None:
     assert "close_nar_codes" not in diff
 
 
+def test_admin_timeline_backfill_requires_admin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The on-demand backfill trigger sits behind ADMIN. Legacy basic-auth
+    callers without a CurrentUser should be denied."""
+    client = _make_client(monkeypatch)
+    r = client.post("/portal/api/admin/timeline/backfill", auth=("viewer", "test-pw"))
+    assert r.status_code in (401, 403)
+
+
 def test_rule_to_dict_surfaces_new_columns() -> None:
     """``_rule_to_dict`` must round-trip the new variant_key + close arrays
     so the admin UI can render and edit them."""
