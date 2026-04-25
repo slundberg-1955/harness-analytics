@@ -11,6 +11,11 @@
   // M0009: ``nar`` lets the inbox show only items that have been NAR'd
   // (manual or automatic). Default ``open`` continues to exclude NAR.
   const VALID_STATUS = ["open", "overdue", "snoozed", "nar", "all"];
+  // Top-level inbox tabs. Maintenance fees and Paris-Convention windows
+  // run on years-out cadences and would otherwise dominate Overdue, so
+  // they live in dedicated tabs and are excluded from the prosecution
+  // default.
+  const VALID_CATEGORY = ["prosecution", "maintenance", "paris"];
 
   // M11: role precedence mirrors auth.ROLES so we can decide client-side
   // whether to show the "My team" chip without round-tripping the server.
@@ -24,6 +29,7 @@
     assignee: "all",
     severity: "all",
     status: "open",
+    category: "prosecution",
   };
 
   function escHtml(s) {
@@ -54,6 +60,7 @@
     if (VALID_ASSIGNEE.includes(params.get("assignee"))) STATE.assignee = params.get("assignee");
     if (VALID_SEVERITY.includes(params.get("severity"))) STATE.severity = params.get("severity");
     if (VALID_STATUS.includes(params.get("status")))     STATE.status   = params.get("status");
+    if (VALID_CATEGORY.includes(params.get("category"))) STATE.category = params.get("category");
   }
   function writeStateToUrl() {
     const params = new URLSearchParams();
@@ -335,7 +342,7 @@
   function maybeApplyDefaultView() {
     // Only auto-apply if the URL had no filter params at all.
     const params = new URLSearchParams(window.location.search);
-    const anyExplicit = ["window", "assignee", "severity", "status"].some((k) => params.has(k));
+    const anyExplicit = ["window", "assignee", "severity", "status", "category"].some((k) => params.has(k));
     if (anyExplicit) return;
     const def = VIEWS_STATE.items.find((v) => v.is_default);
     if (def) applySavedView(def);

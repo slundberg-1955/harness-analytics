@@ -107,6 +107,9 @@ class _EmptySession:
     def filter(self, *_a, **_kw):  # pragma: no cover
         return self
 
+    def join(self, *_a, **_kw):  # pragma: no cover
+        return self
+
     def order_by(self, *_a, **_kw):  # pragma: no cover
         return self
 
@@ -397,3 +400,73 @@ def test_rule_to_dict_surfaces_new_columns() -> None:
     assert out["variant_key"] == "non-final-office-action-response"
     assert out["close_complete_codes"] == ["A...", "RCEX"]
     assert out["close_nar_codes"] == ["NOA", "ABN"]
+
+
+
+def test_inbox_category_constants_match_spec() -> None:
+    """Top-level tabs are pinned to a 3-value vocabulary; the prosecution
+    default explicitly excludes maintenance + Paris (FRPR) so they don't
+    drown the Overdue bucket."""
+    from harness_analytics.timeline_api import (
+        _CATEGORY_KIND_EXCLUDE,
+        _CATEGORY_KIND_INCLUDE,
+        _VALID_CATEGORY,
+    )
+
+    assert _VALID_CATEGORY == {"prosecution", "maintenance", "paris"}
+    assert set(_CATEGORY_KIND_EXCLUDE) == {"maintenance", "priority_later_of"}
+    assert _CATEGORY_KIND_INCLUDE["maintenance"] == ("maintenance",)
+    assert _CATEGORY_KIND_INCLUDE["paris"] == ("priority_later_of",)
+
+
+def test_inbox_rejects_unknown_category(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _make_client(monkeypatch)
+    r = client.get(
+        "/portal/api/actions/inbox?category=BOGUS",
+        auth=("viewer", "test-pw"),
+    )
+    assert r.status_code == 400
+    assert "category" in r.json()["detail"].lower()
+
+
+def test_inbox_accepts_category_prosecution(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default category. Round-trips into filters_applied so the client
+    can render the active tab."""
+    client = _make_client(monkeypatch)
+    r = client.get(
+        "/portal/api/actions/inbox?category=prosecution",
+        auth=("viewer", "test-pw"),
+    )
+    assert r.status_code == 200
+    assert r.json()["filters_applied"]["category"] == "prosecution"
+
+
+def test_inbox_accepts_category_maintenance(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _make_client(monkeypatch)
+    r = client.get(
+        "/portal/api/actions/inbox?category=maintenance",
+        auth=("viewer", "test-pw"),
+    )
+    assert r.status_code == 200
+    assert r.json()["filters_applied"]["category"] == "maintenance"
+
+
+def test_inbox_accepts_category_paris(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _make_client(monkeypatch)
+    r = client.get(
+        "/portal/api/actions/inbox?category=paris",
+        auth=("viewer", "test-pw"),
+    )
+    assert r.status_code == 200
+    assert r.json()["filters_applied"]["category"] == "paris"
+
+
+def test_inbox_default_category_is_prosecution(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When no category is supplied the API defaults to prosecution so
+    legacy URLs (and saved views without a category) keep getting the
+    same shape they had before tabs were introduced -- minus maintenance
+    and Paris, which is the whole point of this change."""
+    client = _make_client(monkeypatch)
+    r = client.get("/portal/api/actions/inbox", auth=("viewer", "test-pw"))
+    assert r.status_code == 200
+    assert r.json()["filters_applied"]["category"] == "prosecution"

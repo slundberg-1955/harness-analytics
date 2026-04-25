@@ -675,6 +675,18 @@ _VALID_STATUS = {"open", "overdue", "snoozed", "nar", "all"}
 _VALID_ASSIGNEE = {"me", "all", "unassigned", "team"}
 _TEAM_VIEW_MIN_ROLE = "ATTORNEY"
 
+# Top-level inbox tabs. Maintenance fees and Paris-Convention foreign-filing
+# windows have very different cadence + ownership from prosecution work
+# (years out, often handled by an annuities service or foreign counsel) and
+# would otherwise dominate the Overdue bucket. Default ``prosecution``
+# excludes both.
+_VALID_CATEGORY = {"prosecution", "maintenance", "paris"}
+_CATEGORY_KIND_EXCLUDE = ("maintenance", "priority_later_of")
+_CATEGORY_KIND_INCLUDE = {
+    "maintenance": ("maintenance",),
+    "paris": ("priority_later_of",),
+}
+
 
 @router.get("/actions/inbox")
 def actions_inbox(
@@ -682,6 +694,7 @@ def actions_inbox(
     assignee: str = Query("all"),
     severity: str = Query("all"),
     status: str = Query("open"),
+    category: str = Query("prosecution"),
     db: Session = Depends(get_db),
     user: Optional[CurrentUser] = Depends(current_user_optional),
 ) -> JSONResponse:
@@ -693,6 +706,8 @@ def actions_inbox(
         raise HTTPException(status_code=400, detail=f"severity must be one of {_VALID_SEVERITIES}")
     if status not in _VALID_STATUS:
         raise HTTPException(status_code=400, detail=f"status must be one of {_VALID_STATUS}")
+    if category not in _VALID_CATEGORY:
+        raise HTTPException(status_code=400, detail=f"category must be one of {_VALID_CATEGORY}")
 
     today = date.today()
     tenant_id = user.tenant_id if user else "global"
@@ -726,6 +741,16 @@ def actions_inbox(
         # filing date) would otherwise flood the Overdue bucket years after
         # the fact. Click the Info chip to opt back in.
         q = q.filter(ComputedDeadline.severity != "info")
+
+    # Tab filter: prosecution (default) excludes maintenance + Paris; the
+    # other two tabs include only their respective rule kinds. Done as a
+    # join + filter rather than a subquery because the inbox query is
+    # already capped at 2000 rows downstream.
+    q = q.join(IfwRule, IfwRule.id == ComputedDeadline.rule_id)
+    if category == "prosecution":
+        q = q.filter(~IfwRule.kind.in_(_CATEGORY_KIND_EXCLUDE))
+    else:
+        q = q.filter(IfwRule.kind.in_(_CATEGORY_KIND_INCLUDE[category]))
 
     if assignee == "me":
         if user_id is None:
@@ -806,6 +831,7 @@ def actions_inbox(
                 "assignee": assignee,
                 "severity": severity,
                 "status": status,
+                "category": category,
             },
             "buckets": payload_buckets,
             "total": sum(b["count"] for b in payload_buckets),
