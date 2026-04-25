@@ -642,23 +642,33 @@ def _apply_auto_close_pass(
 def _apply_app_level_close_shortcut(
     db: Session, app: Application, summary: RecomputeSummary
 ) -> None:
-    """App-level fallback close for ``hard_noa`` deadlines.
+    """App-level fallback close driven by durable Application state.
 
-    The IFW-code-driven auto-close pass handles the common case (NOA
-    deadline → matching ISSUE.NTF / ISSUE.FEE / ABN IFW doc). But the
-    exact USPTO IFW code vocabulary for issue events varies by corpus
-    and some environments don't reliably emit them. This shortcut covers
-    the gap using durable application-level state:
+    The IFW-code-driven auto-close pass handles the common per-rule case
+    (e.g. NOA deadline -> matching ISSUE.NTF / ISSUE.FEE / ABN IFW doc).
+    But the exact USPTO IFW code vocabulary for issue events varies by
+    corpus and some environments don't reliably emit them, and per-rule
+    ``nar_codes`` lists in ``docket_close_conditions.json`` are narrowly
+    scoped (e.g. maintenance / FRPR / IDS rows don't list ABN at all).
+    This shortcut covers both gaps using durable matter-level fields:
 
-    * ``applications.issue_date IS NOT NULL`` → the patent issued, any
-      OPEN ``hard_noa`` deadline is complete (``app_issued`` disposition).
-    * ``applications.application_status_text`` contains "abandon" →
-      the case is abandoned, any OPEN ``hard_noa`` deadline is NAR
-      (``app_abandoned`` disposition).
+    * ``applications.issue_date IS NOT NULL`` -> the patent issued; any
+      OPEN ``hard_noa`` deadline is auto-COMPLETED with disposition
+      ``app_issued``. Limited to ``hard_noa`` because issuance only
+      moots the issue-fee window -- maintenance and other future
+      deadlines are still meaningful.
+    * ``applications.application_status_text`` contains "abandon" ->
+      the matter is dead (Failure to Respond to OA, Express
+      Abandonment, Failure to Pay Issue Fee, Withdrawn from Issue,
+      etc.); EVERY OPEN deadline on the application is auto-NAR'd
+      with disposition ``app_abandoned``, regardless of rule kind.
+      Per docketing convention, no actionable deadline survives an
+      abandonment -- if the abandonment is later reversed by petition,
+      a manual reopen / recompute will reopen the relevant rows.
 
-    Idempotent: gated by ``status == 'OPEN'``. Skipped when the deadline
-    already has a ``closed_disposition`` set (so it never downgrades an
-    auto-complete / manual-complete).
+    Idempotent: gated by ``status == 'OPEN'`` (so already-closed rows
+    are left alone) and by a final latest-event check that suppresses
+    duplicate audit events when the same shortcut has already fired.
     """
     issued = app.issue_date is not None
     abandoned = bool(
@@ -685,9 +695,11 @@ def _apply_app_level_close_shortcut(
     now = datetime.now(timezone.utc)
     for cd in open_rows:
         rule = rules.get(cd.rule_id)
-        if rule is None or rule.kind != "hard_noa":
+        if rule is None:
             continue
-        if issued:
+        # Issued branch: only the issue-fee window (hard_noa) is mooted by
+        # patent issuance. Maintenance / FRPR / IDS / soft windows survive.
+        if issued and rule.kind == "hard_noa":
             cd.status = "COMPLETED"
             cd.completed_at = now
             cd.closed_disposition = "auto_complete"
@@ -701,7 +713,11 @@ def _apply_app_level_close_shortcut(
                 "rule_id": rule.id,
                 "rule_code": rule.code,
             }
-        else:  # abandoned
+        # Abandoned branch: matter is dead -- NAR every open deadline,
+        # regardless of rule kind. The IFW per-rule pass already handles
+        # the OA response window via ABN/EXPR.ABN nar_codes; this catches
+        # everything the seed lists don't (maintenance, FRPR, IDS, etc.).
+        elif abandoned:
             cd.status = "NAR"
             cd.completed_at = now
             cd.closed_disposition = "auto_nar"
@@ -714,6 +730,8 @@ def _apply_app_level_close_shortcut(
                 "rule_id": rule.id,
                 "rule_code": rule.code,
             }
+        else:
+            continue
         latest = db.scalar(
             select(DeadlineEvent)
             .where(DeadlineEvent.deadline_id == cd.id)

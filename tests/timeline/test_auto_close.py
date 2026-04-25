@@ -348,6 +348,136 @@ def test_app_level_shortcut_no_op_when_app_still_pending() -> None:
     assert session.added == []
 
 
+def test_app_level_shortcut_nars_all_kinds_when_abandoned() -> None:
+    """Failure-to-respond / express / failure-to-pay / withdrawn-from-issue
+    all share the same docketing consequence: matter is dead and EVERY
+    open deadline gets crossed off. Not just the OA response window
+    (already handled by per-rule ABN nar_codes), and not just hard_noa.
+    """
+    from harness_analytics.timeline.materializer import (
+        RecomputeSummary,
+        _apply_app_level_close_shortcut,
+    )
+
+    app = SimpleNamespace(
+        id=1,
+        issue_date=None,
+        patent_number=None,
+        application_status_text="Abandoned -- Failure to Respond to an Office Action",
+    )
+    # Mix of every rule kind we currently materialize.
+    open_rows = [
+        _cd(500, rule_id=20),  # standard_oa (CTNF response)
+        _cd(501, rule_id=21),  # hard_noa (NOA / issue fee)
+        _cd(502, rule_id=22),  # maintenance (3.5yr window)
+        _cd(503, rule_id=23),  # priority_later_of (FRPR)
+        _cd(504, rule_id=24),  # ids_phase
+        _cd(505, rule_id=25),  # soft_window (24mo review)
+    ]
+    rules = {
+        20: _rule(20, "standard_oa"),
+        21: _rule(21, "hard_noa"),
+        22: _rule(22, "maintenance"),
+        23: _rule(23, "priority_later_of"),
+        24: _rule(24, "ids_phase"),
+        25: _rule(25, "soft_window"),
+    }
+    session = _StubSession(open_rows, rules)
+    summary = RecomputeSummary(application_id=1)
+
+    _apply_app_level_close_shortcut(session, app, summary)
+
+    for cd in open_rows:
+        assert cd.status == "NAR", f"deadline {cd.id} not NAR'd"
+        assert cd.closed_disposition == "auto_nar"
+        assert cd.closed_by_rule_pattern == "app_abandoned"
+        assert cd.completed_at is not None
+
+    assert summary.deadlines_auto_nar == 6
+    assert summary.deadlines_auto_completed == 0
+    # One AUTO_NAR audit event per row.
+    assert len(session.added) == 6
+    for evt in session.added:
+        assert evt.action == "AUTO_NAR"
+        assert evt.payload_json["matched_pattern"] == "app_abandoned"
+        assert (
+            evt.payload_json["application_status_text"]
+            == "Abandoned -- Failure to Respond to an Office Action"
+        )
+
+
+def test_app_level_shortcut_issued_only_completes_hard_noa() -> None:
+    """The issued branch stays narrow: only hard_noa is mooted by patent
+    issuance. Maintenance / FRPR / IDS / soft_window survive because they
+    are still meaningful post-issuance.
+    """
+    from harness_analytics.timeline.materializer import (
+        RecomputeSummary,
+        _apply_app_level_close_shortcut,
+    )
+
+    app = SimpleNamespace(
+        id=1,
+        issue_date=date(2024, 3, 1),
+        patent_number="US10,000,000",
+        application_status_text="Patented Case",
+    )
+    open_rows = [
+        _cd(600, rule_id=30),  # hard_noa -> COMPLETE
+        _cd(601, rule_id=31),  # maintenance -> stay OPEN
+        _cd(602, rule_id=32),  # priority_later_of -> stay OPEN
+    ]
+    rules = {
+        30: _rule(30, "hard_noa"),
+        31: _rule(31, "maintenance"),
+        32: _rule(32, "priority_later_of"),
+    }
+    session = _StubSession(open_rows, rules)
+    summary = RecomputeSummary(application_id=1)
+
+    _apply_app_level_close_shortcut(session, app, summary)
+
+    assert open_rows[0].status == "COMPLETED"
+    assert open_rows[0].closed_by_rule_pattern == "app_issued"
+    assert open_rows[1].status == "OPEN"
+    assert open_rows[2].status == "OPEN"
+    assert summary.deadlines_auto_completed == 1
+    assert summary.deadlines_auto_nar == 0
+    assert len(session.added) == 1
+    assert session.added[0].action == "AUTO_COMPLETE"
+
+
+def test_app_level_shortcut_abandoned_skips_already_closed() -> None:
+    """Already-closed rows are filtered out by the OPEN gate, so they
+    never get downgraded by the abandonment shortcut. Only OPEN rows
+    are returned by the stub's first scalars() call.
+    """
+    from harness_analytics.timeline.materializer import (
+        RecomputeSummary,
+        _apply_app_level_close_shortcut,
+    )
+
+    app = SimpleNamespace(
+        id=1,
+        issue_date=None,
+        patent_number=None,
+        application_status_text="Abandoned -- Failure to Pay Issue Fee",
+    )
+    # Stub returns only the OPEN row -- mirrors the real query's
+    # `status == 'OPEN'` filter. The closed row is not visible to the
+    # shortcut and therefore stays as-is.
+    open_row = _cd(700, rule_id=40)
+    rules = {40: _rule(40, "standard_oa")}
+    session = _StubSession([open_row], rules)
+    summary = RecomputeSummary(application_id=1)
+
+    _apply_app_level_close_shortcut(session, app, summary)
+
+    assert open_row.status == "NAR"
+    assert summary.deadlines_auto_nar == 1
+    assert len(session.added) == 1
+
+
 # ---------------------------------------------------------------------------
 # _frpr_not_applicable + _apply_paris_window_close (Paris Convention lifecycle)
 # ---------------------------------------------------------------------------

@@ -312,6 +312,7 @@
         const closeBlock = ci ? `
           <div style="margin-top:6px;padding:8px;background:rgba(0,0,0,0.03);border-radius:4px;">
             <div><strong>${escHtml(
+              ci.disposition === "auto_nar" && ci.matched_pattern === "app_abandoned" ? "Application abandoned" :
               ci.disposition === "auto_complete" ? "Auto-completed by rule" :
               ci.disposition === "auto_nar" ? "Auto-NAR'd by rule" :
               ci.disposition === "deadline_passed" ? "Deadline passed (auto-cleared)" :
