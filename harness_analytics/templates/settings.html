@@ -176,6 +176,102 @@
 })();
 </script>
 
+<div class="card" id="backfill-card" hidden>
+  <h2>Timeline backfill</h2>
+  <p class="muted" style="margin:0 0 0.75rem;">
+    Recompute every application's prosecution-timeline deadlines for the current tenant.
+    Use this after editing rules, after seeding new docket-cross-off conditions, or to pick up
+    auto-close/NAR transitions on existing OPEN deadlines. Idempotent &mdash; clicking while a
+    run is in flight no-ops with a 409.
+  </p>
+  <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
+    <button type="button" id="backfill-run" class="btn">Run backfill now</button>
+    <button type="button" id="backfill-refresh" class="btn secondary">Refresh status</button>
+  </div>
+  <div id="backfill-msg" class="muted" style="margin-top:0.5rem;"></div>
+  <pre id="backfill-status" class="mono" style="margin-top:0.5rem;padding:8px 10px;background:#f6f5f1;border-radius:6px;white-space:pre-wrap;word-break:break-all;display:none;font-size:0.85em;max-height:320px;overflow:auto;"></pre>
+</div>
+
+<script>
+(function () {
+  const card = document.getElementById("backfill-card");
+  const runBtn = document.getElementById("backfill-run");
+  const refreshBtn = document.getElementById("backfill-refresh");
+  const msgEl = document.getElementById("backfill-msg");
+  const statusEl = document.getElementById("backfill-status");
+  if (!card || !runBtn) return;
+
+  function roleAtLeast(actual, required) {
+    const rank = { VIEWER: 1, PARALEGAL: 2, ATTORNEY: 3, ADMIN: 4, OWNER: 5 };
+    return (rank[actual] || 0) >= (rank[required] || 99);
+  }
+
+  function showStatus(payload) {
+    if (!payload) return;
+    const lines = [];
+    lines.push("running: " + (payload.running ? "yes" : "no"));
+    if (payload.pid) lines.push("pid: " + payload.pid);
+    if (payload.lock) lines.push("\n--- lock ---\n" + payload.lock.trim());
+    if (payload.scheduler) {
+      lines.push("\n--- scheduler ---\n" + JSON.stringify(payload.scheduler, null, 2));
+    }
+    if (payload.log_tail) lines.push("\n--- log tail ---\n" + payload.log_tail.trim());
+    statusEl.textContent = lines.join("\n");
+    statusEl.style.display = "block";
+  }
+
+  function refresh() {
+    msgEl.textContent = "Refreshing…";
+    fetch("/health/backfill", { credentials: "same-origin" })
+      .then((r) => r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status)))
+      .then((data) => {
+        msgEl.textContent = data.running
+          ? "A recompute is currently running."
+          : "No recompute in flight.";
+        showStatus(data);
+      })
+      .catch((err) => { msgEl.textContent = "Could not load status: " + (err && err.message || err); });
+  }
+
+  function trigger() {
+    if (!confirm("Recompute every application in this tenant? This is safe but can take 10–30 min on large tenants.")) return;
+    runBtn.disabled = true;
+    msgEl.textContent = "Spawning…";
+    fetch("/portal/api/admin/timeline/backfill", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+    })
+      .then(async (r) => {
+        const body = await r.json().catch(() => ({}));
+        if (r.status === 200) {
+          msgEl.textContent = `Spawned (pid=${body.pid}, tenant=${body.tenant}). Tail progress below.`;
+          refresh();
+        } else if (r.status === 409) {
+          msgEl.textContent = "Already running: " + (body.detail || "see status below.");
+          refresh();
+        } else {
+          throw new Error(body.detail || ("HTTP " + r.status));
+        }
+      })
+      .catch((err) => { msgEl.textContent = "Trigger failed: " + (err && err.message || err); })
+      .finally(() => { runBtn.disabled = false; });
+  }
+
+  runBtn.addEventListener("click", trigger);
+  refreshBtn.addEventListener("click", refresh);
+
+  fetch("/portal/api/me", { credentials: "same-origin" })
+    .then((r) => r.ok ? r.json() : null)
+    .then((me) => {
+      if (me && roleAtLeast(me.role, "ADMIN")) {
+        card.hidden = false;
+        refresh();
+      }
+    });
+})();
+</script>
+
 <div class="card" id="ics-card">
   <h2>Calendar feed (ICS)</h2>
   <p class="muted" style="margin:0 0 0.75rem;">
