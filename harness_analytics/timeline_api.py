@@ -286,6 +286,33 @@ _BUCKET_ORDER = (
 
 
 # ---------------------------------------------------------------------------
+# GET /timeline/deadlines/{id}
+# ---------------------------------------------------------------------------
+#
+# IMPORTANT: this route MUST be registered before the
+# ``/timeline/{application_number:path}`` route below. The ``:path`` converter
+# matches greedily (including slashes), so if the application-number route is
+# registered first it shadows this one and every deadline detail call ends up
+# hitting ``_resolve_application`` with ``"deadlines/<id>"``.
+
+
+@router.get("/timeline/deadlines/{deadline_id}")
+def deadline_detail(
+    deadline_id: int,
+    db: Session = Depends(get_db),
+    _user: Optional[CurrentUser] = Depends(current_user_optional),
+) -> JSONResponse:
+    cd = db.get(ComputedDeadline, deadline_id)
+    if cd is None:
+        raise HTTPException(status_code=404, detail="Deadline not found")
+    app = db.get(Application, cd.application_id)
+    payload = _serialize_deadline(db, cd, include_history=True)
+    payload["application_number"] = app.application_number if app else None
+    payload["application_title"] = app.invention_title if app else None
+    return JSONResponse(payload)
+
+
+# ---------------------------------------------------------------------------
 # GET /timeline/{application_number}
 # ---------------------------------------------------------------------------
 
@@ -436,27 +463,6 @@ def _milestone_label_for_code(code: Optional[str]) -> Optional[str]:
     if not code:
         return None
     return _MILESTONE_LABELS.get(code.upper())
-
-
-# ---------------------------------------------------------------------------
-# GET /timeline/deadlines/{id}
-# ---------------------------------------------------------------------------
-
-
-@router.get("/timeline/deadlines/{deadline_id}")
-def deadline_detail(
-    deadline_id: int,
-    db: Session = Depends(get_db),
-    _user: Optional[CurrentUser] = Depends(current_user_optional),
-) -> JSONResponse:
-    cd = db.get(ComputedDeadline, deadline_id)
-    if cd is None:
-        raise HTTPException(status_code=404, detail="Deadline not found")
-    app = db.get(Application, cd.application_id)
-    payload = _serialize_deadline(db, cd, include_history=True)
-    payload["application_number"] = app.application_number if app else None
-    payload["application_title"] = app.invention_title if app else None
-    return JSONResponse(payload)
 
 
 # ---------------------------------------------------------------------------
