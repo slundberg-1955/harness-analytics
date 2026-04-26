@@ -150,11 +150,16 @@ def test_choose_close_match_returns_none_when_no_patterns() -> None:
     )
 
 
-def test_choose_close_match_skips_docs_on_or_before_trigger() -> None:
+def test_choose_close_match_skips_docs_strictly_before_trigger() -> None:
+    """Docs with mail_room_date strictly before the trigger are ignored, but
+    same-day matches **are** allowed (filing-event triggers like N/AP often
+    arrive in the same batch as their closer AP.B). See also
+    ``test_choose_close_match_excludes_trigger_doc_by_id`` for the
+    self-NAR'ing protection."""
     trigger = date(2024, 6, 1)
     docs = [
-        _doc(10, date(2024, 5, 30), "A.NE"),
-        _doc(20, date(2024, 6, 1), "A.NE"),  # same day as trigger — excluded
+        _doc(10, date(2024, 5, 30), "A.NE"),  # before trigger -- ignored
+        _doc(20, date(2024, 6, 1), "A.NE"),   # same day -- now eligible
         _doc(30, date(2024, 6, 2), "NOA"),
     ]
     result = _choose_close_match(
@@ -164,9 +169,52 @@ def test_choose_close_match_skips_docs_on_or_before_trigger() -> None:
         docs=docs,
     )
     assert result is not None
-    # First matching doc strictly after trigger is the NOA, not the same-day A.NE.
-    assert result[0] == "auto_nar"
-    assert result[1].id == 30
+    # Same-day A.NE wins (complete preferred over later NOA NAR).
+    assert result[0] == "auto_complete"
+    assert result[1].id == 20
+
+
+def test_choose_close_match_excludes_trigger_doc_by_id() -> None:
+    """The trigger doc itself is excluded so an OA whose code appears in its
+    own ``nar_codes`` (e.g. CTNF) doesn't self-NAR the deadline it just
+    created."""
+    trigger = date(2024, 6, 1)
+    docs = [
+        _doc(99, date(2024, 6, 1), "CTNF"),   # the trigger doc itself
+        _doc(100, date(2024, 6, 15), "AMSB"),
+    ]
+    result = _choose_close_match(
+        deadline_trigger_date=trigger,
+        complete_patterns=["AMSB"],
+        nar_patterns=["CTNF", "NOA"],
+        docs=docs,
+        trigger_document_id=99,
+    )
+    assert result is not None
+    assert result[0] == "auto_complete"
+    assert result[1].id == 100
+
+
+def test_choose_close_match_same_day_filing_event_closer() -> None:
+    """Regression for app 16650501: Notice of Appeal (N/AP) and Appeal
+    Brief (AP.B) routinely land on the same mail-room date. The matcher
+    must accept the AP.B as a same-day closer so the N/AP.E deadline
+    auto-completes instead of staying overdue."""
+    trigger = date(2024, 7, 31)
+    docs = [
+        _doc(1, date(2024, 7, 31), "N/AP"),     # trigger doc
+        _doc(2, date(2024, 7, 31), "AP.B"),     # closer, same-day
+    ]
+    result = _choose_close_match(
+        deadline_trigger_date=trigger,
+        complete_patterns=["AP.B"],
+        nar_patterns=["ABN", "NOA"],
+        docs=docs,
+        trigger_document_id=1,
+    )
+    assert result is not None
+    assert result[0] == "auto_complete"
+    assert result[1].id == 2
 
 
 def test_choose_close_match_handles_datetime_mail_room() -> None:

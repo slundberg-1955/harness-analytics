@@ -76,13 +76,22 @@ def _choose_close_match(
     complete_patterns: Iterable[str],
     nar_patterns: Iterable[str],
     docs: Iterable["FileWrapperDocument"],
+    trigger_document_id: Optional[int] = None,
 ) -> Optional[tuple[str, "FileWrapperDocument", str]]:
     """Pure picker: return ``(disposition, winning_doc, matched_pattern)`` or ``None``.
 
-    Walks ``docs`` ordered by ``(mail_room_date, id)`` ascending; only docs
-    strictly after the deadline trigger participate. The first matching doc
-    wins; same-day matches prefer ``complete`` over ``nar`` so a single doc
-    that satisfies both lists collapses to the friendlier disposition.
+    Walks ``docs`` ordered by ``(mail_room_date, id)`` ascending; docs whose
+    mail-room date is **before** the deadline trigger are skipped, as is the
+    trigger doc itself (matched by ``trigger_document_id``). Same-day matches
+    are allowed because filing-event triggers like ``N/AP`` (Notice of
+    Appeal) routinely arrive in the same batch as the closer (``AP.B``);
+    excluding the trigger doc by id prevents an OA's own code (e.g. ``CTNF``,
+    which lists itself in its own ``nar_codes``) from self-NAR'ing the
+    deadline it just created.
+
+    The first matching doc wins; same-day matches prefer ``complete`` over
+    ``nar`` so a single doc that satisfies both lists collapses to the
+    friendlier disposition.
 
     Side-effect free — the materializer wraps this with the I/O bits so the
     decision logic stays unit-testable without a DB.
@@ -100,12 +109,14 @@ def _choose_close_match(
         ),
     )
     for doc in sorted_docs:
+        if trigger_document_id is not None and doc.id == trigger_document_id:
+            continue
         doc_date = (
             doc.mail_room_date.date()
             if isinstance(doc.mail_room_date, datetime)
             else doc.mail_room_date
         )
-        if doc_date is None or doc_date <= deadline_trigger_date:
+        if doc_date is None or doc_date < deadline_trigger_date:
             continue
         code = (doc.document_code or "").strip()
         if not code:
@@ -589,6 +600,7 @@ def _apply_auto_close_pass(
             complete_patterns=complete,
             nar_patterns=nar,
             docs=docs,
+            trigger_document_id=cd.trigger_document_id,
         )
         if match is None:
             continue
