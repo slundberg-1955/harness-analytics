@@ -53,6 +53,36 @@ def test_docket_close_seed_covers_noa_and_maintenance() -> None:
     assert any("EXPIR" in c for c in mth4["nar_codes"])
 
 
+def test_noa_close_codes_cover_real_world_issue_fee_and_qpids_reopen() -> None:
+    """Production audit (Apr 2026) found 477 overdue items, several of which
+    were NOAs that *had* satisfying follow-up actions on file but no closer
+    fired. Two real IFW codes were missing from the seed:
+
+    * ``IFEE`` -- Issue Fee Payment (PTO-85B). The seed only had the logical
+      name ``ISSUE.FEE`` which never appears in actual USPTO IFW data, so
+      every NOA closed by a paid issue fee stayed OPEN until the patent
+      ultimately issued (the ``app_issued`` shortcut took over).
+    * ``Q.DEC.REOPEN`` -- Quick Path IDS (QPIDS) decision that reopens
+      prosecution after allowance. Once prosecution is reopened the NOA
+      is dead, but the seed had no closer code for it.
+
+    Pin both into the canonical NOA row so a regression here would surface
+    the next time a NOA gets stuck open behind one of these codes.
+    """
+    conditions = load_docket_close_seed()
+    noa = next(c for c in conditions if c["code"] == "NOA" and c["variant_key"] == "")
+    assert "IFEE" in noa["complete_codes"], (
+        "IFEE (real USPTO issue-fee-payment code) must close NOA"
+    )
+    assert "Q.DEC.REOPEN" in noa["complete_codes"], (
+        "QPIDS reopen decision must close NOA -- prosecution was reopened"
+    )
+    # ACPA was already there but is part of the same audit; lock it in too.
+    assert "ACPA" in noa["complete_codes"], (
+        "ACPA (design CPA) after NOA withdraws allowance and must close it"
+    )
+
+
 def test_seed_carries_multiple_variants_per_triggering_code() -> None:
     """CTNF appears twice with distinct ``variant_key``; ditto CTRS, NRES,
     APEA, and a handful of others. The seed JSON keeps these rows

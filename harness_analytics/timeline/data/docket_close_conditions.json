@@ -820,9 +820,9 @@
       "code": "NOA",
       "variant_key": "",
       "description": "Notice of Allowance",
-      "complete_codes": ["ISSUE.NTF", "ISSUE.FEE", "RCEX", "RCE", "WFE"],
+      "complete_codes": ["ISSUE.NTF", "ISSUE.FEE", "IFEE", "RCEX", "RCE", "WFE", "ACPA", "NOA", "Q.DEC.REOPEN"],
       "nar_codes": ["ABN", "EXPR.ABN"],
-      "notes": "Patent issuance (ISSUE.NTF) or issue-fee payment (ISSUE.FEE/WFE) closes. RCE after NOA withdraws allowance — also closes. Abandonment NARs. NOTE: exact IFW codes for issue-fee payment are not in the original spreadsheet; the materializer has a belt-and-suspenders shortcut that auto-completes any hard_noa deadline whose applications.issue_date is populated."
+      "notes": "Patent issuance (ISSUE.NTF) or issue-fee payment (ISSUE.FEE / IFEE / WFE) closes. RCE (utility) or ACPA (design Continued Prosecution Application) after NOA withdraws allowance — also closes. Q.DEC.REOPEN (QPIDS-driven reopen of prosecution after allowance) likewise terminates the issue-fee window. A subsequent NOA supersedes a prior NOA (the trigger document is excluded by id, so this only matches *later* NOA mailings). Abandonment NARs. NOTE: 'ISSUE.FEE' was the spreadsheet's logical name; the actual USPTO IFW code emitted on payment is 'IFEE' (Issue Fee Payment, PTO-85B), which we now match directly. The materializer also has a belt-and-suspenders shortcut that auto-completes any hard_noa deadline whose applications.issue_date is populated."
     },
     {
       "code": "N/AP.E",

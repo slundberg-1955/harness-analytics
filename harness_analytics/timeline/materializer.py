@@ -490,6 +490,28 @@ def _recompute_internal(db: Session, app: Application) -> RecomputeSummary:
     # text on the application status — that's NAR.
     _apply_app_level_close_shortcut(db, app, summary)
 
+    # 4.65) Time-based grace-period closers (production audit Apr 2026).
+    # Three narrowly-scoped, evidence-guarded passes that NAR deadlines
+    # whose legal window has provably elapsed without a satisfying IFW
+    # closer:
+    #   * Maintenance fees (MISMTH4/8/12) >180d past primary_date with no
+    #     MF.PAID doc on file -- the patent expired by operation of law.
+    #   * Office-action responses (CTNF/CTFR/CTRS/CTAV/CTEQ) >180d past
+    #     primary_date with no response code on file AND PAIR status still
+    #     showing the OA pending -- the application is abandoned by
+    #     failure to respond.
+    #   * Issue-fee windows (NOA / NTC.ALLOW) >30d past primary_date with
+    #     no closer code (IFEE / RCE / ACPA / Q.DEC.REOPEN / etc.) on file
+    #     and ``issue_date`` still null -- 37 CFR 1.311's 3-month period
+    #     is non-extendable so the matter is abandoned for failure to pay
+    #     the issue fee.
+    # All three are conservative: if any closing IFW doc exists or the
+    # app-level shortcut covers it, this layer stays out and the per-rule
+    # auto-close pass (or the shortcut) owns the closure.
+    _apply_maintenance_fee_grace_close(db, app, summary)
+    _apply_oa_statutory_period_close(db, app, summary)
+    _apply_noa_grace_close(db, app, summary)
+
     # 4.7) FRPR (Paris Convention) lifecycle close.
     # Two cases handled here, both as app-level rather than IFW-driven because
     # nothing in the file wrapper reliably signals either condition:
@@ -772,6 +794,456 @@ def _iso_for_audit(value) -> Optional[str]:
     if isinstance(value, datetime):
         return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     return value.isoformat()
+
+
+# ---------------------------------------------------------------------------
+# Time-based grace-period closers (production audit Apr 2026)
+# ---------------------------------------------------------------------------
+
+# 35 USC 41(c) grace period for late maintenance-fee payment is 6 months.
+# Once the grace period has elapsed without payment, the patent has expired
+# by operation of law -- the corresponding MISMTH* deadline is moot.
+_MAINT_FEE_GRACE_DAYS = 180
+
+# 37 CFR 1.136 caps the response window (with extensions) at 6 months from
+# mailing. Past that, the application is abandoned by failure to respond
+# unless the applicant petitions for revival under 1.137.
+_OA_STATUTORY_MAX_DAYS = 180
+
+# IFW codes that prove a maintenance fee was paid (closes MISMTH*).
+_MF_PAID_CODE_PREFIXES = ("MF.PAID", "MAINT.FEE.PAID")
+
+# Rule codes scoped to each grace-period rule.
+_MAINT_FEE_RULE_CODES = {"MISMTH4", "MISMTH8", "MISMTH12"}
+_OA_RESPONSE_RULE_CODES = {"CTNF", "CTFR", "CTRS", "CTAV", "CTEQ"}
+
+# IFW codes that prove the applicant filed a substantive response (so the
+# OA-response window is not legally expired even if PAIR status is stale).
+# Trailing "..." is a prefix wildcard per ``_match_code``.
+_OA_RESPONSE_CODE_PATTERNS = (
+    "A...",
+    "AMSB",
+    "RCEX",
+    "RCE",
+    "N.APP",
+    "EL...",
+    "ELECTION",
+    "PRE.APBR",
+)
+
+# PAIR status_text fragments indicating an OA is still pending per USPTO.
+# If status_text reflects anything else (e.g. "Allowance", "Abandoned",
+# "Patented"), some other close pass owns it -- this pass stays out of the way.
+_OA_PENDING_STATUS_FRAGMENTS = (
+    "non final action mailed",
+    "final rejection mailed",
+    "ex parte quayle action mailed",
+    "advisory action mailed",
+    "requirement for restriction",
+)
+
+# 37 CFR 1.311 sets a 3-month issue-fee window from NOA mailing that is NOT
+# extendable. Past that window the application is abandoned for failure to
+# pay the issue fee (35 USC 151) unless revived under 1.137. We add a small
+# 30-day buffer past primary_date (which is already mail+3mo) to absorb late
+# USPTO IFW updates -- well under 6 months, where the row stops being a
+# misleading "still pending" signal in the inbox.
+_NOA_GRACE_DAYS = 30
+
+# IFW codes proving the issue-fee window did NOT silently lapse. Any one of
+# these on file means the matter went somewhere -- the per-rule auto-close
+# pass owns the closure via NOA.complete_codes (see
+# docket_close_conditions.json). ABN / EXPR.ABN are included so an
+# explicitly-abandoned matter without "abandon" in PAIR status_text still
+# defers to the per-rule pass rather than NARing here.
+_NOA_CLOSER_CODE_PATTERNS = (
+    "IFEE",
+    "ISSUE.NTF",
+    "ISSUE.FEE",
+    "RCEX",
+    "RCE",
+    "WFE",
+    "ACPA",
+    "Q.DEC.REOPEN",
+    "ABN",
+    "EXPR.ABN",
+)
+
+# PAIR status_text fragments indicating the patent already issued. Those
+# rows are owned by ``_apply_app_level_close_shortcut`` via
+# ``applications.issue_date``. If status_text says "Patented" but
+# ``issue_date`` is somehow null (data lag), defer rather than NAR a live
+# patent.
+_NOA_ISSUED_STATUS_FRAGMENTS = (
+    "patented",
+    "patent issued",
+)
+
+
+def _has_doc_matching(
+    docs: Iterable[FileWrapperDocument],
+    *,
+    code_prefixes: tuple[str, ...] = (),
+    code_patterns: tuple[str, ...] = (),
+    after: Optional[date] = None,
+) -> bool:
+    """True iff any IFW doc passes either ``code_prefixes`` (uppercase prefix
+    test) or ``code_patterns`` (full ``_match_code`` test, supports ``...``
+    wildcard) and was mailed strictly after ``after`` (when given).
+
+    Pure helper -- no DB I/O. Side-effect free, so the grace-period passes
+    can be unit-tested without a real session.
+    """
+    for d in docs:
+        code = (d.document_code or "").strip()
+        if not code:
+            continue
+        doc_date = (
+            d.mail_room_date.date()
+            if isinstance(d.mail_room_date, datetime)
+            else d.mail_room_date
+        )
+        if after is not None and (doc_date is None or doc_date <= after):
+            continue
+        upper = code.upper()
+        if any(upper.startswith(p) for p in code_prefixes):
+            return True
+        if any(_match_code(p, code) for p in code_patterns):
+            return True
+    return False
+
+
+def _apply_maintenance_fee_grace_close(
+    db: Session, app: Application, summary: RecomputeSummary
+) -> None:
+    """Auto-NAR maintenance-fee deadlines whose grace period has elapsed
+    without a MF.PAID document on file.
+
+    Patents that miss a maintenance-fee payment expire by operation of law
+    after the 6-month grace period (35 USC 41(c)). PAIR's
+    ``application_status_text`` does not consistently flip from
+    "Patented Case" to "Expired" on this event, and we do not separately
+    ingest USPTO maintenance-fee records, so the only signal we have is the
+    absence of a MF.PAID code in the IFW more than 6 months past the
+    deadline's ``primary_date``.
+
+    Conservative by design:
+      * Only fires for ``rule.code in _MAINT_FEE_RULE_CODES``.
+      * Requires ``primary_date`` to be more than 180 days in the past.
+      * Skips the row entirely if any MF.PAID-shaped doc exists -- ingest
+        catching up later does NOT cause a regression because the per-rule
+        ``_apply_auto_close_pass`` would already have closed via MF.PAID.
+      * Idempotent via the OPEN-only filter and the duplicate-event guard.
+    """
+    from harness_analytics.models import IfwRule as IfwRuleRow
+
+    open_rows = db.scalars(
+        select(ComputedDeadline).where(
+            ComputedDeadline.application_id == app.id,
+            ComputedDeadline.status == "OPEN",
+        )
+    ).all()
+    if not open_rows:
+        return
+    rule_ids = {row.rule_id for row in open_rows}
+    rules: dict[int, IfwRuleRow] = {
+        r.id: r
+        for r in db.scalars(
+            select(IfwRuleRow).where(IfwRuleRow.id.in_(rule_ids))
+        ).all()
+    }
+    candidates = [
+        cd for cd in open_rows
+        if (rules.get(cd.rule_id) is not None
+            and rules[cd.rule_id].code in _MAINT_FEE_RULE_CODES)
+    ]
+    if not candidates:
+        return
+
+    today = date.today()
+    now = datetime.now(timezone.utc)
+    docs = list(db.scalars(
+        select(FileWrapperDocument).where(
+            FileWrapperDocument.application_id == app.id
+        )
+    ).all())
+    if _has_doc_matching(docs, code_prefixes=_MF_PAID_CODE_PREFIXES):
+        # Per-rule auto-close pass owns this case via MISMTH*.complete_codes.
+        return
+    for cd in candidates:
+        if cd.primary_date is None:
+            continue
+        days_overdue = (today - cd.primary_date).days
+        if days_overdue <= _MAINT_FEE_GRACE_DAYS:
+            continue
+        rule = rules[cd.rule_id]
+        cd.status = "NAR"
+        cd.completed_at = now
+        cd.closed_disposition = "auto_nar"
+        cd.closed_by_rule_pattern = "maint_fee_grace_expired"
+        summary.deadlines_auto_nar += 1
+        payload = {
+            "matched_pattern": "maint_fee_grace_expired",
+            "rule_id": rule.id,
+            "rule_code": rule.code,
+            "primary_date": _iso_for_audit(cd.primary_date),
+            "days_past_grace": days_overdue - _MAINT_FEE_GRACE_DAYS,
+        }
+        latest = db.scalar(
+            select(DeadlineEvent)
+            .where(DeadlineEvent.deadline_id == cd.id)
+            .order_by(
+                DeadlineEvent.occurred_at.desc(), DeadlineEvent.id.desc()
+            )
+            .limit(1)
+        )
+        if (
+            latest is not None
+            and latest.action == "AUTO_NAR"
+            and (latest.payload_json or {}).get("matched_pattern")
+            == "maint_fee_grace_expired"
+        ):
+            continue
+        db.add(
+            DeadlineEvent(
+                deadline_id=cd.id,
+                action="AUTO_NAR",
+                payload_json=payload,
+            )
+        )
+
+
+def _apply_oa_statutory_period_close(
+    db: Session, app: Application, summary: RecomputeSummary
+) -> None:
+    """Auto-NAR office-action response deadlines whose 6-month statutory max
+    has elapsed with no response on file and PAIR status still indicating
+    the OA is pending.
+
+    Per 37 CFR 1.136, the response window can be extended in 1-month
+    increments up to a 6-month statutory maximum from mailing. Beyond that,
+    the application is abandoned by failure to respond unless the applicant
+    files a 1.137 petition for revival. PAIR's ``application_status_text``
+    is often slow to flip to "Abandoned" -- it can sit at "Non Final Action
+    Mailed" for months past the statutory cutoff -- so we use the IFW
+    timeline as the source of truth: if no response code is on file *and*
+    PAIR status still says an OA is pending, the deadline is dead.
+
+    Triple-guarded to avoid wrongly NAR'ing live matters:
+      * ``rule.code in _OA_RESPONSE_RULE_CODES``.
+      * ``today - primary_date > 180`` (the legal max).
+      * No IFW doc matching ``_OA_RESPONSE_CODE_PATTERNS`` after
+        ``primary_date`` (catches responses that ingest hasn't yet linked
+        to the deadline).
+      * ``application_status_text`` matches one of
+        ``_OA_PENDING_STATUS_FRAGMENTS`` (so an Allowance / Abandonment
+        flip triggers a different shortcut, not this one).
+    """
+    from harness_analytics.models import IfwRule as IfwRuleRow
+
+    status_text_lc = (app.application_status_text or "").lower()
+    oa_pending = any(
+        frag in status_text_lc for frag in _OA_PENDING_STATUS_FRAGMENTS
+    )
+    if not oa_pending:
+        return
+
+    open_rows = db.scalars(
+        select(ComputedDeadline).where(
+            ComputedDeadline.application_id == app.id,
+            ComputedDeadline.status == "OPEN",
+        )
+    ).all()
+    if not open_rows:
+        return
+    rule_ids = {row.rule_id for row in open_rows}
+    rules: dict[int, IfwRuleRow] = {
+        r.id: r
+        for r in db.scalars(
+            select(IfwRuleRow).where(IfwRuleRow.id.in_(rule_ids))
+        ).all()
+    }
+    candidates = [
+        cd for cd in open_rows
+        if (rules.get(cd.rule_id) is not None
+            and rules[cd.rule_id].code in _OA_RESPONSE_RULE_CODES)
+    ]
+    if not candidates:
+        return
+
+    today = date.today()
+    now = datetime.now(timezone.utc)
+    docs = list(db.scalars(
+        select(FileWrapperDocument).where(
+            FileWrapperDocument.application_id == app.id
+        )
+    ).all())
+    for cd in candidates:
+        if cd.primary_date is None or cd.trigger_date is None:
+            continue
+        days_overdue = (today - cd.primary_date).days
+        if days_overdue <= _OA_STATUTORY_MAX_DAYS:
+            continue
+        # Any responsive doc after the trigger date keeps the matter alive --
+        # hard guard so we never NAR a deadline whose closer the per-rule
+        # pass somehow missed (e.g. response code not yet in complete_codes).
+        if _has_doc_matching(
+            docs,
+            code_patterns=_OA_RESPONSE_CODE_PATTERNS,
+            after=cd.trigger_date,
+        ):
+            continue
+        rule = rules[cd.rule_id]
+        cd.status = "NAR"
+        cd.completed_at = now
+        cd.closed_disposition = "auto_nar"
+        cd.closed_by_rule_pattern = "stat_period_expired"
+        summary.deadlines_auto_nar += 1
+        payload = {
+            "matched_pattern": "stat_period_expired",
+            "rule_id": rule.id,
+            "rule_code": rule.code,
+            "primary_date": _iso_for_audit(cd.primary_date),
+            "days_past_statutory_max": days_overdue - _OA_STATUTORY_MAX_DAYS,
+            "application_status_text": app.application_status_text,
+        }
+        latest = db.scalar(
+            select(DeadlineEvent)
+            .where(DeadlineEvent.deadline_id == cd.id)
+            .order_by(
+                DeadlineEvent.occurred_at.desc(), DeadlineEvent.id.desc()
+            )
+            .limit(1)
+        )
+        if (
+            latest is not None
+            and latest.action == "AUTO_NAR"
+            and (latest.payload_json or {}).get("matched_pattern")
+            == "stat_period_expired"
+        ):
+            continue
+        db.add(
+            DeadlineEvent(
+                deadline_id=cd.id,
+                action="AUTO_NAR",
+                payload_json=payload,
+            )
+        )
+
+
+def _apply_noa_grace_close(
+    db: Session, app: Application, summary: RecomputeSummary
+) -> None:
+    """Auto-NAR ``hard_noa`` deadlines whose 3-month issue-fee window has
+    elapsed (plus a small ingest-lag buffer) without any closing IFW doc.
+
+    Per 37 CFR 1.311 / 35 USC 151, the issue-fee window is 3 months from
+    NOA mailing and is NOT extendable. After that the application is
+    abandoned for failure to pay the issue fee unless revived under
+    1.137. PAIR's ``application_status_text`` does not consistently
+    flip from "Notice of Allowance Mailed" to "Abandoned" or "Patented"
+    in a timely fashion -- it can sit at the allowance state for many
+    months past the legal cutoff -- so we use the IFW timeline as the
+    source of truth.
+
+    Quad-guarded to avoid wrongly NARing a live matter:
+      * ``rule.kind == 'hard_noa'`` (covers NOA, NTC.ALLOW, etc.).
+      * ``today - primary_date > _NOA_GRACE_DAYS``.
+      * No IFW doc matching ``_NOA_CLOSER_CODE_PATTERNS`` on file --
+        an issue-fee, RCE, ACPA, QPIDS reopen, or abandonment closer
+        (regardless of date) means another pass owns the closure.
+      * ``applications.issue_date is None`` AND status_text does not
+        signal "Patented" / "Patent Issued" -- those are owned by
+        ``_apply_app_level_close_shortcut`` and must never be NAR'd
+        here.
+
+    Idempotent: gated by the OPEN-only filter and by a duplicate-event
+    guard on the latest ``AUTO_NAR`` row for the deadline.
+    """
+    from harness_analytics.models import IfwRule as IfwRuleRow
+
+    # Live-issued or already-issued matters belong to the app-level shortcut.
+    if app.issue_date is not None:
+        return
+    status_text_lc = (app.application_status_text or "").lower()
+    if any(frag in status_text_lc for frag in _NOA_ISSUED_STATUS_FRAGMENTS):
+        return
+
+    open_rows = db.scalars(
+        select(ComputedDeadline).where(
+            ComputedDeadline.application_id == app.id,
+            ComputedDeadline.status == "OPEN",
+        )
+    ).all()
+    if not open_rows:
+        return
+    rule_ids = {row.rule_id for row in open_rows}
+    rules: dict[int, IfwRuleRow] = {
+        r.id: r
+        for r in db.scalars(
+            select(IfwRuleRow).where(IfwRuleRow.id.in_(rule_ids))
+        ).all()
+    }
+    candidates = [
+        cd for cd in open_rows
+        if (rules.get(cd.rule_id) is not None
+            and rules[cd.rule_id].kind == "hard_noa")
+    ]
+    if not candidates:
+        return
+
+    today = date.today()
+    now = datetime.now(timezone.utc)
+    docs = list(db.scalars(
+        select(FileWrapperDocument).where(
+            FileWrapperDocument.application_id == app.id
+        )
+    ).all())
+    # Any closer (any age) means another pass owns the closure -- stay out.
+    if _has_doc_matching(docs, code_patterns=_NOA_CLOSER_CODE_PATTERNS):
+        return
+    for cd in candidates:
+        if cd.primary_date is None:
+            continue
+        days_overdue = (today - cd.primary_date).days
+        if days_overdue <= _NOA_GRACE_DAYS:
+            continue
+        rule = rules[cd.rule_id]
+        cd.status = "NAR"
+        cd.completed_at = now
+        cd.closed_disposition = "auto_nar"
+        cd.closed_by_rule_pattern = "noa_grace_expired"
+        summary.deadlines_auto_nar += 1
+        payload = {
+            "matched_pattern": "noa_grace_expired",
+            "rule_id": rule.id,
+            "rule_code": rule.code,
+            "primary_date": _iso_for_audit(cd.primary_date),
+            "days_past_grace": days_overdue - _NOA_GRACE_DAYS,
+            "application_status_text": app.application_status_text,
+        }
+        latest = db.scalar(
+            select(DeadlineEvent)
+            .where(DeadlineEvent.deadline_id == cd.id)
+            .order_by(
+                DeadlineEvent.occurred_at.desc(), DeadlineEvent.id.desc()
+            )
+            .limit(1)
+        )
+        if (
+            latest is not None
+            and latest.action == "AUTO_NAR"
+            and (latest.payload_json or {}).get("matched_pattern")
+            == "noa_grace_expired"
+        ):
+            continue
+        db.add(
+            DeadlineEvent(
+                deadline_id=cd.id,
+                action="AUTO_NAR",
+                payload_json=payload,
+            )
+        )
 
 
 def _frpr_not_applicable(app: Application) -> bool:

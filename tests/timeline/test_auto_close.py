@@ -6,7 +6,7 @@ client elsewhere; here we lock down the decision logic — pattern matching
 """
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 
 from harness_analytics.timeline.materializer import (
@@ -670,3 +670,748 @@ def test_paris_window_close_ignores_non_frpr_deadlines() -> None:
 
     assert open_rows[0].status == "OPEN"
     assert session.added == []
+
+
+# ---------------------------------------------------------------------------
+# Production traces (Apr 2026 audit) -- regressions found by sampling the 477
+# overdue items in prod and dumping the raw IFW timelines for the four worst
+# offenders. Each test below is a minimal reconstruction of one app's IFW
+# stream, asserting the close-match decision the materializer should reach
+# *given the seed shipped with the repo*.
+# ---------------------------------------------------------------------------
+
+
+def test_choose_close_match_ifee_closes_noa_real_world_29998129() -> None:
+    """App 29998129 had a NOA on 2026-01-21 followed by IFEE on 2026-04-13.
+    Before the seed fix, ISSUE.FEE (a logical name only) was the only
+    issue-fee closer pattern, and IFEE (the real USPTO code) wasn't
+    matched -- so the NOA stayed OPEN until the patent itself issued
+    weeks later. With IFEE in NOA's complete_codes, the NOA closes the
+    moment the issue fee is paid.
+    """
+    trigger = date(2026, 1, 21)
+    docs = [
+        _doc(7001, date(2026, 1, 21), 'NOA'),       # the trigger doc itself
+        _doc(7002, date(2026, 1, 21), 'IIFW'),      # printer info, ignored
+        _doc(7003, date(2026, 4, 9), 'IDS'),        # IDS, ignored
+        _doc(7004, date(2026, 4, 13), 'IFEE'),      # issue-fee payment -- closer
+    ]
+    result = _choose_close_match(
+        deadline_trigger_date=trigger,
+        complete_patterns=[
+            'ISSUE.NTF', 'ISSUE.FEE', 'IFEE', 'RCEX', 'RCE', 'WFE', 'ACPA', 'NOA', 'Q.DEC.REOPEN',
+        ],
+        nar_patterns=['ABN', 'EXPR.ABN'],
+        docs=docs,
+        trigger_document_id=7001,
+    )
+    assert result is not None, 'IFEE must close NOA'
+    disposition, doc, pattern = result
+    assert disposition == 'auto_complete'
+    assert doc.id == 7004
+    assert pattern == 'IFEE'
+
+
+def test_choose_close_match_qpids_reopen_closes_noa_real_world_18588603() -> None:
+    """App 18588603: NOA mailed 2025-04-04, then Q.DEC.REOPEN (Quick Path
+    IDS reopen of prosecution) on 2025-06-20, then a fresh CTNF on
+    2025-08-28. The original NOA was effectively withdrawn the moment
+    QPIDS reopened prosecution; without Q.DEC.REOPEN as a closer the
+    NOA stayed OPEN and was reported as overdue from 2025-07-07 onward.
+    """
+    trigger = date(2025, 4, 4)
+    docs = [
+        _doc(8001, date(2025, 4, 4), 'NOA'),           # trigger doc
+        _doc(8002, date(2025, 5, 14), 'IDS'),          # IDS filing, ignored
+        _doc(8003, date(2025, 6, 20), 'Q.DEC.REOPEN'), # QPIDS reopen -- closer
+        _doc(8004, date(2025, 8, 28), 'CTNF'),         # later -- shouldn't matter
+    ]
+    result = _choose_close_match(
+        deadline_trigger_date=trigger,
+        complete_patterns=[
+            'ISSUE.NTF', 'ISSUE.FEE', 'IFEE', 'RCEX', 'RCE', 'WFE', 'ACPA', 'NOA', 'Q.DEC.REOPEN',
+        ],
+        nar_patterns=['ABN', 'EXPR.ABN'],
+        docs=docs,
+        trigger_document_id=8001,
+    )
+    assert result is not None, 'Q.DEC.REOPEN must close the prior NOA'
+    disposition, doc, pattern = result
+    assert disposition == 'auto_complete'
+    assert doc.id == 8003
+    assert pattern == 'Q.DEC.REOPEN'
+
+
+def test_choose_close_match_acpa_closes_prior_noa_real_world_29998129() -> None:
+    """Same app 29998129, *first* NOA on 2025-06-26 followed by an ACPA
+    (Continued Prosecution Application -- design CPA) on 2025-09-26.
+    ACPA was already in NOA's complete_codes before this audit, but
+    locking the behaviour in with a real-world trace keeps it from
+    quietly regressing if someone trims the seed.
+    """
+    trigger = date(2025, 6, 26)
+    docs = [
+        _doc(9001, date(2025, 6, 26), 'NOA'),       # trigger doc
+        _doc(9002, date(2025, 7, 9), 'IDS'),        # ignored
+        _doc(9003, date(2025, 9, 26), 'ACPA'),      # CPA -- closer
+    ]
+    result = _choose_close_match(
+        deadline_trigger_date=trigger,
+        complete_patterns=[
+            'ISSUE.NTF', 'ISSUE.FEE', 'IFEE', 'RCEX', 'RCE', 'WFE', 'ACPA', 'NOA', 'Q.DEC.REOPEN',
+        ],
+        nar_patterns=['ABN', 'EXPR.ABN'],
+        docs=docs,
+        trigger_document_id=9001,
+    )
+    assert result is not None, 'ACPA must close the prior NOA'
+    disposition, doc, pattern = result
+    assert disposition == 'auto_complete'
+    assert doc.id == 9003
+    assert pattern == 'ACPA'
+
+
+def test_choose_close_match_silent_after_ctnf_does_not_self_close() -> None:
+    """App 17965418 / 17913525 pattern: an office action with no follow-up
+    activity at all. The matcher must NOT auto-close such a deadline --
+    OPEN is the correct status, and the app_abandoned shortcut (driven
+    by application_status_text) is what should ultimately resolve genuine
+    abandonments. Locks in that we never invented an aggressive
+    time-since-trigger auto-NAR rule that would risk closing live
+    matters with extensions / RCE / petitions in flight.
+    """
+    trigger = date(2025, 4, 8)
+    docs = [
+        _doc(10001, date(2025, 4, 8), 'CTNF'),  # trigger doc, excluded by id
+        # Nothing after the trigger -- silent docket.
+    ]
+    result = _choose_close_match(
+        deadline_trigger_date=trigger,
+        complete_patterns=['A...', 'AMSB', 'A.AF', 'RCEX', 'RCE', 'N.APP'],
+        nar_patterns=['CTNF', 'CTFR', 'CTAV', 'CTEQ', 'EX.A', 'NOA', 'ABN', 'EXPR.ABN', 'NRES'],
+        docs=docs,
+        trigger_document_id=10001,
+    )
+    assert result is None, 'Silent docket must stay OPEN, not auto-close'
+
+
+# ---------------------------------------------------------------------------
+# Time-based grace-period close passes
+# (M0009 follow-up: production audit Apr 2026)
+# ---------------------------------------------------------------------------
+
+
+class _StubSessionMulti:
+    """Stub Session that returns a configurable sequence of ``scalars()``
+    result sets and a configurable sequence of ``scalar()`` results.
+
+    Mirrors ``_StubSession`` but supports the 3-or-more ``scalars()`` calls
+    the grace-period passes make (open_rows, rules, docs, then optional
+    latest-event lookups via ``scalar()``).
+    """
+
+    def __init__(self, scalars_results, scalar_results=None):
+        self._scalars_queue = list(scalars_results)
+        self._scalar_queue = list(scalar_results or [])
+        self.added = []
+
+    def scalars(self, *_a, **_kw):
+        rows = self._scalars_queue.pop(0) if self._scalars_queue else []
+
+        class _Iter:
+            def __init__(self, r):
+                self._r = r
+
+            def all(self):
+                return list(self._r)
+
+        return _Iter(rows)
+
+    def scalar(self, *_a, **_kw):
+        return self._scalar_queue.pop(0) if self._scalar_queue else None
+
+    def add(self, obj):
+        self.added.append(obj)
+
+
+def _mismth_cd(id_, rule_id, *, primary_date):
+    return SimpleNamespace(
+        id=id_,
+        rule_id=rule_id,
+        status="OPEN",
+        primary_date=primary_date,
+        trigger_date=primary_date,  # MISMTH triggers off issue_date == primary's anchor
+        trigger_document_id=None,
+        completed_at=None,
+        closed_disposition=None,
+        closed_by_rule_pattern=None,
+    )
+
+
+def _mismth_rule(id_, code="MISMTH4"):
+    return SimpleNamespace(id=id_, code=code, kind="hard_maintenance")
+
+
+def _ct_cd(id_, rule_id, *, trigger_date, primary_date, trigger_document_id=None):
+    return SimpleNamespace(
+        id=id_,
+        rule_id=rule_id,
+        status="OPEN",
+        primary_date=primary_date,
+        trigger_date=trigger_date,
+        trigger_document_id=trigger_document_id,
+        completed_at=None,
+        closed_disposition=None,
+        closed_by_rule_pattern=None,
+    )
+
+
+def _ct_rule(id_, code="CTNF"):
+    return SimpleNamespace(id=id_, code=code, kind="response")
+
+
+# ---- _has_doc_matching helper -------------------------------------------
+
+
+def test_has_doc_matching_prefix_hits() -> None:
+    from harness_analytics.timeline.materializer import _has_doc_matching
+
+    docs = [_doc(1, date(2024, 1, 1), "MF.PAID.4YR")]
+    assert _has_doc_matching(docs, code_prefixes=("MF.PAID",))
+    assert not _has_doc_matching(docs, code_prefixes=("ISSUE",))
+
+
+def test_has_doc_matching_pattern_with_wildcard() -> None:
+    from harness_analytics.timeline.materializer import _has_doc_matching
+
+    docs = [_doc(1, date(2024, 1, 1), "A.NE")]
+    assert _has_doc_matching(docs, code_patterns=("A...",))
+    assert not _has_doc_matching(docs, code_patterns=("RCEX",))
+
+
+def test_has_doc_matching_after_filter_strict() -> None:
+    """``after`` is strict: a doc dated *on* the cutoff is not "after"."""
+    from harness_analytics.timeline.materializer import _has_doc_matching
+
+    docs = [_doc(1, date(2024, 6, 1), "A.NE")]
+    assert _has_doc_matching(docs, code_patterns=("A...",), after=date(2024, 5, 31))
+    assert not _has_doc_matching(docs, code_patterns=("A...",), after=date(2024, 6, 1))
+
+
+def test_has_doc_matching_skips_blank_codes_and_missing_dates() -> None:
+    from harness_analytics.timeline.materializer import _has_doc_matching
+
+    docs = [
+        _doc(1, None, "A.NE"),                # missing date -> ignored when after set
+        _doc(2, date(2024, 1, 1), ""),        # blank code -> ignored
+        _doc(3, date(2024, 6, 1), "A.NE"),    # real match
+    ]
+    assert _has_doc_matching(
+        docs, code_patterns=("A...",), after=date(2024, 5, 1)
+    )
+
+
+# ---- _apply_maintenance_fee_grace_close ---------------------------------
+
+
+def test_maintenance_fee_grace_close_nars_after_grace_period() -> None:
+    """Patent that missed its 4-year maintenance fee >180d ago should NAR.
+
+    Real-world trace: production audit found ~81 MISMTH4 deadlines, all
+    on patents in PAIR status "Patented Case", median 432d past the
+    primary_date with no MF.PAID code on file. Per 35 USC 41(c) the
+    patent has expired by operation of law -- this pass NARs the row
+    so it drops out of Overdue.
+    """
+    from harness_analytics.timeline.materializer import (
+        RecomputeSummary,
+        _apply_maintenance_fee_grace_close,
+    )
+
+    app = _app(application_status_text="Patented Case")
+    cd = _mismth_cd(900, rule_id=42, primary_date=date(2024, 1, 1))
+    rules = [_mismth_rule(42, "MISMTH4")]
+    docs = []  # no MF.PAID on file
+    session = _StubSessionMulti([[cd], rules, docs])
+    summary = RecomputeSummary(application_id=42)
+
+    _apply_maintenance_fee_grace_close(session, app, summary)
+
+    assert cd.status == "NAR"
+    assert cd.closed_disposition == "auto_nar"
+    assert cd.closed_by_rule_pattern == "maint_fee_grace_expired"
+    assert summary.deadlines_auto_nar == 1
+    assert len(session.added) == 1
+    ev = session.added[0]
+    assert ev.action == "AUTO_NAR"
+    assert ev.payload_json["matched_pattern"] == "maint_fee_grace_expired"
+    assert ev.payload_json["rule_code"] == "MISMTH4"
+    assert ev.payload_json["days_past_grace"] > 0
+
+
+def test_maintenance_fee_grace_close_skips_within_grace_period() -> None:
+    """A deadline only 30 days past primary_date is still inside the
+    6-month grace period -- the patent is late but not yet expired.
+    """
+    from harness_analytics.timeline.materializer import (
+        RecomputeSummary,
+        _apply_maintenance_fee_grace_close,
+    )
+
+    app = _app(application_status_text="Patented Case")
+    cd = _mismth_cd(901, rule_id=42, primary_date=date.today() - timedelta(days=30))
+    rules = [_mismth_rule(42, "MISMTH4")]
+    session = _StubSessionMulti([[cd], rules, []])
+    summary = RecomputeSummary(application_id=42)
+
+    _apply_maintenance_fee_grace_close(session, app, summary)
+
+    assert cd.status == "OPEN"
+    assert summary.deadlines_auto_nar == 0
+    assert session.added == []
+
+
+def test_maintenance_fee_grace_close_skips_when_mf_paid_on_file() -> None:
+    """If a MF.PAID-shaped doc is on file, the per-rule auto-close pass
+    owns this case via MISMTH*.complete_codes -- this pass stays out."""
+    from harness_analytics.timeline.materializer import (
+        RecomputeSummary,
+        _apply_maintenance_fee_grace_close,
+    )
+
+    app = _app(application_status_text="Patented Case")
+    cd = _mismth_cd(902, rule_id=42, primary_date=date(2024, 1, 1))
+    rules = [_mismth_rule(42, "MISMTH4")]
+    docs = [_doc(1, date(2024, 5, 1), "MF.PAID.4YR")]
+    session = _StubSessionMulti([[cd], rules, docs])
+    summary = RecomputeSummary(application_id=42)
+
+    _apply_maintenance_fee_grace_close(session, app, summary)
+
+    assert cd.status == "OPEN"
+    assert summary.deadlines_auto_nar == 0
+
+
+def test_maintenance_fee_grace_close_ignores_non_maintenance_rules() -> None:
+    """A long-overdue NOA must not be NAR'd by the maintenance-fee rule."""
+    from harness_analytics.timeline.materializer import (
+        RecomputeSummary,
+        _apply_maintenance_fee_grace_close,
+    )
+
+    app = _app(application_status_text="Notice of Allowance Mailed")
+    cd = _mismth_cd(903, rule_id=42, primary_date=date(2024, 1, 1))
+    rules = [SimpleNamespace(id=42, code="NOA", kind="hard_noa")]
+    session = _StubSessionMulti([[cd], rules])
+    summary = RecomputeSummary(application_id=42)
+
+    _apply_maintenance_fee_grace_close(session, app, summary)
+
+    assert cd.status == "OPEN"
+    assert summary.deadlines_auto_nar == 0
+
+
+# ---- _apply_oa_statutory_period_close -----------------------------------
+
+
+def test_oa_statutory_period_close_nars_silent_oa_past_180_days() -> None:
+    """CTNF/CTFR/CTRS deadline >180d past primary_date with PAIR status
+    still showing OA pending and no IFW response code on file -- the
+    application is abandoned by failure to respond."""
+    from harness_analytics.timeline.materializer import (
+        RecomputeSummary,
+        _apply_oa_statutory_period_close,
+    )
+
+    app = _app(application_status_text="Non Final Action Mailed")
+    cd = _ct_cd(
+        910, rule_id=51,
+        trigger_date=date(2025, 1, 1),
+        primary_date=date(2025, 5, 1),  # well over 180d past today
+    )
+    rules = [_ct_rule(51, "CTNF")]
+    docs = [_doc(1, date(2025, 1, 1), "CTNF")]  # only the trigger itself
+    session = _StubSessionMulti([[cd], rules, docs])
+    summary = RecomputeSummary(application_id=42)
+
+    _apply_oa_statutory_period_close(session, app, summary)
+
+    assert cd.status == "NAR"
+    assert cd.closed_by_rule_pattern == "stat_period_expired"
+    assert summary.deadlines_auto_nar == 1
+    assert len(session.added) == 1
+    ev = session.added[0]
+    assert ev.payload_json["matched_pattern"] == "stat_period_expired"
+    assert ev.payload_json["rule_code"] == "CTNF"
+    assert ev.payload_json["days_past_statutory_max"] > 0
+
+
+def test_oa_statutory_period_close_does_not_fire_when_response_on_file() -> None:
+    """If an A... amendment is on file after the trigger date, the matter
+    is alive -- the per-rule pass should close it as auto_complete; this
+    pass must not preempt that with a NAR."""
+    from harness_analytics.timeline.materializer import (
+        RecomputeSummary,
+        _apply_oa_statutory_period_close,
+    )
+
+    app = _app(application_status_text="Non Final Action Mailed")
+    cd = _ct_cd(
+        911, rule_id=51,
+        trigger_date=date(2025, 1, 1),
+        primary_date=date(2025, 5, 1),
+    )
+    rules = [_ct_rule(51, "CTNF")]
+    docs = [
+        _doc(1, date(2025, 1, 1), "CTNF"),    # trigger doc
+        _doc(2, date(2025, 4, 15), "A.NE"),   # responsive amendment
+    ]
+    session = _StubSessionMulti([[cd], rules, docs])
+    summary = RecomputeSummary(application_id=42)
+
+    _apply_oa_statutory_period_close(session, app, summary)
+
+    assert cd.status == "OPEN"
+    assert summary.deadlines_auto_nar == 0
+
+
+def test_oa_statutory_period_close_skips_when_pair_status_not_pending() -> None:
+    """If PAIR status no longer says an OA is pending (e.g. allowance,
+    abandonment, patented), some other shortcut owns the closure -- this
+    pass stays out of the way."""
+    from harness_analytics.timeline.materializer import (
+        RecomputeSummary,
+        _apply_oa_statutory_period_close,
+    )
+
+    app = _app(application_status_text="Notice of Allowance Mailed")
+    cd = _ct_cd(
+        912, rule_id=51,
+        trigger_date=date(2025, 1, 1),
+        primary_date=date(2025, 5, 1),
+    )
+    rules = [_ct_rule(51, "CTNF")]
+    session = _StubSessionMulti([[cd], rules, []])
+    summary = RecomputeSummary(application_id=42)
+
+    _apply_oa_statutory_period_close(session, app, summary)
+
+    assert cd.status == "OPEN"
+    assert summary.deadlines_auto_nar == 0
+
+
+def test_oa_statutory_period_close_skips_within_statutory_window() -> None:
+    """A CTNF only 60d past primary_date is well inside the 6-month
+    extension window and must stay OPEN."""
+    from harness_analytics.timeline.materializer import (
+        RecomputeSummary,
+        _apply_oa_statutory_period_close,
+    )
+
+    app = _app(application_status_text="Non Final Action Mailed")
+    cd = _ct_cd(
+        913, rule_id=51,
+        trigger_date=date.today() - timedelta(days=120),
+        primary_date=date.today() - timedelta(days=60),
+    )
+    rules = [_ct_rule(51, "CTNF")]
+    session = _StubSessionMulti([[cd], rules, []])
+    summary = RecomputeSummary(application_id=42)
+
+    _apply_oa_statutory_period_close(session, app, summary)
+
+    assert cd.status == "OPEN"
+    assert summary.deadlines_auto_nar == 0
+
+
+def test_oa_statutory_period_close_only_targets_oa_response_rule_codes() -> None:
+    """Even when status / time-since match, only CTNF/CTFR/CTRS/CTAV/CTEQ
+    are in scope -- a stale FILING_DATE row, NOA, or maintenance-fee row
+    must not be touched by this pass."""
+    from harness_analytics.timeline.materializer import (
+        RecomputeSummary,
+        _apply_oa_statutory_period_close,
+    )
+
+    app = _app(application_status_text="Non Final Action Mailed")
+    cd = _ct_cd(
+        914, rule_id=51,
+        trigger_date=date(2025, 1, 1),
+        primary_date=date(2025, 5, 1),
+    )
+    # rule code outside the OA-response set
+    rules = [SimpleNamespace(id=51, code="FILING_DATE", kind="filing_date")]
+    session = _StubSessionMulti([[cd], rules, []])
+    summary = RecomputeSummary(application_id=42)
+
+    _apply_oa_statutory_period_close(session, app, summary)
+
+    assert cd.status == "OPEN"
+    assert summary.deadlines_auto_nar == 0
+
+
+# ---------------------------------------------------------------------------
+# _apply_noa_grace_close
+# (M0009 follow-up: NOA 3-month window is non-extendable per 37 CFR 1.311)
+# ---------------------------------------------------------------------------
+
+
+def _noa_cd(id_, rule_id, *, primary_date, trigger_date=None):
+    return SimpleNamespace(
+        id=id_,
+        rule_id=rule_id,
+        status="OPEN",
+        primary_date=primary_date,
+        trigger_date=trigger_date or primary_date,
+        trigger_document_id=None,
+        completed_at=None,
+        closed_disposition=None,
+        closed_by_rule_pattern=None,
+    )
+
+
+def _noa_rule(id_, code="NOA"):
+    return SimpleNamespace(id=id_, code=code, kind="hard_noa")
+
+
+def test_noa_grace_close_nars_silent_noa_past_grace_period() -> None:
+    """NOA >30d past primary_date with no closer doc on file and
+    ``issue_date`` still null is abandoned for failure to pay issue fee.
+
+    Real-world trace: production inbox showed app 29937416 sitting at
+    "193d overdue" with PAIR still saying "Notice of Allowance Mailed"
+    and no IFEE / ACPA / RCE on file. 37 CFR 1.311's 3-month period is
+    non-extendable so the row is dead by operation of law.
+    """
+    from harness_analytics.timeline.materializer import (
+        RecomputeSummary,
+        _apply_noa_grace_close,
+    )
+
+    app = _app(application_status_text="Notice of Allowance Mailed")
+    cd = _noa_cd(950, rule_id=61, primary_date=date(2025, 1, 1))
+    rules = [_noa_rule(61, "NOA")]
+    docs = [_doc(1, date(2024, 10, 1), "NOA")]  # only the trigger NOA itself
+    session = _StubSessionMulti([[cd], rules, docs])
+    summary = RecomputeSummary(application_id=42)
+
+    _apply_noa_grace_close(session, app, summary)
+
+    assert cd.status == "NAR"
+    assert cd.closed_disposition == "auto_nar"
+    assert cd.closed_by_rule_pattern == "noa_grace_expired"
+    assert summary.deadlines_auto_nar == 1
+    assert len(session.added) == 1
+    ev = session.added[0]
+    assert ev.action == "AUTO_NAR"
+    assert ev.payload_json["matched_pattern"] == "noa_grace_expired"
+    assert ev.payload_json["rule_code"] == "NOA"
+    assert ev.payload_json["days_past_grace"] > 0
+
+
+def test_noa_grace_close_also_handles_ntc_allow_kind_hard_noa() -> None:
+    """NTC.ALLOW shares ``kind == hard_noa`` so the same 3-month rule
+    applies. Scoping by ``kind`` (not by literal code) is intentional."""
+    from harness_analytics.timeline.materializer import (
+        RecomputeSummary,
+        _apply_noa_grace_close,
+    )
+
+    app = _app(application_status_text="Notice of Allowance Mailed")
+    cd = _noa_cd(951, rule_id=62, primary_date=date(2025, 1, 1))
+    rules = [_noa_rule(62, "NTC.ALLOW")]
+    session = _StubSessionMulti([[cd], rules, []])
+    summary = RecomputeSummary(application_id=42)
+
+    _apply_noa_grace_close(session, app, summary)
+
+    assert cd.status == "NAR"
+    assert cd.closed_by_rule_pattern == "noa_grace_expired"
+
+
+def test_noa_grace_close_skips_within_grace_window() -> None:
+    """A NOA only 20 days past primary_date is still inside the small
+    ingest-lag buffer -- defer to the per-rule pass / human action."""
+    from harness_analytics.timeline.materializer import (
+        RecomputeSummary,
+        _apply_noa_grace_close,
+    )
+
+    app = _app(application_status_text="Notice of Allowance Mailed")
+    cd = _noa_cd(
+        952, rule_id=61,
+        primary_date=date.today() - timedelta(days=20),
+    )
+    rules = [_noa_rule(61, "NOA")]
+    session = _StubSessionMulti([[cd], rules, []])
+    summary = RecomputeSummary(application_id=42)
+
+    _apply_noa_grace_close(session, app, summary)
+
+    assert cd.status == "OPEN"
+    assert summary.deadlines_auto_nar == 0
+    assert session.added == []
+
+
+def test_noa_grace_close_skips_when_ifee_on_file() -> None:
+    """Issue-fee payment closes the NOA via the per-rule pass; we must
+    not preempt that with a NAR even if it landed late."""
+    from harness_analytics.timeline.materializer import (
+        RecomputeSummary,
+        _apply_noa_grace_close,
+    )
+
+    app = _app(application_status_text="Notice of Allowance Mailed")
+    cd = _noa_cd(953, rule_id=61, primary_date=date(2025, 1, 1))
+    rules = [_noa_rule(61, "NOA")]
+    docs = [_doc(1, date(2025, 5, 1), "IFEE")]
+    session = _StubSessionMulti([[cd], rules, docs])
+    summary = RecomputeSummary(application_id=42)
+
+    _apply_noa_grace_close(session, app, summary)
+
+    assert cd.status == "OPEN"
+    assert summary.deadlines_auto_nar == 0
+
+
+def test_noa_grace_close_skips_when_acpa_on_file() -> None:
+    """ACPA (Continued Prosecution Application, design corpus) withdraws
+    allowance -- per-rule pass owns this closure via NOA.complete_codes."""
+    from harness_analytics.timeline.materializer import (
+        RecomputeSummary,
+        _apply_noa_grace_close,
+    )
+
+    app = _app(application_status_text="Notice of Allowance Mailed")
+    cd = _noa_cd(954, rule_id=61, primary_date=date(2025, 1, 1))
+    rules = [_noa_rule(61, "NOA")]
+    docs = [_doc(1, date(2025, 6, 1), "ACPA")]
+    session = _StubSessionMulti([[cd], rules, docs])
+    summary = RecomputeSummary(application_id=42)
+
+    _apply_noa_grace_close(session, app, summary)
+
+    assert cd.status == "OPEN"
+    assert summary.deadlines_auto_nar == 0
+
+
+def test_noa_grace_close_skips_when_rce_on_file() -> None:
+    """RCE after NOA withdraws allowance -- per-rule pass owns it."""
+    from harness_analytics.timeline.materializer import (
+        RecomputeSummary,
+        _apply_noa_grace_close,
+    )
+
+    app = _app(application_status_text="Notice of Allowance Mailed")
+    cd = _noa_cd(955, rule_id=61, primary_date=date(2025, 1, 1))
+    rules = [_noa_rule(61, "NOA")]
+    docs = [_doc(1, date(2025, 6, 1), "RCEX")]
+    session = _StubSessionMulti([[cd], rules, docs])
+    summary = RecomputeSummary(application_id=42)
+
+    _apply_noa_grace_close(session, app, summary)
+
+    assert cd.status == "OPEN"
+
+
+def test_noa_grace_close_skips_when_qpids_reopen_on_file() -> None:
+    """Q.DEC.REOPEN reopens prosecution after allowance -- not silent."""
+    from harness_analytics.timeline.materializer import (
+        RecomputeSummary,
+        _apply_noa_grace_close,
+    )
+
+    app = _app(application_status_text="Notice of Allowance Mailed")
+    cd = _noa_cd(956, rule_id=61, primary_date=date(2025, 1, 1))
+    rules = [_noa_rule(61, "NOA")]
+    docs = [_doc(1, date(2025, 6, 1), "Q.DEC.REOPEN")]
+    session = _StubSessionMulti([[cd], rules, docs])
+    summary = RecomputeSummary(application_id=42)
+
+    _apply_noa_grace_close(session, app, summary)
+
+    assert cd.status == "OPEN"
+
+
+def test_noa_grace_close_skips_when_abandonment_on_file() -> None:
+    """ABN on file means the per-rule pass will NAR via NOA.nar_codes;
+    this pass should not double-fire."""
+    from harness_analytics.timeline.materializer import (
+        RecomputeSummary,
+        _apply_noa_grace_close,
+    )
+
+    app = _app(application_status_text="Notice of Allowance Mailed")
+    cd = _noa_cd(957, rule_id=61, primary_date=date(2025, 1, 1))
+    rules = [_noa_rule(61, "NOA")]
+    docs = [_doc(1, date(2025, 6, 1), "ABN")]
+    session = _StubSessionMulti([[cd], rules, docs])
+    summary = RecomputeSummary(application_id=42)
+
+    _apply_noa_grace_close(session, app, summary)
+
+    assert cd.status == "OPEN"
+
+
+def test_noa_grace_close_skips_when_issue_date_populated() -> None:
+    """``applications.issue_date`` is the canonical "patent issued"
+    signal; the app-level shortcut owns NOA closure in that case."""
+    from harness_analytics.timeline.materializer import (
+        RecomputeSummary,
+        _apply_noa_grace_close,
+    )
+
+    app = _app(
+        application_status_text="Patented Case",
+        issue_date=date(2025, 3, 1),
+        patent_number="11000001",
+    )
+    cd = _noa_cd(958, rule_id=61, primary_date=date(2025, 1, 1))
+    rules = [_noa_rule(61, "NOA")]
+    session = _StubSessionMulti([[cd], rules, []])
+    summary = RecomputeSummary(application_id=42)
+
+    _apply_noa_grace_close(session, app, summary)
+
+    assert cd.status == "OPEN"
+    assert summary.deadlines_auto_nar == 0
+
+
+def test_noa_grace_close_skips_when_status_says_patented() -> None:
+    """Defensive: even if ``issue_date`` somehow lags, a "Patented"
+    status_text means a real patent issued -- never NAR a live patent."""
+    from harness_analytics.timeline.materializer import (
+        RecomputeSummary,
+        _apply_noa_grace_close,
+    )
+
+    app = _app(application_status_text="Patented Case", issue_date=None)
+    cd = _noa_cd(959, rule_id=61, primary_date=date(2025, 1, 1))
+    rules = [_noa_rule(61, "NOA")]
+    session = _StubSessionMulti([[cd], rules, []])
+    summary = RecomputeSummary(application_id=42)
+
+    _apply_noa_grace_close(session, app, summary)
+
+    assert cd.status == "OPEN"
+    assert summary.deadlines_auto_nar == 0
+
+
+def test_noa_grace_close_only_targets_hard_noa_kind() -> None:
+    """A long-overdue CTNF or MISMTH4 must not be NAR'd by this pass --
+    different rule kinds have different statutory windows."""
+    from harness_analytics.timeline.materializer import (
+        RecomputeSummary,
+        _apply_noa_grace_close,
+    )
+
+    app = _app(application_status_text="Non Final Action Mailed")
+    cd = _noa_cd(960, rule_id=61, primary_date=date(2025, 1, 1))
+    rules = [SimpleNamespace(id=61, code="CTNF", kind="response")]
+    session = _StubSessionMulti([[cd], rules, []])
+    summary = RecomputeSummary(application_id=42)
+
+    _apply_noa_grace_close(session, app, summary)
+
+    assert cd.status == "OPEN"
+    assert summary.deadlines_auto_nar == 0
