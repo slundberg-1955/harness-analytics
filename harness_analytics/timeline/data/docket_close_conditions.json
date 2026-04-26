@@ -825,6 +825,14 @@
       "notes": "Patent issuance (ISSUE.NTF) or issue-fee payment (ISSUE.FEE/WFE) closes. RCE after NOA withdraws allowance — also closes. Abandonment NARs. NOTE: exact IFW codes for issue-fee payment are not in the original spreadsheet; the materializer has a belt-and-suspenders shortcut that auto-completes any hard_noa deadline whose applications.issue_date is populated."
     },
     {
+      "code": "N/AP.E",
+      "variant_key": "",
+      "description": "Notice of Appeal — Brief Due",
+      "complete_codes": ["AP.B"],
+      "nar_codes": ["ABN", "EXPR.ABN", "NOA"],
+      "notes": "Appeal Brief filing (AP.B) closes. Allowance (NOA) or abandonment (ABN/EXPR.ABN) NARs the brief deadline."
+    },
+    {
       "code": "FRPR",
       "variant_key": "",
       "description": "Foreign filing priority (Paris Convention)",

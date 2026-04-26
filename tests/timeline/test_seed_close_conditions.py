@@ -9,7 +9,10 @@ behave.
 """
 from __future__ import annotations
 
-from harness_analytics.timeline.rules_repo import load_docket_close_seed
+from harness_analytics.timeline.rules_repo import (
+    _merge_close_conditions,
+    load_docket_close_seed,
+)
 from scripts.import_docket_conditions import (
     rows_to_conditions,
     slugify,
@@ -50,10 +53,12 @@ def test_docket_close_seed_covers_noa_and_maintenance() -> None:
     assert any("EXPIR" in c for c in mth4["nar_codes"])
 
 
-def test_seed_creates_variant_rows_for_shared_triggering_codes() -> None:
+def test_seed_carries_multiple_variants_per_triggering_code() -> None:
     """CTNF appears twice with distinct ``variant_key``; ditto CTRS, NRES,
-    APEA, and a handful of others. Verifies the plan's decision to make
-    ``variant_key`` part of the unique key actually shows up in the seed.
+    APEA, and a handful of others. The seed JSON keeps these rows
+    separate for documentation / spreadsheet-fidelity reasons even though
+    :func:`seed_close_conditions` collapses them onto the canonical rule
+    (see :func:`_merge_close_conditions`).
     """
     conditions = load_docket_close_seed()
     multi_variant = {"CTNF", "CTRS", "APEA", "NRES", "PPH.DECISION"}
@@ -64,6 +69,74 @@ def test_seed_creates_variant_rows_for_shared_triggering_codes() -> None:
         assert counts.get(code, 0) >= 2, (
             f"{code} should have at least 2 variants in the seed"
         )
+
+
+def test_merge_close_conditions_unions_variants_for_same_code() -> None:
+    """``_merge_close_conditions`` should fold every variant of a code
+    into a single ``{complete, nar, description}`` bucket, taking the
+    union of close arrays. This is the fix for the bug where
+    ``seed_close_conditions`` was inserting orphan ``auto_close_only``
+    rows keyed by ``variant_key`` that were never linked to any
+    materialized deadline -- so e.g. CTFR deadlines never auto-completed
+    on AMSB / RCE.
+    """
+    raw = [
+        {
+            "code": "CTNF",
+            "variant_key": "non-final-office-action-response",
+            "description": "Non Final Office Action Response Due",
+            "complete_codes": ["A...", "AMSB", "RCEX"],
+            "nar_codes": ["NOA", "ABN"],
+        },
+        {
+            "code": "CTNF",
+            "variant_key": "non-final-office-action-with-rr-response",
+            "description": "Non Final OA with RR Response Due",
+            "complete_codes": ["A.AF", "AMSB"],
+            "nar_codes": ["EXPR.ABN", "ABN"],
+        },
+        {
+            "code": "NOA",
+            "variant_key": "",
+            "description": "Notice of Allowance",
+            "complete_codes": ["ISSUE.NTF", "RCE"],
+            "nar_codes": ["ABN"],
+        },
+    ]
+    grouped, skipped = _merge_close_conditions(raw)
+    assert skipped == 0
+    # CTNF: union of both variants, dedup, insertion order preserved.
+    assert grouped["CTNF"]["complete"] == ["A...", "AMSB", "RCEX", "A.AF"]
+    assert grouped["CTNF"]["nar"] == ["NOA", "ABN", "EXPR.ABN"]
+    # First non-empty description sticks (later variants don't overwrite).
+    assert grouped["CTNF"]["description"] == "Non Final Office Action Response Due"
+    # Single-variant code passes through unchanged.
+    assert grouped["NOA"]["complete"] == ["ISSUE.NTF", "RCE"]
+    assert grouped["NOA"]["nar"] == ["ABN"]
+
+
+def test_merge_close_conditions_skips_blank_codes() -> None:
+    raw = [
+        {"code": "", "complete_codes": ["FOO"], "nar_codes": ["BAR"]},
+        {"code": "  ", "complete_codes": ["FOO"], "nar_codes": ["BAR"]},
+        {"code": "NOA", "complete_codes": ["ISSUE.NTF"], "nar_codes": ["ABN"]},
+    ]
+    grouped, skipped = _merge_close_conditions(raw)
+    assert skipped == 2
+    assert set(grouped) == {"NOA"}
+
+
+def test_merge_close_conditions_covers_ctfr_amsb_path() -> None:
+    """Regression: the bundled seed must surface ``AMSB`` as a CTFR
+    completer once merged. This is the exact scenario the original bug
+    report was about (CTFR deadline staying overdue after an after-final
+    AMSB was filed)."""
+    grouped, _skipped = _merge_close_conditions(load_docket_close_seed())
+    assert "CTFR" in grouped
+    assert "AMSB" in grouped["CTFR"]["complete"], grouped["CTFR"]
+    assert "RCE" in grouped["CTFR"]["complete"] or "RCEX" in grouped["CTFR"]["complete"]
+    # And NAR side stays sane.
+    assert "ABN" in grouped["CTFR"]["nar"]
 
 
 def test_seed_rows_have_required_shape() -> None:

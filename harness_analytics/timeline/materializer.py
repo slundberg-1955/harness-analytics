@@ -888,7 +888,9 @@ def _id_for_rule_code(code: str, tenant_id: str):
             IfwRuleRow.active.is_(True),
         )
         .order_by(
-            (IfwRuleRow.tenant_id == "global").asc()
+            (IfwRuleRow.tenant_id == "global").asc(),
+            (IfwRuleRow.kind == "auto_close_only").asc(),  # canonical first
+            IfwRuleRow.id.asc(),
         )
         .limit(1)
     ).scalar_subquery()

@@ -12,6 +12,7 @@ Two responsibilities:
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -23,6 +24,8 @@ from sqlalchemy.orm import Session
 from harness_analytics.models import IfwRule as IfwRuleRow
 from harness_analytics.models import SupersessionMap as SupersessionMapRow
 from harness_analytics.timeline.calculator import IfwRule
+
+logger = logging.getLogger(__name__)
 
 _RULES_JSON = Path(__file__).resolve().parent / "data" / "ifw-rules.json"
 _SUPERSESSION_SEED_JSON = (
@@ -304,56 +307,143 @@ def load_docket_close_seed() -> list[dict]:
 DOCKET_CLOSE_ONLY_KIND = "auto_close_only"
 
 
+def _merge_close_conditions(
+    raw_rows: list[dict],
+) -> tuple[dict[str, dict], int]:
+    """Collapse the ``(code, variant_key)``-keyed seed JSON into a
+    ``{code: {complete, nar, description}}`` dict by union-merging close
+    arrays across all variants of the same triggering code.
+
+    Returns ``(grouped, skipped)`` where ``skipped`` counts blank-code rows
+    (which the caller logs).
+
+    Pure function -- no DB, no I/O. Exposed for unit testing.
+    """
+    grouped: dict[str, dict] = {}
+    skipped = 0
+    for raw in raw_rows:
+        code = (raw.get("code") or "").strip()
+        if not code:
+            skipped += 1
+            continue
+        bucket = grouped.setdefault(
+            code,
+            {"complete": [], "nar": [], "description": code},
+        )
+        for c in raw.get("complete_codes") or []:
+            if c not in bucket["complete"]:
+                bucket["complete"].append(c)
+        for n in raw.get("nar_codes") or []:
+            if n not in bucket["nar"]:
+                bucket["nar"].append(n)
+        if bucket["description"] == code:
+            desc = (raw.get("description") or "").strip()
+            if desc:
+                bucket["description"] = desc
+    return grouped, skipped
+
+
 def seed_close_conditions(
     db: Session, tenant_id: str = "global"
 ) -> dict[str, int]:
-    """Upsert every entry from ``docket_close_conditions.json`` into ``ifw_rules``.
+    """Patch close-condition arrays from ``docket_close_conditions.json`` onto
+    the canonical IFW rule rows.
 
-    For each ``(code, variant_key)``:
+    The seed JSON is grouped by ``(code, variant_key)`` for documentation
+    purposes, but the materializer's :func:`_id_for_rule_code` keys deadlines
+    off ``code`` only -- so for each ``code`` we collapse the variants by
+    taking the **union** of every variant's ``complete_codes`` and
+    ``nar_codes`` and writing that onto the single canonical rule row matched
+    by ``(tenant_id, code)``.
 
-    * If a row exists, update only the close-condition arrays + description.
-      We intentionally do **not** overwrite ``kind`` / months / extendable so
-      that hand-tuned production rules aren't reset on every boot.
-    * If no row exists, insert a minimal one carrying the close arrays under
-      ``kind=DOCKET_CLOSE_ONLY_KIND``. The calculator treats unknown kinds as
-      "no deadline computed", so these rows participate in the auto-close
-      pass without polluting the inbox.
+    Behaviour:
 
-    Rows whose triggering code is blank are skipped with a warning (out of v1
-    scope). Returns ``{inserted, updated, skipped}``.
+    * If a calculator-backed rule row exists (the usual case -- seeded
+      first by :func:`seed_global_rules` from ``ifw-rules.json``), patch
+      its ``close_complete_codes`` / ``close_nar_codes`` columns and leave
+      every other field (kind, months, extendable, hand-tuned overrides)
+      alone.
+    * If only an ``auto_close_only`` sentinel row exists for the code,
+      patch its arrays in place.
+    * If no row exists at all, insert a minimal ``auto_close_only`` row
+      with ``variant_key=""`` carrying the merged arrays. The calculator
+      treats unknown kinds as "no deadline computed" so this still feeds
+      the auto-close pass without polluting the inbox.
+    * Legacy orphan ``auto_close_only`` rows (created by the previous
+      seed-by-variant_key implementation that mismatched the canonical
+      ``variant_key=""`` row) are deactivated whenever a canonical
+      sibling is found, so :func:`_id_for_rule_code` no longer
+      nondeterministically picks them.
 
-    Idempotent — safe to call on every container start.
+    Returns ``{inserted, updated, skipped, deactivated, codes}``.
+
+    Idempotent -- safe to call on every container start.
     """
     inserted = 0
     updated = 0
-    skipped = 0
-    for raw in load_docket_close_seed():
-        code = (raw.get("code") or "").strip()
-        variant_key = (raw.get("variant_key") or "").strip()
-        if not code:
-            logger.warning(
-                "seed_close_conditions: blank triggering code for %r — skipping",
-                raw.get("description") or "(no description)",
-            )
-            skipped += 1
-            continue
-        complete = list(raw.get("complete_codes") or [])
-        nar = list(raw.get("nar_codes") or [])
-        description = (raw.get("description") or code).strip()
-        existing = db.scalar(
-            select(IfwRuleRow).where(
+    deactivated = 0
+
+    raw_rows = list(load_docket_close_seed())
+    grouped, skipped = _merge_close_conditions(raw_rows)
+    if skipped:
+        # Re-walk for the warning side-effect (helper is pure).
+        for raw in raw_rows:
+            if not (raw.get("code") or "").strip():
+                logger.warning(
+                    "seed_close_conditions: blank triggering code for %r -- skipping",
+                    raw.get("description") or "(no description)",
+                )
+
+    now = datetime.now(timezone.utc)
+    for code, bucket in grouped.items():
+        complete = list(bucket["complete"])
+        nar = list(bucket["nar"])
+
+        # Prefer the calculator-backed row; fall back to an existing
+        # auto_close_only sentinel; failing that, insert a fresh sentinel.
+        canonical = db.scalar(
+            select(IfwRuleRow)
+            .where(
                 IfwRuleRow.tenant_id == tenant_id,
                 IfwRuleRow.code == code,
-                IfwRuleRow.variant_key == variant_key,
+                IfwRuleRow.kind != DOCKET_CLOSE_ONLY_KIND,
             )
+            .order_by(IfwRuleRow.id.asc())
         )
-        if existing is None:
+        if canonical is not None:
+            target = canonical
+            # Deactivate orphan auto_close_only rows for the same code so
+            # _id_for_rule_code's filter on active=True excludes them.
+            orphans = db.scalars(
+                select(IfwRuleRow).where(
+                    IfwRuleRow.tenant_id == tenant_id,
+                    IfwRuleRow.code == code,
+                    IfwRuleRow.kind == DOCKET_CLOSE_ONLY_KIND,
+                    IfwRuleRow.active.is_(True),
+                )
+            ).all()
+            for orphan in orphans:
+                orphan.active = False
+                orphan.updated_at = now
+                deactivated += 1
+        else:
+            target = db.scalar(
+                select(IfwRuleRow)
+                .where(
+                    IfwRuleRow.tenant_id == tenant_id,
+                    IfwRuleRow.code == code,
+                    IfwRuleRow.kind == DOCKET_CLOSE_ONLY_KIND,
+                )
+                .order_by(IfwRuleRow.id.asc())
+            )
+
+        if target is None:
             db.add(
                 IfwRuleRow(
                     tenant_id=tenant_id,
                     code=code,
-                    variant_key=variant_key,
-                    description=description,
+                    variant_key="",
+                    description=str(bucket["description"]),
                     kind=DOCKET_CLOSE_ONLY_KIND,
                     trigger_label="Docket cross-off rule",
                     authority="harness-internal",
@@ -363,12 +453,17 @@ def seed_close_conditions(
             )
             inserted += 1
         else:
-            existing.close_complete_codes = complete
-            existing.close_nar_codes = nar
-            if description and existing.description != description:
-                existing.description = description
-            existing.updated_at = datetime.now(timezone.utc)
+            target.close_complete_codes = complete
+            target.close_nar_codes = nar
+            target.updated_at = now
             updated += 1
-    if inserted or updated:
+
+    if inserted or updated or deactivated:
         db.commit()
-    return {"inserted": inserted, "updated": updated, "skipped": skipped}
+    return {
+        "inserted": inserted,
+        "updated": updated,
+        "skipped": skipped,
+        "deactivated": deactivated,
+        "codes": len(grouped),
+    }
