@@ -225,3 +225,33 @@ def test_primary_row_picks_first_actionable() -> None:
     # First non-info row is the 1-mo EOT (warn).
     assert pr is not None
     assert pr.label == "1-mo EOT"
+
+
+# ---------------------------------------------------------------------------
+# rows_json persistence shape (regression: empty Step rows in deadline drawer)
+# ---------------------------------------------------------------------------
+
+
+def test_serialize_result_returns_bare_list_of_row_dicts() -> None:
+    """``_serialize_result`` must return a bare list of row dicts so the
+    column matches its ``Mapped[list]`` annotation and the API consumer
+    (``timeline_api._deadline_to_dict``: ``"rows": list(cd.rows_json or [])``)
+    iterates real rows -- not the keys of a wrapper dict.
+
+    Pre-fix this returned ``{"rows": [...], "ids_phases": [...], "warnings":
+    [...]}`` and the deadline drawer rendered three blank "rows" (one per
+    dict key) for every standard_oa deadline."""
+    from harness_analytics.timeline.materializer import _serialize_result
+
+    rule = _rule(code="CTFR", kind="standard_oa", ssp_months=3, max_months=6, extendable=True)
+    res = compute_deadlines(rule, date(2025, 3, 19), ComputeOptions(roll_weekends=False))
+    out = _serialize_result(res)
+
+    assert isinstance(out, list)
+    assert all(isinstance(r, dict) for r in out)
+    labels = [r["label"] for r in out]
+    assert labels[0] == "SSP"
+    assert labels[-1] == "Statutory bar"
+    # Every row must carry the three fields the frontend renders.
+    for r in out:
+        assert {"label", "date", "fee_usd"}.issubset(r)

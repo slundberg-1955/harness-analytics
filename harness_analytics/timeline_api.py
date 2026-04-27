@@ -127,6 +127,27 @@ def _rule_for(db: Session, rule_id: int) -> Optional[IfwRule]:
     return db.get(IfwRule, rule_id)
 
 
+def _unwrap_rows_json(value: Any) -> list[dict[str, Any]]:
+    """Return the row list from ``computed_deadlines.rows_json`` regardless
+    of historical wrapping shape.
+
+    The materializer used to persist
+    ``{"rows": [...], "ids_phases": [...], "warnings": [...]}`` here, which
+    caused the deadline drawer to render three blank ``Step`` rows (the
+    dict keys, with no label/date/fee). It now persists a bare list. This
+    helper accepts either shape so already-stored prod data renders
+    correctly before its next recompute.
+    """
+    if not value:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        rows = value.get("rows")
+        return list(rows) if isinstance(rows, list) else []
+    return []
+
+
 def _serialize_deadline(
     db: Session,
     cd: ComputedDeadline,
@@ -221,7 +242,7 @@ def _serialize_deadline(
         "assigned_user": assigned,
         "snoozed_until": _iso(cd.snoozed_until),
         "notes": cd.notes,
-        "rows": list(cd.rows_json or []),
+        "rows": _unwrap_rows_json(cd.rows_json),
         "ids_phases": list(cd.ids_phases_json or []) if cd.ids_phases_json else None,
         "warnings": list(cd.warnings or []),
         "authority": rule.authority if rule else None,

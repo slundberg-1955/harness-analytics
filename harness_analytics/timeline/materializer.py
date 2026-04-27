@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Iterable, Optional
 
@@ -150,12 +150,24 @@ def _row_to_json(row) -> dict:
     }
 
 
-def _serialize_result(result: DeadlineResult) -> dict:
-    return {
-        "rows": [_row_to_json(r) for r in result.rows],
-        "ids_phases": [asdict(p) for p in result.ids_phases],
-        "warnings": list(result.warnings),
-    }
+def _serialize_result(result: DeadlineResult) -> list[dict]:
+    """Serialize a calculator result's rows for persistence in
+    ``computed_deadlines.rows_json``.
+
+    Returns the bare list of row dicts: that's what the column type
+    (``Mapped[list]``) and the API consumer expect (see
+    ``timeline_api._deadline_to_dict``: ``"rows": list(cd.rows_json or [])``).
+
+    A previous revision wrapped this list inside
+    ``{"rows": [...], "ids_phases": [...], "warnings": [...]}``; the API
+    then iterated the dict's keys and emitted three string "rows" with no
+    label / date / fee, which is what produced the empty Step / "--" / "--"
+    rows in the deadline drawer for every standard_oa deadline.
+    ``ids_phases`` and ``warnings`` already have their own dedicated
+    columns (``ids_phases_json``, ``warnings``), so dropping them from
+    this payload loses no data.
+    """
+    return [_row_to_json(r) for r in result.rows]
 
 
 def _record_unmapped(db: Session, code: str, tenant_id: str) -> None:

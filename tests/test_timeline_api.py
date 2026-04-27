@@ -470,3 +470,45 @@ def test_inbox_default_category_is_prosecution(monkeypatch: pytest.MonkeyPatch) 
     r = client.get("/portal/api/actions/inbox", auth=("viewer", "test-pw"))
     assert r.status_code == 200
     assert r.json()["filters_applied"]["category"] == "prosecution"
+
+
+def test_unwrap_rows_json_returns_bare_list() -> None:
+    """New shape: rows_json is a bare list of row dicts."""
+    from harness_analytics.timeline_api import _unwrap_rows_json
+
+    rows = [
+        {"label": "SSP", "date": "2026-01-01", "fee_usd": 0},
+        {"label": "1-mo EOT", "date": "2026-02-01", "fee_usd": 220},
+    ]
+    assert _unwrap_rows_json(rows) == rows
+
+
+def test_unwrap_rows_json_unwraps_legacy_dict_shape() -> None:
+    """Legacy shape: ``{"rows": [...], "ids_phases": [...], "warnings": [...]}``.
+    Pre-fix the API iterated dict keys, producing three blank "rows" in the
+    deadline drawer for every standard_oa deadline. This regression test
+    pins the unwrap so existing prod data keeps rendering correctly until
+    next recompute."""
+    from harness_analytics.timeline_api import _unwrap_rows_json
+
+    legacy = {
+        "rows": [
+            {"label": "SSP", "date": "2026-01-01", "fee_usd": 0},
+            {"label": "Statutory bar", "date": "2026-04-01", "fee_usd": 880},
+        ],
+        "ids_phases": [],
+        "warnings": [],
+    }
+    assert _unwrap_rows_json(legacy) == legacy["rows"]
+
+
+def test_unwrap_rows_json_handles_none_and_empty() -> None:
+    from harness_analytics.timeline_api import _unwrap_rows_json
+
+    assert _unwrap_rows_json(None) == []
+    assert _unwrap_rows_json([]) == []
+    assert _unwrap_rows_json({}) == []
+    assert _unwrap_rows_json({"rows": None}) == []
+    # Anything else (str, int, etc.) is treated as no rows rather than
+    # crashing the deadline drawer.
+    assert _unwrap_rows_json("rows") == []
