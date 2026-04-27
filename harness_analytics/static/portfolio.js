@@ -420,12 +420,9 @@
     violet: "var(--violet-600)",
     slate: "var(--slate-400)",
   };
-  // Tiered expansion for the Status Mix list:
-  //   tier 0 -> always visible (top STATUS_MIX_BASE rows)
-  //   tier 1 -> revealed by "Show N more" (next STATUS_MIX_STEP rows)
-  //   tier 2 -> revealed by "Show all"   (everything beyond that)
+  // Status Mix list: show top STATUS_MIX_BASE rows; the rest collapse behind
+  // a single expand toggle.
   const STATUS_MIX_BASE = 10;
-  const STATUS_MIX_STEP = 10;
   function renderDonut() {
     const totalEl = document.getElementById("status-mix-total");
     const legend = document.getElementById("donut-legend");
@@ -439,41 +436,22 @@
       return;
     }
 
-    const rowHtml = (entry, tier) => {
+    const rowHtml = (entry, hidden) => {
       const color = TONE_COLORS[entry.tone] || "var(--slate-400)";
       const pct = Math.round((entry.count / total) * 100);
-      const hidden = tier > 0;
       return `
-        <div class="status-row${hidden ? " status-row-extra" : ""}"${hidden ? " hidden" : ""} data-tier="${tier}" data-status="${entry.code != null ? entry.code : ""}" title="Filter table to: ${escapeAttr(entry.label)}">
+        <div class="status-row${hidden ? " status-row-extra" : ""}"${hidden ? " hidden" : ""} data-status="${entry.code != null ? entry.code : ""}" title="Filter table to: ${escapeAttr(entry.label)}">
           <span class="status-row-left"><span class="dot" style="background:${color}"></span>${escapeHtml(entry.label)}</span>
           <span class="status-row-count">${entry.count.toLocaleString()}</span>
           <span class="status-row-pct">${pct}%</span>
         </div>`;
     };
 
-    const tier1End = STATUS_MIX_BASE + STATUS_MIX_STEP;
-    const rowsHtml = mix.map((entry, idx) => {
-      const tier = idx < STATUS_MIX_BASE ? 0 : idx < tier1End ? 1 : 2;
-      return rowHtml(entry, tier);
-    });
-    const stepCount = Math.min(STATUS_MIX_STEP, Math.max(0, mix.length - STATUS_MIX_BASE));
-    const restCount = Math.max(0, mix.length - tier1End);
-    const totalHidden = stepCount + restCount;
+    const rowsHtml = mix.map((entry, idx) => rowHtml(entry, idx >= STATUS_MIX_BASE));
+    const hiddenCount = Math.max(0, mix.length - STATUS_MIX_BASE);
 
-    const toggleParts = [];
-    if (totalHidden > 0) {
-      // "Show N more" only appears when there's a meaningful step short of all.
-      if (stepCount > 0 && restCount > 0) {
-        toggleParts.push(
-          `<button type="button" class="status-toggle" data-action="step" aria-expanded="false">Show ${stepCount} more <span class="status-toggle-caret" aria-hidden="true">▾</span></button>`
-        );
-      }
-      toggleParts.push(
-        `<button type="button" class="status-toggle" data-action="all" aria-expanded="false">Show all (${mix.length}) <span class="status-toggle-caret" aria-hidden="true">▾</span></button>`
-      );
-    }
-    const toggleHtml = toggleParts.length
-      ? `<div class="status-toggle-row">${toggleParts.join("")}</div>`
+    const toggleHtml = hiddenCount > 0
+      ? `<div class="status-toggle-row"><button type="button" class="status-toggle" aria-expanded="false">Show ${hiddenCount} more <span class="status-toggle-caret" aria-hidden="true">▾</span></button></div>`
       : "";
 
     legend.innerHTML = rowsHtml.join("") + toggleHtml;
@@ -488,49 +466,21 @@
       });
     });
 
-    let level = 0;
-    const applyLevel = () => {
-      legend.querySelectorAll(".status-row-extra").forEach((row) => {
-        const tier = parseInt(row.getAttribute("data-tier") || "0", 10);
-        row.hidden = tier > level;
-      });
-      legend.querySelectorAll(".status-toggle").forEach((btn) => {
-        const action = btn.getAttribute("data-action");
-        const collapse = level > 0 && (
-          (action === "step" && level >= 1) ||
-          (action === "all"  && level >= 2)
-        );
-        if (collapse) {
-          btn.setAttribute("data-collapse", "true");
-          btn.setAttribute("aria-expanded", "true");
-          btn.innerHTML = `Show fewer <span class="status-toggle-caret" aria-hidden="true">▴</span>`;
-        } else {
-          btn.setAttribute("data-collapse", "false");
-          btn.setAttribute("aria-expanded", "false");
-          if (action === "step") {
-            btn.innerHTML = `Show ${stepCount} more <span class="status-toggle-caret" aria-hidden="true">▾</span>`;
-          } else {
-            btn.innerHTML = `Show all (${mix.length}) <span class="status-toggle-caret" aria-hidden="true">▾</span>`;
-          }
-        }
-      });
-    };
-
-    legend.querySelectorAll(".status-toggle").forEach((btn) => {
-      btn.addEventListener("click", (ev) => {
+    const toggleBtn = legend.querySelector(".status-toggle");
+    if (toggleBtn) {
+      toggleBtn.addEventListener("click", (ev) => {
         ev.stopPropagation();
-        const action = btn.getAttribute("data-action");
-        const collapsing = btn.getAttribute("data-collapse") === "true";
-        if (collapsing) {
-          level = 0;
-        } else if (action === "step") {
-          level = Math.max(level, 1);
-        } else {
-          level = 2;
-        }
-        applyLevel();
+        const expanded = toggleBtn.getAttribute("aria-expanded") === "true";
+        const next = !expanded;
+        legend.querySelectorAll(".status-row-extra").forEach((row) => {
+          row.hidden = !next;
+        });
+        toggleBtn.setAttribute("aria-expanded", next ? "true" : "false");
+        toggleBtn.innerHTML = next
+          ? `Show fewer <span class="status-toggle-caret" aria-hidden="true">▴</span>`
+          : `Show ${hiddenCount} more <span class="status-toggle-caret" aria-hidden="true">▾</span>`;
       });
-    });
+    }
   }
 
   // ---------------------------------------------------------------------
