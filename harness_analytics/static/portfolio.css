@@ -277,6 +277,11 @@ a { color: inherit; }
 }
 .status-row:last-child { border-bottom: none; }
 .status-row:hover { background: var(--slate-50, #f8fafc); }
+/* Author rule above sets display: grid, which beats the UA stylesheet's
+ * [hidden] { display: none } at equal (0,1,0) specificity and would leave
+ * collapsed rows visible. Re-hide them at (0,2,0). Mirror on the toggle row. */
+.status-row[hidden],
+.status-toggle-row[hidden] { display: none; }
 .status-row-left {
   display: flex;
   align-items: center;
