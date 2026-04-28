@@ -421,8 +421,8 @@
     slate: "var(--slate-400)",
   };
   // Status Mix list: show top STATUS_MIX_BASE rows; the rest collapse behind
-  // a single expand toggle.
-  const STATUS_MIX_BASE = 10;
+  // a single expand toggle ("Show N more" / "Show fewer").
+  const STATUS_MIX_BASE = 20;
   function renderDonut() {
     const totalEl = document.getElementById("status-mix-total");
     const legend = document.getElementById("donut-legend");
