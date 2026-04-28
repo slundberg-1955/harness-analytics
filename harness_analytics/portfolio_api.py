@@ -23,9 +23,14 @@ from sqlalchemy.orm import Session
 
 from harness_analytics import app_settings
 from harness_analytics.db import get_db
+from harness_analytics.ctnf_outcome import (
+    RESPONSE_EVENT_TYPES,
+    extract_outcomes_from_grouped_events,
+)
 from harness_analytics.portfolio_aggregates import (
     STATUS_PILL,
     compute_charts,
+    compute_ctnf_response_speed_to_noa,
     compute_kpis,
     status_label,
     status_tone,
@@ -106,7 +111,15 @@ _ROW_COLUMNS: list[str] = [
     "next_deadline_severity",
     "open_deadline_count",
     "overdue_deadline_count",
+    # Server-side only. Used to scope CTNF outcome / similar follow-up
+    # queries to the same row set the page-level aggregates run on.
+    # Intentionally not surfaced in _row_to_json.
+    "application_id",
 ]
+
+# Server-side-only columns inside _ROW_COLUMNS that are useful for follow-up
+# joins (CTNF outcomes, etc.) but should NOT appear in the CSV export.
+_CSV_HIDDEN_COLUMNS: frozenset[str] = frozenset({"application_id"})
 
 _DEFAULT_PAGE_SIZE = 50
 _MAX_PAGE_SIZE = 200
@@ -381,6 +394,99 @@ def _iso(v: Any) -> Optional[str]:
     return str(v)
 
 
+# IFW document codes whose mail dates participate in the CTNF outcome
+# ladder. Kept narrow on purpose: NOA = success terminator; CTNF/CTFR =
+# rejection terminator. Anything else (interview summaries, A.NE, etc.)
+# is intentionally ignored so the chart represents pure
+# response-then-examiner-verdict cycles.
+_CTNF_LADDER_DOC_CODES: tuple[str, ...] = ("CTNF", "CTFR", "NOA")
+
+
+def _fetch_ctnf_outcome_events(
+    db: Session, application_ids: list[int]
+) -> list[dict[str, Any]]:
+    """Build the CTNF response-speed event list for the given app IDs.
+
+    One round-trip per signal type (CTNF/CTFR/NOA mail dates from
+    file_wrapper_documents, plus response events from prosecution_events).
+    Empty input -> empty output, no DB call.
+
+    The returned events are camelCase JSON-shaped so they can be passed
+    straight to ``portfolio_aggregates.compute_ctnf_response_speed_to_noa``
+    or surfaced to clients verbatim. Each event corresponds to one CTNF
+    on one application that produced a usable outcome (see
+    ``ctnf_outcome.extract_outcomes_for_application``).
+    """
+    if not application_ids:
+        return []
+
+    grouped: dict[int, dict[str, list[Any]]] = {
+        aid: {"ctnf": [], "ctfr": [], "noa": [], "response": []}
+        for aid in application_ids
+    }
+
+    # IFW mail dates. Collapsed into a single query keyed by document_code
+    # IN (...) so we make one network round-trip instead of three. The
+    # ladder code list is a small fixed constant so it's safe to inline.
+    code_list = ", ".join(f"'{c}'" for c in _CTNF_LADDER_DOC_CODES)
+    ifw_rows = db.execute(
+        text(
+            "SELECT application_id, document_code, mail_room_date "
+            "FROM file_wrapper_documents "
+            "WHERE application_id = ANY(:ids) "
+            f"AND UPPER(document_code) IN ({code_list}) "
+            "AND mail_room_date IS NOT NULL"
+        ),
+        {"ids": application_ids},
+    ).fetchall()
+    for app_id, code, mrd in ifw_rows:
+        bucket = grouped.get(app_id)
+        if bucket is None:
+            continue
+        key = (code or "").strip().upper()
+        if key == "CTNF":
+            bucket["ctnf"].append(mrd)
+        elif key == "CTFR":
+            bucket["ctfr"].append(mrd)
+        elif key == "NOA":
+            bucket["noa"].append(mrd)
+
+    # Prosecution responses (RESPONSE_NONFINAL / RESPONSE_FINAL / RCE).
+    type_list = ", ".join(f"'{t}'" for t in sorted(RESPONSE_EVENT_TYPES))
+    resp_rows = db.execute(
+        text(
+            "SELECT application_id, transaction_date "
+            "FROM prosecution_events "
+            "WHERE application_id = ANY(:ids) "
+            f"AND event_type IN ({type_list})"
+        ),
+        {"ids": application_ids},
+    ).fetchall()
+    for app_id, td in resp_rows:
+        bucket = grouped.get(app_id)
+        if bucket is None:
+            continue
+        bucket["response"].append(td)
+
+    outcomes = extract_outcomes_from_grouped_events(grouped)
+    return [
+        {
+            "applicationId": o.application_id,
+            "ctnfDate": o.ctnf_date.isoformat(),
+            "responseDate": o.response_date.isoformat(),
+            "daysToResponse": o.days_to_response,
+            "outcome": o.outcome,
+            "nextActionDate": (
+                o.next_action_date.isoformat()
+                if o.next_action_date is not None
+                else None
+            ),
+            "daysResponseToNext": o.days_response_to_next,
+        }
+        for o in outcomes
+    ]
+
+
 def _fetch_rows(
     db: Session, params: dict[str, Any], cap: int | None = None
 ) -> list[dict[str, Any]]:
@@ -481,6 +587,18 @@ def portfolio(
     end = start + pageSize
     page_rows = all_rows[start:end]
 
+    charts = compute_charts(all_rows)
+    # CTNF response-speed -> outcome chart. Lives outside compute_charts()
+    # because it needs an extra DB round-trip (file_wrapper_documents +
+    # prosecution_events), and compute_charts is intentionally pure.
+    ctnf_app_ids = [
+        r["application_id"]
+        for r in all_rows
+        if r.get("application_id") is not None
+    ]
+    ctnf_events = _fetch_ctnf_outcome_events(db, ctnf_app_ids)
+    charts["ctnfResponseSpeed"] = compute_ctnf_response_speed_to_noa(ctnf_events)
+
     return JSONResponse(
         {
             "rows": [_row_to_json(r) for r in page_rows],
@@ -490,7 +608,7 @@ def portfolio(
             "aggregateRowCap": cap if cap and cap > 0 else None,
             "capped": capped,
             "kpis": compute_kpis(all_rows),
-            "charts": compute_charts(all_rows),
+            "charts": charts,
             "statusPill": {str(k): v for k, v in STATUS_PILL.items()},
         }
     )
@@ -522,15 +640,17 @@ def portfolio_csv(
     )
     rows = _fetch_rows(db, params)
 
+    csv_columns = [c for c in _ROW_COLUMNS if c not in _CSV_HIDDEN_COLUMNS]
+
     def iter_csv() -> Iterable[bytes]:
         buf = io.StringIO()
         writer = csv.writer(buf)
-        writer.writerow(_ROW_COLUMNS)
+        writer.writerow(csv_columns)
         yield buf.getvalue().encode("utf-8")
         buf.seek(0)
         buf.truncate(0)
         for row in rows:
-            writer.writerow([_iso(row.get(col)) if col in {"filing_date", "issue_date", "first_noa_date", "updated_at"} else row.get(col) for col in _ROW_COLUMNS])
+            writer.writerow([_iso(row.get(col)) if col in {"filing_date", "issue_date", "first_noa_date", "updated_at"} else row.get(col) for col in csv_columns])
             yield buf.getvalue().encode("utf-8")
             buf.seek(0)
             buf.truncate(0)

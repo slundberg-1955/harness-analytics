@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from harness_analytics.portfolio_aggregates import (
+    CTNF_RESPONSE_BUCKETS,
     STATUS_PILL,
     compute_charts,
+    compute_ctnf_response_speed_to_noa,
     compute_kpis,
     compute_status_mix,
     status_label,
@@ -247,3 +249,134 @@ def test_prosecution_signals_noa_within_90_pct() -> None:
     # Only interviewed rows factor into the pct; 1 of 2 = 50%.
     assert signals["noaWithin90DaysOfInterviewPct"] == 50.0
     assert signals["continuationTotal"] == 3
+
+
+# ---------------------------------------------------------------------------
+# CTNF response-speed -> outcome chart
+# ---------------------------------------------------------------------------
+
+
+def _ev(days: int, outcome: str, *, response_to_next: int | None = None) -> dict:
+    return {
+        "daysToResponse": days,
+        "outcome": outcome,
+        "daysResponseToNext": response_to_next,
+    }
+
+
+def test_ctnf_chart_empty_input_returns_zeroed_skeleton() -> None:
+    out = compute_ctnf_response_speed_to_noa([])
+    assert out["totalEvents"] == 0
+    assert out["overallAllowedPct"] == 0.0
+    assert out["medianDaysToResponse"] is None
+    # Always all 6 buckets present so the chart axis is stable.
+    assert len(out["buckets"]) == len(CTNF_RESPONSE_BUCKETS)
+    for b in out["buckets"]:
+        assert b["responses"] == 0
+        assert b["allowed"] == 0
+        assert b["rejected"] == 0
+        assert b["pending"] == 0
+        assert b["allowedPct"] == 0.0
+        assert b["medianDaysResponseToNoa"] is None
+
+
+def test_ctnf_chart_buckets_by_days_to_response() -> None:
+    events = [
+        _ev(10, "allowed", response_to_next=40),    # 0-30
+        _ev(30, "allowed", response_to_next=20),    # 0-30 (boundary)
+        _ev(31, "rejected"),                        # 31-60 (boundary)
+        _ev(60, "allowed", response_to_next=15),    # 31-60
+        _ev(61, "rejected"),                        # 61-90
+        _ev(90, "allowed", response_to_next=10),    # 61-90 (boundary)
+        _ev(91, "pending"),                         # 91-120
+        _ev(150, "rejected"),                       # 121-180
+        _ev(200, "allowed", response_to_next=30),   # 181+
+    ]
+    out = compute_ctnf_response_speed_to_noa(events)
+    by_label = {b["label"]: b for b in out["buckets"]}
+    assert by_label["0\u201330d"]["responses"] == 2
+    assert by_label["0\u201330d"]["allowed"] == 2
+    assert by_label["0\u201330d"]["allowedPct"] == 100.0
+
+    assert by_label["31\u201360d"]["responses"] == 2
+    assert by_label["31\u201360d"]["allowed"] == 1
+    assert by_label["31\u201360d"]["rejected"] == 1
+    assert by_label["31\u201360d"]["allowedPct"] == 50.0
+
+    # Pending events are counted but excluded from the rate denominator.
+    assert by_label["91\u2013120d"]["responses"] == 1
+    assert by_label["91\u2013120d"]["pending"] == 1
+    assert by_label["91\u2013120d"]["allowedPct"] == 0.0
+
+    assert by_label["181d+"]["responses"] == 1
+    assert by_label["181d+"]["allowed"] == 1
+    assert by_label["181d+"]["allowedPct"] == 100.0
+
+    # Top-level rollups: 5 allowed, 3 rejected, 1 pending = 9 events.
+    assert out["totalAllowed"] == 5
+    assert out["totalRejected"] == 3
+    assert out["totalPending"] == 1
+    assert out["totalEvents"] == 9
+    # Overall allowance rate excludes the pending event: 5 / (5+3) = 62.5%.
+    assert out["overallAllowedPct"] == round(100.0 * 5 / 8, 1)
+
+
+def test_ctnf_chart_median_response_to_noa_per_bucket() -> None:
+    events = [
+        _ev(10, "allowed", response_to_next=10),
+        _ev(20, "allowed", response_to_next=30),
+        _ev(25, "allowed", response_to_next=50),
+        _ev(15, "rejected"),
+    ]
+    out = compute_ctnf_response_speed_to_noa(events)
+    by_label = {b["label"]: b for b in out["buckets"]}
+    # Median of [10, 30, 50] = 30.
+    assert by_label["0\u201330d"]["medianDaysResponseToNoa"] == 30
+
+
+def test_ctnf_chart_pending_only_keeps_zero_allowance_rate() -> None:
+    """A bucket whose only entries are pending should not display an
+    artificial 0% allowance rate ratio without context. The numeric field
+    stays 0.0 (UI renders "—" when allowed+rejected == 0)."""
+    events = [_ev(10, "pending"), _ev(20, "pending")]
+    out = compute_ctnf_response_speed_to_noa(events)
+    by_label = {b["label"]: b for b in out["buckets"]}
+    assert by_label["0\u201330d"]["pending"] == 2
+    assert by_label["0\u201330d"]["allowed"] == 0
+    assert by_label["0\u201330d"]["rejected"] == 0
+    assert by_label["0\u201330d"]["allowedPct"] == 0.0
+    assert out["overallAllowedPct"] == 0.0
+    assert out["totalEvents"] == 2
+
+
+def test_ctnf_chart_drops_negative_days_defensively() -> None:
+    """Bad ingest data shouldn't crash the chart -- skip silently."""
+    events = [_ev(-5, "allowed", response_to_next=10), _ev(50, "allowed", response_to_next=20)]
+    out = compute_ctnf_response_speed_to_noa(events)
+    assert out["totalAllowed"] == 1
+    assert out["totalEvents"] == 1
+
+
+def test_ctnf_chart_skips_malformed_event_dicts() -> None:
+    """Missing daysToResponse field -> drop the row, keep aggregating the rest."""
+    events = [{"outcome": "allowed"}, _ev(10, "allowed", response_to_next=5)]
+    out = compute_ctnf_response_speed_to_noa(events)
+    assert out["totalAllowed"] == 1
+    assert out["totalEvents"] == 1
+
+
+def test_ctnf_chart_overall_pct_is_decided_only() -> None:
+    """Overall % must use allowed / (allowed + rejected) -- pending does NOT
+    dilute the rate. (Same convention as the per-bucket cells.)"""
+    events = [
+        _ev(10, "allowed", response_to_next=5),
+        _ev(20, "rejected"),
+        _ev(25, "pending"),
+        _ev(30, "pending"),
+    ]
+    out = compute_ctnf_response_speed_to_noa(events)
+    assert out["totalAllowed"] == 1
+    assert out["totalRejected"] == 1
+    assert out["totalPending"] == 2
+    # 1 / (1+1) = 50% -- pending excluded.
+    assert out["overallAllowedPct"] == 50.0

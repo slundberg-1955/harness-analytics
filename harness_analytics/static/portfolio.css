@@ -263,6 +263,79 @@ a { color: inherit; }
 .hist-row-count { text-align: right; color: var(--slate-700); font-weight: 600; }
 .hist-row-pct { text-align: right; color: var(--slate-500); }
 
+/* Second analytics row used by full-width charts (CTNF response speed). */
+.analytics-grid-wide { grid-template-columns: 1fr; }
+
+/* "?" help glyph in card head — neutral, click-to-show-tooltip on touch. */
+.card-help {
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: var(--slate-100, #f1f5f9);
+  color: var(--slate-500);
+  font-size: 10px; font-weight: 700;
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: help;
+  user-select: none;
+}
+.card-help:hover { background: var(--slate-200); color: var(--slate-700); }
+
+/* CTNF response-speed -> allowance chart. One row per bucket; the bar
+ * fills the share of CTNFs that landed in that bucket, with an emerald
+ * "allowed" segment stacked on a slate "rejected" segment so the
+ * fill-color literally encodes the allowance rate. */
+.ctnf-speed {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ctnf-row {
+  display: grid;
+  grid-template-columns: 80px 1fr 56px 56px;
+  align-items: center;
+  gap: 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--slate-600);
+  padding: 1px 0;
+}
+.ctnf-row-label { text-align: right; color: var(--slate-700); }
+.ctnf-row-bar-wrap {
+  height: 16px;
+  background: var(--slate-100, #f1f5f9);
+  border-radius: 4px;
+  overflow: hidden;
+  position: relative;
+  display: flex;
+}
+.ctnf-row-bar-allowed {
+  height: 100%;
+  background: linear-gradient(to right, var(--emerald-500, #10b981), var(--emerald-600, #059669));
+  transition: opacity 120ms ease;
+}
+.ctnf-row-bar-rejected {
+  height: 100%;
+  background: linear-gradient(to right, var(--slate-400, #94a3b8), var(--slate-500, #64748b));
+  transition: opacity 120ms ease;
+}
+.ctnf-row-bar-pending {
+  height: 100%;
+  background: repeating-linear-gradient(
+    45deg,
+    var(--slate-200, #e2e8f0),
+    var(--slate-200, #e2e8f0) 4px,
+    var(--slate-100, #f1f5f9) 4px,
+    var(--slate-100, #f1f5f9) 8px
+  );
+  transition: opacity 120ms ease;
+}
+.ctnf-row:hover .ctnf-row-bar-allowed,
+.ctnf-row:hover .ctnf-row-bar-rejected,
+.ctnf-row:hover .ctnf-row-bar-pending { opacity: 0.85; }
+.ctnf-row-rate { text-align: right; color: var(--emerald-700, #047857); font-weight: 600; }
+.ctnf-row-rate.muted { color: var(--slate-400); }
+.ctnf-row-count { text-align: right; color: var(--slate-700); font-weight: 600; }
+.ctnf-empty { color: var(--slate-500); font-size: 12px; padding: 12px 4px; }
+
 /* Status mix list (donut removed; click a row to filter the table) */
 .status-list { display: flex; flex-direction: column; }
 .status-row {

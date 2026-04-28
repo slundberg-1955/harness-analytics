@@ -113,6 +113,22 @@
         </div>
       </div>
 
+      <div class="analytics-grid analytics-grid-wide">
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <div class="card-title">Response Speed → Allowance (CTNF)</div>
+              <div class="card-sub" id="ctnf-speed-sub">PER NON-FINAL OFFICE ACTION</div>
+            </div>
+            <div class="card-help" title="For each non-final office action (CTNF), bucket by days from CTNF mail date to the applicant's first response, then show what the next examiner action was. Allowed = next mailed action was a Notice of Allowance. Rejected = next mailed action was another CTNF or a Final Rejection (CTFR). Pending CTNFs (no next examiner action yet) are excluded from the rate so an in-flight cohort doesn't drag it down.">?</div>
+          </div>
+          <div class="card-body">
+            <div class="ctnf-speed" id="ctnf-speed-chart" role="img" aria-label="Allowance rate by CTNF response speed"></div>
+            <div class="bars-legend" id="ctnf-speed-legend"></div>
+          </div>
+        </div>
+      </div>
+
       <div class="filter-bar" id="filter-bar">
         <span class="filter-bar-label">Filter</span>
         <div id="filter-chips" class="filter-chips-inline"></div>

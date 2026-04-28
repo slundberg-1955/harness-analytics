@@ -272,6 +272,7 @@
     renderBarsChart();
     renderDonut();
     renderSignals();
+    renderCtnfResponseSpeed();
     renderFilterChips();
     renderBody();
     renderFoot();
@@ -406,6 +407,93 @@
       ${noNoa ? `<span class="legend-dot"><span class="dot" style="background:var(--slate-200)"></span>${noNoa} apps without NOA</span>` : ""}
       ${medianText ? `<span class="legend-dot legend-stat">${medianText}</span>` : ""}
       ${meanText ? `<span class="legend-dot legend-stat">${meanText}</span>` : ""}
+    `;
+  }
+
+  // ---------------------------------------------------------------------
+  // CTNF response speed -> allowance chart
+  //
+  // For each non-final office action (CTNF), the backend already bucketed
+  // the days from CTNF mail to the applicant's response and decided
+  // whether the next examiner action was an NOA (allowed) or another
+  // CTNF/CTFR (rejected). We render one row per bucket: a stacked
+  // emerald/slate bar where the emerald share IS the allowance rate, plus
+  // a "[pending]" striped tail to communicate cohorts whose verdict
+  // hasn't landed yet.
+  // ---------------------------------------------------------------------
+  function renderCtnfResponseSpeed() {
+    const container = document.getElementById("ctnf-speed-chart");
+    const legend = document.getElementById("ctnf-speed-legend");
+    const sub = document.getElementById("ctnf-speed-sub");
+    const data = state.charts && state.charts.ctnfResponseSpeed;
+    if (!container || !legend) return;
+    if (!data || !data.buckets || !data.buckets.length || !data.totalEvents) {
+      container.innerHTML = '<div class="ctnf-empty">No CTNF responses in the current selection.</div>';
+      legend.innerHTML = "";
+      if (sub) sub.textContent = "PER NON-FINAL OFFICE ACTION";
+      return;
+    }
+
+    const buckets = data.buckets;
+    const maxCount = Math.max(...buckets.map((b) => b.responses)) || 1;
+
+    const rowsHtml = buckets.map((b) => {
+      const widthPct = b.responses > 0
+        ? Math.max(2, Math.round((b.responses / maxCount) * 100))
+        : 0;
+      const decided = b.allowed + b.rejected;
+      const allowedShare = decided > 0 ? (b.allowed / decided) : 0;
+      const allowedPct = (b.allowedPct || 0).toFixed(1);
+      const rateClass = decided ? "" : " muted";
+      const rateText = decided ? `${allowedPct}%` : "—";
+      // Inside each bar, split allowed/rejected proportionally to decided
+      // events; pending tags onto the right as a striped tail proportional
+      // to its share of total responses in the bucket.
+      const totalInBucket = b.responses;
+      const allowedW = totalInBucket
+        ? Math.round((b.allowed / totalInBucket) * 100)
+        : 0;
+      const rejectedW = totalInBucket
+        ? Math.round((b.rejected / totalInBucket) * 100)
+        : 0;
+      const pendingW = Math.max(0, 100 - allowedW - rejectedW);
+      const med = b.medianDaysResponseToNoa;
+      const tipParts = [
+        `${b.label}: ${totalInBucket.toLocaleString()} CTNF response${totalInBucket === 1 ? "" : "s"}`,
+        `Allowed ${b.allowed.toLocaleString()} · Rejected ${b.rejected.toLocaleString()} · Pending ${b.pending.toLocaleString()}`,
+      ];
+      if (decided) tipParts.push(`Allowance rate ${allowedPct}% (excludes pending)`);
+      if (med != null) tipParts.push(`Median days response → NOA: ${med}`);
+      const title = tipParts.join("\n");
+
+      return `
+        <div class="ctnf-row" title="${escapeAttr(title)}">
+          <div class="ctnf-row-label">${escapeHtml(b.label)}</div>
+          <div class="ctnf-row-bar-wrap" style="width:${widthPct}%; max-width:100%;">
+            ${allowedW > 0 ? `<div class="ctnf-row-bar-allowed" style="width:${allowedW}%"></div>` : ""}
+            ${rejectedW > 0 ? `<div class="ctnf-row-bar-rejected" style="width:${rejectedW}%"></div>` : ""}
+            ${pendingW > 0 ? `<div class="ctnf-row-bar-pending" style="width:${pendingW}%"></div>` : ""}
+          </div>
+          <div class="ctnf-row-rate${rateClass}">${rateText}</div>
+          <div class="ctnf-row-count">${totalInBucket.toLocaleString()}</div>
+        </div>`;
+    }).join("");
+
+    container.innerHTML = rowsHtml;
+
+    if (sub) {
+      const med = data.medianDaysToResponse;
+      const medText = med != null ? ` · MEDIAN ${med}d TO RESPOND` : "";
+      sub.textContent = `${data.totalEvents.toLocaleString()} CTNF EVENTS${medText}`;
+    }
+
+    const overall = data.overallAllowedPct || 0;
+    const decidedTotal = data.totalAllowed + data.totalRejected;
+    legend.innerHTML = `
+      <span class="legend-dot"><span class="dot" style="background:var(--emerald-600)"></span>Allowed (${data.totalAllowed.toLocaleString()})</span>
+      <span class="legend-dot"><span class="dot" style="background:var(--slate-500, #64748b)"></span>Rejected (${data.totalRejected.toLocaleString()})</span>
+      ${data.totalPending ? `<span class="legend-dot"><span class="dot" style="background:var(--slate-200)"></span>Pending (${data.totalPending.toLocaleString()})</span>` : ""}
+      <span class="legend-dot legend-stat">Overall <strong>${overall.toFixed(1)}%</strong> allowed${decidedTotal ? ` (n=${decidedTotal.toLocaleString()})` : ""}</span>
     `;
   }
 

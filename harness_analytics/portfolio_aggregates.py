@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 from statistics import mean, median
-from typing import Any, Iterable
+from typing import Any, Iterable, Optional
 
 
 # Status code -> pill label/tone (spec §8). `_` is the fallback entry the UI
@@ -341,6 +341,142 @@ def compute_prosecution_signals(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "continuationCount": continuations,
         "continuationTotal": total,
         "jacCount": jacs,
+    }
+
+
+# Bucket edges for the CTNF response-speed -> outcome chart, in days from
+# CTNF mail to the applicant's response.
+#
+# 0-30 / 31-60 / 61-90 / 91-120 / 121-180 land on USPTO-meaningful month
+# boundaries (1, 2, 3, 4, 6 months) so the bars line up with how a
+# prosecutor actually thinks about the response window. Beyond 180d we
+# collapse into a single "181+" bucket -- past the statutory cliff,
+# response-speed effects are dominated by petition-revival mechanics, not
+# examiner behavior, so finer granularity isn't informative.
+CTNF_RESPONSE_BUCKETS: tuple[tuple[str, int, Optional[int]], ...] = (
+    ("0\u201330d", 0, 30),
+    ("31\u201360d", 31, 60),
+    ("61\u201390d", 61, 90),
+    ("91\u2013120d", 91, 120),
+    ("121\u2013180d", 121, 180),
+    ("181d+", 181, None),
+)
+
+
+def _bucket_index_for_days(days: int) -> int:
+    for i, (_label, lo, hi) in enumerate(CTNF_RESPONSE_BUCKETS):
+        if days < lo:
+            continue
+        if hi is None or days <= hi:
+            return i
+    return len(CTNF_RESPONSE_BUCKETS) - 1
+
+
+def compute_ctnf_response_speed_to_noa(
+    events: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Bucket per-CTNF outcome events by days-to-respond, compute allowance %.
+
+    ``events`` is the list-of-dicts produced from
+    ``ctnf_outcome.extract_outcomes_from_grouped_events`` (each dict has
+    ``daysToResponse``, ``outcome``, optional ``daysResponseToNext``).
+
+    Per bucket we emit:
+      * ``responses``  total CTNFs whose response landed in this bucket
+      * ``allowed``    next examiner action was an NOA
+      * ``rejected``   next examiner action was another CTNF / CTFR
+      * ``pending``    no successor examiner action yet
+      * ``allowedPct`` allowed / (allowed + rejected) -- pending excluded
+                       so a still-prosecuting cohort doesn't drag the rate
+      * ``medianDaysResponseToNoa`` median days from response to NOA among
+                       the ``allowed`` events in this bucket (handy for
+                       "fast response also means fast allowance" stories)
+
+    Top-level fields:
+      ``buckets`` is the per-bucket list (always all 6 buckets, even when
+      empty, so the chart axis stays stable across filter changes).
+      ``totalEvents`` / ``totalAllowed`` / ``totalRejected`` /
+      ``totalPending`` are corpus-wide.
+      ``overallAllowedPct`` is allowed / (allowed + rejected) across the
+      whole filtered set.
+      ``medianDaysToResponse`` is the median days-to-respond across all
+      events (sanity gut-check vs the chart).
+    """
+    buckets: list[dict[str, Any]] = [
+        {
+            "label": label,
+            "minDays": lo,
+            "maxDays": hi,
+            "responses": 0,
+            "allowed": 0,
+            "rejected": 0,
+            "pending": 0,
+            "allowedPct": 0.0,
+            "medianDaysResponseToNoa": None,
+        }
+        for label, lo, hi in CTNF_RESPONSE_BUCKETS
+    ]
+    response_to_noa_days_per_bucket: list[list[int]] = [
+        [] for _ in CTNF_RESPONSE_BUCKETS
+    ]
+    days_to_response_all: list[int] = []
+
+    total_allowed = 0
+    total_rejected = 0
+    total_pending = 0
+
+    for ev in events:
+        try:
+            d = int(ev["daysToResponse"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if d < 0:
+            # Defensive: a response can't predate the CTNF in the real
+            # world, but bad ingest data shouldn't crash the chart.
+            continue
+        idx = _bucket_index_for_days(d)
+        b = buckets[idx]
+        b["responses"] += 1
+        days_to_response_all.append(d)
+        outcome = ev.get("outcome")
+        if outcome == "allowed":
+            b["allowed"] += 1
+            total_allowed += 1
+            r2n = ev.get("daysResponseToNext")
+            if isinstance(r2n, int) and r2n >= 0:
+                response_to_noa_days_per_bucket[idx].append(r2n)
+        elif outcome == "rejected":
+            b["rejected"] += 1
+            total_rejected += 1
+        elif outcome == "pending":
+            b["pending"] += 1
+            total_pending += 1
+
+    for i, b in enumerate(buckets):
+        decided = b["allowed"] + b["rejected"]
+        if decided:
+            b["allowedPct"] = round(100.0 * b["allowed"] / decided, 1)
+        if response_to_noa_days_per_bucket[i]:
+            b["medianDaysResponseToNoa"] = int(
+                median(response_to_noa_days_per_bucket[i])
+            )
+
+    decided_total = total_allowed + total_rejected
+    overall_allowed_pct = (
+        round(100.0 * total_allowed / decided_total, 1) if decided_total else 0.0
+    )
+    median_dtr = (
+        int(median(days_to_response_all)) if days_to_response_all else None
+    )
+
+    return {
+        "buckets": buckets,
+        "totalEvents": total_allowed + total_rejected + total_pending,
+        "totalAllowed": total_allowed,
+        "totalRejected": total_rejected,
+        "totalPending": total_pending,
+        "overallAllowedPct": overall_allowed_pct,
+        "medianDaysToResponse": median_dtr,
     }
 
 

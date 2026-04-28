@@ -16,8 +16,9 @@ from starlette.testclient import TestClient
 # Fixture portfolio: 3 rows, varied status / dates / OA counts.
 _FIXTURE_ROWS: list[dict[str, Any]] = [
     {
-        "application_number": "17552591",
+        "application_id": 1,
         "invention_title": "Sample Invention",
+        "application_number": "17552591",
         "application_status_code": 150,
         "application_status_text": "Patented Case",
         "filing_date": date(2022, 1, 15),
@@ -49,6 +50,7 @@ _FIXTURE_ROWS: list[dict[str, Any]] = [
         "updated_at": datetime(2026, 4, 17, 10, 0, tzinfo=timezone.utc),
     },
     {
+        "application_id": 2,
         "application_number": "18649980",
         "invention_title": "Thin-Film Force Sensor",
         "application_status_code": 93,
@@ -82,6 +84,7 @@ _FIXTURE_ROWS: list[dict[str, Any]] = [
         "updated_at": datetime(2026, 4, 10, 10, 0, tzinfo=timezone.utc),
     },
     {
+        "application_id": 3,
         "application_number": "17000001",
         "invention_title": "Abandoned Thing",
         "application_status_code": 161,
@@ -134,11 +137,45 @@ class _FakeResult:
 class _FakeSession:
     """DB dependency override: filter the in-memory fixture by the SQL body."""
 
-    def __init__(self, rows: list[dict[str, Any]]):
+    def __init__(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        ifw_docs: list[tuple[int, str, Any]] | None = None,
+        responses: list[tuple[int, Any]] | None = None,
+    ):
         self.all_rows = rows
+        # Per-test injectable fixtures for the CTNF outcome chart.
+        # ifw_docs: (application_id, document_code, mail_room_date)
+        # responses: (application_id, transaction_date)
+        self._ifw_docs = ifw_docs or []
+        self._responses = responses or []
 
     def execute(self, statement, binds: dict[str, Any] | None = None):
         sql = str(statement)
+
+        # CTNF chart sub-queries (file_wrapper_documents + prosecution_events).
+        # These are scoped by application_id = ANY(:ids); the binds carry the
+        # ID list. We pre-canned columns so _FakeResult can iterate cleanly.
+        if "FROM file_wrapper_documents" in sql:
+            ids = set(binds.get("ids") or []) if binds else set()
+            filtered = [(a, c, d) for (a, c, d) in self._ifw_docs if a in ids]
+            return _FakeResult(
+                [
+                    {"application_id": a, "document_code": c, "mail_room_date": d}
+                    for (a, c, d) in filtered
+                ]
+            )
+        if "FROM prosecution_events" in sql:
+            ids = set(binds.get("ids") or []) if binds else set()
+            filtered = [(a, d) for (a, d) in self._responses if a in ids]
+            return _FakeResult(
+                [
+                    {"application_id": a, "transaction_date": d}
+                    for (a, d) in filtered
+                ]
+            )
+
         rows = list(self.all_rows)
 
         def _eq_list_filter(col: str, placeholder_prefix: str, value_cast=str):
@@ -201,7 +238,13 @@ class _FakeSession:
         return _FakeResult(rows)
 
 
-def _make_client(monkeypatch: pytest.MonkeyPatch, rows: list[dict[str, Any]]) -> TestClient:
+def _make_client(
+    monkeypatch: pytest.MonkeyPatch,
+    rows: list[dict[str, Any]],
+    *,
+    ifw_docs: list[tuple[int, str, Any]] | None = None,
+    responses: list[tuple[int, Any]] | None = None,
+) -> TestClient:
     monkeypatch.setenv("PORTAL_PASSWORD", "test-pw")
     monkeypatch.setenv("SECRET_KEY", "unit-test-secret-key-32-chars-minimum!!")
     from harness_analytics.db import get_db
@@ -210,7 +253,7 @@ def _make_client(monkeypatch: pytest.MonkeyPatch, rows: list[dict[str, Any]]) ->
     app = create_app()
 
     def override():
-        yield _FakeSession(rows)
+        yield _FakeSession(rows, ifw_docs=ifw_docs, responses=responses)
 
     app.dependency_overrides[get_db] = override
     return TestClient(app)
@@ -230,6 +273,14 @@ def test_portfolio_response_shape(monkeypatch: pytest.MonkeyPatch) -> None:
                 "nonfinalOaCount", "finalOaCount", "isContinuation", "rceCount",
                 "daysFilingToNoa", "applicationStatusLabel", "applicationStatusTone"):
         assert key in row, f"missing key {key}"
+    # Server-side application_id must NOT leak into the row payload.
+    assert "applicationId" not in row
+    assert "application_id" not in row
+    # CTNF response speed chart is always present, even with no events.
+    assert "ctnfResponseSpeed" in body["charts"]
+    cs = body["charts"]["ctnfResponseSpeed"]
+    assert cs["totalEvents"] == 0
+    assert len(cs["buckets"]) == 6
 
 
 def test_portfolio_kpis_computed_against_filtered_set(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -319,3 +370,72 @@ def test_portfolio_csv_streams(monkeypatch: pytest.MonkeyPatch) -> None:
     # 1 header + 3 rows
     assert len(lines) == 4
     assert lines[0].startswith("application_number,")
+    # Server-side application_id must NOT appear in the CSV header.
+    assert ",application_id" not in lines[0]
+    assert "application_id" not in lines[0].split(",")
+
+
+def test_portfolio_ctnf_response_speed_chart_aggregates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end: seed CTNF + response + NOA mail dates and confirm the
+    chart payload reflects per-CTNF outcomes for the filtered row set."""
+    ifw = [
+        # App 1: one CTNF, fast response, then NOA -> "allowed" in 0-30d.
+        (1, "CTNF", date(2024, 1, 1)),
+        (1, "NOA", date(2024, 4, 1)),
+        # App 2: one CTNF, slow response, followed by another CTNF -> "rejected"
+        # in 121-180d.
+        (2, "CTNF", date(2023, 1, 1)),
+        (2, "CTNF", date(2023, 9, 1)),
+    ]
+    responses = [
+        (1, date(2024, 1, 20)),  # 19 days post-CTNF -> bucket 0-30
+        (2, date(2023, 5, 15)),  # 134 days post-CTNF -> bucket 121-180
+    ]
+    client = _make_client(
+        monkeypatch, _FIXTURE_ROWS, ifw_docs=ifw, responses=responses
+    )
+    r = client.get("/portal/api/portfolio", auth=("viewer", "test-pw"))
+    assert r.status_code == 200
+    cs = r.json()["charts"]["ctnfResponseSpeed"]
+    assert cs["totalEvents"] == 2
+    assert cs["totalAllowed"] == 1
+    assert cs["totalRejected"] == 1
+    assert cs["overallAllowedPct"] == 50.0
+    by_label = {b["label"]: b for b in cs["buckets"]}
+    assert by_label["0\u201330d"]["allowed"] == 1
+    assert by_label["0\u201330d"]["responses"] == 1
+    assert by_label["121\u2013180d"]["rejected"] == 1
+    assert by_label["121\u2013180d"]["responses"] == 1
+
+
+def test_portfolio_ctnf_response_speed_chart_respects_status_filter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the user filters the table to status=150, the chart must only
+    include CTNF events for applications still in the filtered row set
+    (the chart is per-row-set, not global)."""
+    ifw = [
+        (1, "CTNF", date(2024, 1, 1)),
+        (1, "NOA", date(2024, 4, 1)),
+        (3, "CTNF", date(2024, 1, 1)),  # row 3 is status=161 (Abandoned)
+        (3, "NOA", date(2024, 4, 1)),
+    ]
+    responses = [
+        (1, date(2024, 1, 20)),
+        (3, date(2024, 1, 20)),
+    ]
+    client = _make_client(
+        monkeypatch, _FIXTURE_ROWS, ifw_docs=ifw, responses=responses
+    )
+    r = client.get(
+        "/portal/api/portfolio?status=150", auth=("viewer", "test-pw")
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["total"] == 1  # only app 1 (status 150) survives the filter
+    cs = body["charts"]["ctnfResponseSpeed"]
+    # App 3's CTNF must be excluded from the chart.
+    assert cs["totalEvents"] == 1
+    assert cs["totalAllowed"] == 1
