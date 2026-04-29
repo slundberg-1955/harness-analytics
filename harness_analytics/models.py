@@ -55,6 +55,14 @@ class Application(Base):
     continuity_child_of_prior_us: Mapped[bool] = mapped_column(Boolean, default=False)
     has_child_continuation: Mapped[Optional[bool]] = mapped_column(Boolean)
     earliest_priority_date: Mapped[Optional[date]] = mapped_column(Date)
+    # Allowance Analytics v2 derived fields. All are derived from `xml_raw` —
+    # no Patent Center re-fetch is required. Backfilled in
+    # ``schema_migrations.py`` for already-ingested rows; populated at ingest
+    # time by ``parse_biblio_xml`` for new rows.
+    abandonment_date: Mapped[Optional[date]] = mapped_column(Date)
+    noa_mailed_date: Mapped[Optional[date]] = mapped_column(Date)
+    family_root_app_no: Mapped[Optional[str]] = mapped_column(Text)
+    has_foreign_priority: Mapped[Optional[bool]] = mapped_column(Boolean)
     tenant_id: Mapped[str] = mapped_column(Text, nullable=False, default="global")
     imported_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

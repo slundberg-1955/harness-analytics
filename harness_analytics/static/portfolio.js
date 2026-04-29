@@ -107,7 +107,78 @@
     visibleColumns: loadVisibleColumns(),
     lastData: null,
     searchDebounce: null,
+    statusMixBucket: "pending",
+    // Allowance Analytics v2: page-level layout + analytics-window state.
+    // ``tab`` selects the active tab (Overview/Charts/Allowance/Matters).
+    // The four ``aa*`` keys track the recency-window controls on the
+    // Allowance tab; they're applied to ``refresh()`` so the API can
+    // compute the cohort-windowed KPIs / cohort trend / breakdowns.
+    tab: "overview",
+    aaCohortAxis: "filing",
+    aaRecency: "5y",
+    aaCustomStart: "",
+    aaCustomEnd: "",
   };
+
+  // Quick-preset definitions for the rail above the chip filters. Each
+  // preset just sets one or more chip-equivalent params and re-fetches —
+  // power-user shortcut for the high-frequency views, no new server-side
+  // semantics. The match function decides which preset is currently active
+  // (so we can show a highlighted state when the URL matches verbatim).
+  const QUICK_PRESETS = [
+    {
+      key: "open",
+      label: "Open",
+      apply() { setParam("hasOpenDeadlines", "true"); setParam("status", null); setParam("dueWithin", null); },
+      isActive(p) { return p.get("hasOpenDeadlines") === "true" && !p.get("dueWithin"); },
+    },
+    {
+      key: "closed",
+      label: "Closed",
+      apply() { setParam("status", "150|161"); setParam("hasOpenDeadlines", null); setParam("dueWithin", null); },
+      isActive(p) {
+        const s = p.get("status") || "";
+        const set = new Set(s.split("|"));
+        return set.has("150") && set.has("161") && set.size === 2;
+      },
+    },
+    {
+      key: "deadlines",
+      label: "Has open deadlines",
+      apply() { setParam("hasOpenDeadlines", "true"); setParam("dueWithin", "60"); setParam("status", null); },
+      isActive(p) { return p.get("hasOpenDeadlines") === "true" && p.get("dueWithin") === "60"; },
+    },
+    {
+      key: "allowed",
+      label: "Allowed",
+      apply() { setParam("status", "150"); setParam("hasOpenDeadlines", null); setParam("dueWithin", null); },
+      isActive(p) { return p.get("status") === "150"; },
+    },
+    {
+      key: "abandoned",
+      label: "Abandoned",
+      apply() { setParam("status", "161"); setParam("hasOpenDeadlines", null); setParam("dueWithin", null); },
+      isActive(p) { return p.get("status") === "161"; },
+    },
+    {
+      key: "last5y",
+      label: "Last 5y filings",
+      apply() {
+        const now = new Date();
+        const from = new Date(now.getFullYear() - 5, now.getMonth(), now.getDate());
+        setParam("filingFrom", from.toISOString().slice(0, 10));
+        setParam("filingTo", null);
+      },
+      isActive(p) {
+        const ff = p.get("filingFrom");
+        if (!ff) return false;
+        const now = new Date();
+        const expected = new Date(now.getFullYear() - 5, now.getMonth(), now.getDate())
+          .toISOString().slice(0, 10);
+        return ff === expected;
+      },
+    },
+  ];
 
   // ---------------------------------------------------------------------
   // Boot
@@ -118,6 +189,9 @@
     renderHead();
     renderFilterChips();
     hydrateSearchFromUrl();
+    renderQuickPresets();
+    renderTabs();
+    renderAaSubBar();
     bindGlobalHandlers();
     refresh();
   }
@@ -164,9 +238,76 @@
 
     document.addEventListener("keydown", onKeydown);
 
+    document.querySelectorAll("#status-mix-tabs .status-tab").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const bucket = btn.getAttribute("data-bucket");
+        if (!bucket || bucket === state.statusMixBucket) return;
+        state.statusMixBucket = bucket;
+        renderDonut();
+      });
+    });
+
+    // Top-level tab nav (Overview/Charts/Allowance/Matters).
+    document.querySelectorAll("#page-tabs .tab").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const name = btn.getAttribute("data-tab");
+        if (name) setActiveTab(name);
+      });
+    });
+
+    // Quick-preset rail: each preset just nudges chip-equivalent params.
+    document.getElementById("quick-presets").addEventListener("click", (e) => {
+      const btn = e.target.closest(".quick-preset");
+      if (!btn) return;
+      const key = btn.getAttribute("data-preset");
+      const preset = QUICK_PRESETS.find((p) => p.key === key);
+      if (!preset) return;
+      preset.apply();
+      state.page = 1;
+      renderQuickPresets();
+      refresh();
+    });
+
+    // Allowance Analytics sub-bar: cohort axis (segs) + recency window
+    // (pills) + custom date pair + Apply. Apply triggers refresh; the
+    // segs/pills update state immediately but only re-render on Apply so
+    // attorneys can stage multiple changes before paying for a request.
+    document.getElementById("aa-axis-segs").addEventListener("click", (e) => {
+      const btn = e.target.closest(".seg");
+      if (!btn) return;
+      const axis = btn.getAttribute("data-axis");
+      if (!axis || axis === state.aaCohortAxis) return;
+      state.aaCohortAxis = axis;
+      renderAaSubBar();
+    });
+    document.getElementById("aa-recency-pills").addEventListener("click", (e) => {
+      const btn = e.target.closest(".aa-pill");
+      if (!btn) return;
+      const r = btn.getAttribute("data-recency");
+      if (!r || r === state.aaRecency) return;
+      state.aaRecency = r;
+      renderAaSubBar();
+    });
+    document.getElementById("aa-custom-start").addEventListener("change", (e) => {
+      state.aaCustomStart = e.target.value || "";
+    });
+    document.getElementById("aa-custom-end").addEventListener("change", (e) => {
+      state.aaCustomEnd = e.target.value || "";
+    });
+    document.getElementById("aa-apply-btn").addEventListener("click", () => {
+      setParam("cohortAxis", state.aaCohortAxis === "filing" ? null : state.aaCohortAxis);
+      setParam("recency", state.aaRecency === "5y" ? null : state.aaRecency);
+      setParam("customStart", state.aaRecency === "custom" ? state.aaCustomStart || null : null);
+      setParam("customEnd", state.aaRecency === "custom" ? state.aaCustomEnd || null : null);
+      refresh();
+    });
+
     window.addEventListener("popstate", () => {
       hydrateSearchFromUrl();
       renderFilterChips();
+      renderQuickPresets();
+      renderTabs();
+      renderAaSubBar();
       refresh();
     });
 
@@ -186,6 +327,21 @@
     const params = new URLSearchParams(location.search);
     document.getElementById("search-input").value = params.get("q") || "";
     state.page = parseInt(params.get("page") || "1", 10) || 1;
+    // Allowance Analytics v2 layout state.
+    const tab = params.get("tab");
+    if (tab && ["overview", "charts", "allowance", "matters"].includes(tab)) {
+      state.tab = tab;
+    }
+    const axis = params.get("cohortAxis");
+    if (axis && ["filing", "disposal", "noa"].includes(axis)) {
+      state.aaCohortAxis = axis;
+    }
+    const recency = params.get("recency");
+    if (recency && ["3y", "5y", "10y", "all", "custom"].includes(recency)) {
+      state.aaRecency = recency;
+    }
+    state.aaCustomStart = params.get("customStart") || "";
+    state.aaCustomEnd = params.get("customEnd") || "";
   }
 
   // ---------------------------------------------------------------------
@@ -237,6 +393,18 @@
     const params = getParams();
     params.set("page", String(state.page));
     params.set("pageSize", String(state.pageSize));
+    // Always send the analytics window so the API computes the windowed
+    // KPIs / cohort trend / breakdowns for the Allowance tab. The other
+    // tabs ignore those response fields, so this is cheap and idempotent.
+    params.set("cohortAxis", state.aaCohortAxis);
+    params.set("recency", state.aaRecency);
+    if (state.aaRecency === "custom") {
+      if (state.aaCustomStart) params.set("customStart", state.aaCustomStart);
+      if (state.aaCustomEnd) params.set("customEnd", state.aaCustomEnd);
+    } else {
+      params.delete("customStart");
+      params.delete("customEnd");
+    }
     const url = `/portal/api/portfolio?${params.toString()}`;
     try {
       const resp = await fetch(url, { credentials: "same-origin", headers: { Accept: "application/json" } });
@@ -248,6 +416,10 @@
       state.rows = data.rows || [];
       state.total = data.total || 0;
       state.kpis = data.kpis || null;
+      // Allowance Analytics tab reads from a separately-computed,
+      // recency-windowed KPI set so the dashboard band stays all-time
+      // (per plan decision: recency only scopes the Allowance tab).
+      state.analyticsKpis = data.analyticsKpis || data.kpis || null;
       state.charts = data.charts || null;
       state.lastData = data;
       state.focusedIndex = state.rows.length ? 0 : -1;
@@ -274,6 +446,9 @@
     renderSignals();
     renderCtnfResponseSpeed();
     renderFilterChips();
+    renderQuickPresets();
+    renderTabs();
+    renderAllowanceTab();
     renderBody();
     renderFoot();
     renderMeta();
@@ -286,7 +461,354 @@
       ? new Date(state.lastData.rows[0].updatedAt)
       : new Date();
     const formatted = isNaN(now.getTime()) ? "" : ` · UPDATED ${now.toISOString().replace("T", " ").slice(0, 16)} UTC`;
-    meta.textContent = `${total.toLocaleString()} APPLICATIONS${formatted}`;
+    // Scope badge: when the current selection differs from "all data" we
+    // mention the windowed cohort sizes too. Spec §11 polish — counsel
+    // wants to see at a glance which numbers the analytics are running on.
+    const scope = state.lastData && state.lastData.scope;
+    let scopeText = "";
+    if (scope && scope.totalInWindow != null && scope.totalInWindow !== total) {
+      scopeText = ` · WINDOW ${scope.totalInWindow.toLocaleString()} APPS · ${(scope.closedInWindow || 0).toLocaleString()} CLOSED`;
+    }
+    meta.textContent = `${total.toLocaleString()} APPLICATIONS${scopeText}${formatted}`;
+  }
+
+  // ---------------------------------------------------------------------
+  // Tabs (Overview / Charts / Allowance / Matters)
+  // ---------------------------------------------------------------------
+  function renderTabs() {
+    const nav = document.getElementById("page-tabs");
+    if (!nav) return;
+    nav.querySelectorAll(".tab").forEach((btn) => {
+      const isActive = btn.getAttribute("data-tab") === state.tab;
+      btn.classList.toggle("active", isActive);
+      btn.setAttribute("aria-selected", isActive ? "true" : "false");
+    });
+    document.querySelectorAll(".tab-pane").forEach((pane) => {
+      const isActive = pane.getAttribute("data-tab") === state.tab;
+      pane.hidden = !isActive;
+    });
+  }
+
+  function setActiveTab(name) {
+    if (state.tab === name) return;
+    state.tab = name;
+    setParam("tab", name === "overview" ? null : name);
+    renderTabs();
+  }
+
+  // ---------------------------------------------------------------------
+  // Quick-preset rail (above filter chips)
+  // ---------------------------------------------------------------------
+  function renderQuickPresets() {
+    const host = document.getElementById("quick-presets");
+    if (!host) return;
+    const params = getParams();
+    host.innerHTML = QUICK_PRESETS
+      .map((p) => {
+        const active = p.isActive(params);
+        return `<button type="button" class="quick-preset${active ? " active" : ""}" data-preset="${p.key}">${escapeHtml(p.label)}</button>`;
+      })
+      .join("");
+  }
+
+  // ---------------------------------------------------------------------
+  // Allowance Analytics tab — sub-bar + content rendering
+  // ---------------------------------------------------------------------
+  function renderAllowanceTab() {
+    renderAaSubBar();
+    renderAaScopeLine();
+    renderAaPrimary();
+    renderAaTrendChart();
+    renderAaSecondary();
+    renderAaBreakdowns();
+  }
+
+  function renderAaSubBar() {
+    document.querySelectorAll("#aa-axis-segs .seg").forEach((b) => {
+      const on = b.getAttribute("data-axis") === state.aaCohortAxis;
+      b.classList.toggle("active", on);
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+    document.querySelectorAll("#aa-recency-pills .aa-pill").forEach((b) => {
+      const on = b.getAttribute("data-recency") === state.aaRecency;
+      b.classList.toggle("active", on);
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+    const customRow = document.getElementById("aa-custom-range");
+    if (customRow) customRow.hidden = state.aaRecency !== "custom";
+    const cs = document.getElementById("aa-custom-start");
+    const ce = document.getElementById("aa-custom-end");
+    if (cs && cs.value !== state.aaCustomStart) cs.value = state.aaCustomStart || "";
+    if (ce && ce.value !== state.aaCustomEnd) ce.value = state.aaCustomEnd || "";
+  }
+
+  function renderAaScopeLine() {
+    const el = document.getElementById("aa-scope-line");
+    if (!el) return;
+    const data = state.lastData || {};
+    const scope = data.scope || {};
+    const rw = data.resolvedWindow || {};
+    const axisLabel = ({ filing: "filing date", disposal: "disposal date", noa: "NOA mailed date" })[state.aaCohortAxis] || "filing date";
+    const total = state.total || 0;
+    const inWindow = scope.totalInWindow || 0;
+    const closed = scope.closedInWindow || 0;
+    let windowDesc;
+    if (rw.start && rw.end) {
+      windowDesc = `${rw.start} → ${rw.end}`;
+    } else if (rw.preset === "all" || (!rw.start && !rw.end)) {
+      windowDesc = "all-time";
+    } else if (rw.start) {
+      windowDesc = `since ${rw.start}`;
+    } else if (rw.end) {
+      windowDesc = `through ${rw.end}`;
+    } else {
+      windowDesc = "all-time";
+    }
+    el.innerHTML = `Analytics computed over <strong>${inWindow.toLocaleString()}</strong> of ${total.toLocaleString()} filtered apps in window (${closed.toLocaleString()} closed) · cohort axis: ${axisLabel} · window: ${escapeHtml(windowDesc)}.`;
+  }
+
+  function renderAaPrimary() {
+    const host = document.getElementById("aa-primary");
+    if (!host) return;
+    const k = state.analyticsKpis;
+    if (!k) { host.innerHTML = ""; return; }
+    function pct(v) {
+      if (v === null || v === undefined) return `<span class="aa-kpi-value muted">—</span>`;
+      return `<span class="aa-kpi-value">${v}<span class="aa-kpi-pct">%</span></span>`;
+    }
+    function delta(v) {
+      if (!v) return "";
+      const cls = v > 0 ? "up" : "down";
+      const arrow = v > 0 ? "▲" : "▼";
+      return `<span class="aa-kpi-delta ${cls}">${arrow} ${Math.abs(v).toFixed(1)} pts</span>`;
+    }
+    const closed = (k.patentedCount || 0) + (k.abandonedCount || 0);
+    const chmA = k.chmAllowedNoRce || 0;
+    const chmCa = k.chmAllowedWithRce || 0;
+    const chmAb = k.chmAbandonedNoChild || 0;
+    const faaCount = k.faaCount || 0;
+    const faaDenom = k.faaDenom || closed;
+    host.innerHTML = `
+      <div class="aa-kpi">
+        <div class="aa-kpi-label">Traditional Allowance Rate</div>
+        ${pct(k.allowanceRatePct)}
+        ${delta(k.allowanceRateDeltaPctPts)}
+        <div class="aa-kpi-sub">${(k.patentedCount || 0).toLocaleString()} patented / ${closed.toLocaleString()} closed · USPTO formula (Patented / (Patented + Abandoned))</div>
+      </div>
+      <div class="aa-kpi">
+        <div class="aa-kpi-label">CHM "True" Allowance Rate</div>
+        ${pct(k.chmAllowanceRatePct)}
+        ${delta(k.chmAllowanceRateDeltaPctPts)}
+        <div class="aa-kpi-sub">A=${chmA} · CA=${chmCa} · AB=${chmAb} · excludes strategic abandonments</div>
+      </div>
+      <div class="aa-kpi">
+        <div class="aa-kpi-label">First-Action Allowance Rate</div>
+        ${pct(k.faaPct)}
+        ${delta(k.faaDeltaPctPts)}
+        <div class="aa-kpi-sub">${faaCount.toLocaleString()} of ${faaDenom.toLocaleString()} closed · no RCE, no Final Rejection</div>
+      </div>
+    `;
+  }
+
+  // Pure-SVG cohort trend chart. Three polylines (Trad / CHM / FAA) over
+  // cohort years; hollow circles + dashed connectors mark "maturing"
+  // years where pending matters can still move the rate. Avoids any
+  // charting dependency — keeps the codebase JS-dep-free.
+  function renderAaTrendChart() {
+    const host = document.getElementById("aa-trend-chart");
+    if (!host) return;
+    const data = state.lastData || {};
+    const trend = data.cohortTrend || [];
+    const W = 920, H = 280, padL = 56, padR = 24, padT = 18, padB = 36;
+    const innerW = W - padL - padR, innerH = H - padT - padB;
+    if (!trend.length) {
+      host.innerHTML = `<div class="empty-chart">No cohort data in the current window.</div>`;
+      return;
+    }
+    const xs = trend.map((d) => d.year);
+    const xMin = Math.min(...xs), xMax = Math.max(...xs);
+    const xRange = Math.max(1, xMax - xMin);
+    const x = (year) => padL + ((year - xMin) / xRange) * innerW;
+    const y = (pct) => padT + innerH - (Math.max(0, Math.min(100, pct)) / 100) * innerH;
+
+    function buildLine(field, color) {
+      // Build the polyline as a series of "M"/"L" segments. A solid
+      // segment connects two non-maturing points; a dashed segment
+      // connects whenever EITHER endpoint is maturing (so a still-evolving
+      // year visually disclaims the line into and out of it).
+      const pts = trend.map((d) => ({ year: d.year, value: d[field], maturing: d.maturing }))
+        .filter((p) => p.value !== null && p.value !== undefined);
+      if (pts.length === 0) return "";
+      let solid = `M ${x(pts[0].year)} ${y(pts[0].value)}`;
+      const dashedSegs = [];
+      for (let i = 1; i < pts.length; i++) {
+        const a = pts[i - 1], b = pts[i];
+        const seg = `M ${x(a.year)} ${y(a.value)} L ${x(b.year)} ${y(b.value)}`;
+        if (a.maturing || b.maturing) {
+          dashedSegs.push(seg);
+        } else {
+          solid += ` L ${x(b.year)} ${y(b.value)}`;
+        }
+      }
+      const dots = pts.map((p) => {
+        const cx = x(p.year), cy = y(p.value);
+        if (p.maturing) {
+          return `<circle cx="${cx}" cy="${cy}" r="4" fill="white" stroke="${color}" stroke-width="2"/>`;
+        }
+        return `<circle cx="${cx}" cy="${cy}" r="4" fill="${color}"/>`;
+      }).join("");
+      return `
+        <path d="${solid}" stroke="${color}" stroke-width="2" fill="none"/>
+        ${dashedSegs.map((s) => `<path d="${s}" stroke="${color}" stroke-width="2" fill="none" stroke-dasharray="4,3" opacity="0.7"/>`).join("")}
+        ${dots}
+      `;
+    }
+
+    // Maturing-cohort shaded background: covers the contiguous run of
+    // years that are still evolving so counsel can see at a glance which
+    // bars to read with caution.
+    const maturingYears = trend.filter((d) => d.maturing).map((d) => d.year);
+    let maturingRect = "";
+    if (maturingYears.length) {
+      const mMin = Math.min(...maturingYears), mMax = Math.max(...maturingYears);
+      const left = x(mMin) - 12;
+      const right = x(mMax) + 12;
+      maturingRect = `<rect x="${left}" y="${padT}" width="${right - left}" height="${innerH}" fill="rgba(148, 163, 184, 0.10)"/>`;
+    }
+
+    const yTicks = [0, 25, 50, 75, 100].map((v) =>
+      `<g><line x1="${padL}" y1="${y(v)}" x2="${W - padR}" y2="${y(v)}" stroke="#e2e8f0" stroke-width="1"/>` +
+      `<text x="${padL - 8}" y="${y(v) + 4}" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#64748b">${v}%</text></g>`
+    ).join("");
+
+    const xLabels = trend.map((d) => {
+      const cx = x(d.year);
+      const label = String(d.year);
+      const note = d.maturing ? `<title>${d.n} apps · maturing cohort</title>` : `<title>${d.n} apps</title>`;
+      return `<text x="${cx}" y="${H - padB + 18}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#64748b">${label}${note}</text>`;
+    }).join("");
+
+    host.innerHTML = `
+      <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+        ${maturingRect}
+        ${yTicks}
+        ${buildLine("traditionalPct", "#0f172a")}
+        ${buildLine("chmPct",         "#059669")}
+        ${buildLine("faaPct",         "#d97706")}
+        ${xLabels}
+      </svg>
+    `;
+  }
+
+  function renderAaSecondary() {
+    const host = document.getElementById("aa-secondary-grid");
+    if (!host) return;
+    const k = state.analyticsKpis;
+    if (!k) { host.innerHTML = ""; return; }
+    function num(v, unit) {
+      if (v === null || v === undefined) return `<div class="aa-scell-value muted">—</div>`;
+      return `<div class="aa-scell-value">${v}${unit ? `<span class="aa-scell-unit">${unit}</span>` : ""}</div>`;
+    }
+    const tta = k.timeToAllowance || {};
+    const rce = k.rceIntensity || {};
+    const sa = k.strategicAbandonment || {};
+    const fy = k.familyYield || {};
+    const pen = k.pendency || {};
+    const fp = k.foreignPriority || {};
+    const cells = [
+      {
+        label: "Time to Allowance (Median)",
+        body: num(tta.medianMonths, "mo"),
+        sub: tta.medianMonths != null ? `p25 ${tta.p25Months ?? "—"} · p75 ${tta.p75Months ?? "—"} · n=${tta.n}` : "no allowed apps in window",
+      },
+      {
+        label: "RCE Intensity (Avg / Allowed)",
+        body: num(rce.avgRceAmongAllowed, ""),
+        sub: rce.pctAllowancesWithRce != null ? `${rce.pctAllowancesWithRce}% of allowances had ≥1 RCE · n=${rce.n}` : "no allowed apps",
+      },
+      {
+        label: "Strategic Abandonment Rate",
+        body: num(sa.pct, "%"),
+        sub: sa.totalAbandoned ? `${sa.withChild} of ${sa.totalAbandoned} abandoned filed a child` : "no abandonments in window",
+      },
+      {
+        label: "Family Yield (Avg Other Patents)",
+        body: num(fy.avg, ""),
+        sub: fy.n ? `across ${fy.n} patented apps` : "no patented apps in window",
+      },
+      {
+        label: "Pendency (Median, Pending)",
+        body: num(pen.medianMonths, "mo"),
+        sub: pen.n ? `${pen.n.toLocaleString()} pending matters` : "no pending matters in window",
+      },
+      {
+        label: "Foreign Priority Share",
+        body: num(fp.pct, "%"),
+        sub: fp.total ? `${fp.n.toLocaleString()} of ${fp.total.toLocaleString()} apps` : "no apps in window",
+      },
+    ];
+    host.innerHTML = cells.map((c) => `
+      <div class="aa-scell">
+        <div class="aa-scell-label">${escapeHtml(c.label)}</div>
+        ${c.body}
+        <div class="aa-scell-sub">${escapeHtml(c.sub)}</div>
+      </div>
+    `).join("");
+  }
+
+  function renderAaBreakdowns() {
+    const data = state.lastData || {};
+    const auHost = document.getElementById("aa-by-art-unit");
+    if (auHost) {
+      const rows = data.byArtUnit || [];
+      if (!rows.length) {
+        auHost.innerHTML = `<div class="empty-chart">No closed apps grouped by art unit in window.</div>`;
+      } else {
+        auHost.innerHTML = `
+          <table class="aa-bd-table">
+            <thead><tr><th>Art Unit</th><th class="aa-r">Closed</th><th class="aa-r">Trad</th><th class="aa-r">CHM</th><th class="aa-r">FAA</th><th class="aa-r">Mo. Med</th></tr></thead>
+            <tbody>
+              ${rows.map((r) => {
+                const trad = r.tradPct;
+                const barWidth = trad != null ? Math.max(0, Math.min(80, trad * 0.8)) : 0;
+                return `<tr>
+                  <td>${escapeHtml(String(r.artUnit))}</td>
+                  <td class="aa-r">${r.closed.toLocaleString()}</td>
+                  <td class="aa-r">${trad != null ? `<span class="aa-bd-bar" style="width:${barWidth}px"></span>${trad}%` : "—"}</td>
+                  <td class="aa-r">${r.chmPct != null ? r.chmPct + "%" : "—"}</td>
+                  <td class="aa-r">${r.faaPct != null ? r.faaPct + "%" : "—"}</td>
+                  <td class="aa-r">${r.medianMonths != null ? r.medianMonths : "—"}</td>
+                </tr>`;
+              }).join("")}
+            </tbody>
+          </table>
+        `;
+      }
+    }
+    const pathHost = document.getElementById("aa-by-path");
+    if (pathHost) {
+      const rows = data.byPathToAllowance || [];
+      if (!rows.length || !rows.some((r) => r.count > 0)) {
+        pathHost.innerHTML = `<div class="empty-chart">No allowed apps in window.</div>`;
+      } else {
+        pathHost.innerHTML = `
+          <table class="aa-bd-table">
+            <thead><tr><th>Path</th><th class="aa-r">Count</th><th class="aa-r">Share</th><th class="aa-r">Mo. Median</th></tr></thead>
+            <tbody>
+              ${rows.map((r) => {
+                const barWidth = r.sharePct != null ? Math.max(0, Math.min(80, r.sharePct * 0.8)) : 0;
+                return `<tr>
+                  <td>${escapeHtml(r.path)}</td>
+                  <td class="aa-r">${r.count.toLocaleString()}</td>
+                  <td class="aa-r"><span class="aa-bd-bar" style="width:${barWidth}px"></span>${r.sharePct}%</td>
+                  <td class="aa-r">${r.medianMonths != null ? r.medianMonths : "—"}</td>
+                </tr>`;
+              }).join("")}
+            </tbody>
+          </table>
+        `;
+      }
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -323,7 +845,11 @@
           subExtra: chm,
           subExtraClass: "kpi-sub-chm",
           subClass: k.allowanceRateDeltaPctPts > 0 ? "up" : k.allowanceRateDeltaPctPts < 0 ? "down" : "",
-          tooltip: tip,
+          // Click target = open the Allowance Analytics tab so attorneys
+          // can drill straight from the dashboard headline number into the
+          // recency-windowed cohort trend, breakdowns, and methodology.
+          tooltip: tip + " Click to open Allowance Analytics.",
+          clickToTab: "allowance",
         };
       })(),
       { label: "Avg Days to NOA", value: k.avgDaysToNoa != null ? k.avgDaysToNoa : "—", sub: k.medianDaysToNoa != null ? `median ${k.medianDaysToNoa}` : "—" },
@@ -341,7 +867,7 @@
       },
     ];
     grid.innerHTML = cards.map((c, i) => `
-      <div class="kpi" data-accent="${accents[i]}"${c.tooltip ? ` title="${escapeAttr(c.tooltip)}"` : ""}>
+      <div class="kpi${c.clickToTab ? " kpi-clickable" : ""}" data-accent="${accents[i]}"${c.clickToTab ? ` data-click-tab="${c.clickToTab}" role="button" tabindex="0"` : ""}${c.tooltip ? ` title="${escapeAttr(c.tooltip)}"` : ""}>
         <div class="kpi-accent-bar"></div>
         <div class="kpi-label">${escapeHtml(c.label)}</div>
         <div class="kpi-value">${escapeHtml(String(c.value))}${c.unit ? `<span class="kpi-unit">${c.unit}</span>` : ""}</div>
@@ -349,6 +875,17 @@
         ${c.subExtra ? `<div class="kpi-sub ${c.subExtraClass || ""}">${escapeHtml(c.subExtra)}</div>` : ""}
       </div>
     `).join("");
+    grid.querySelectorAll(".kpi-clickable").forEach((card) => {
+      const target = card.getAttribute("data-click-tab");
+      if (!target) return;
+      card.addEventListener("click", () => setActiveTab(target));
+      card.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          setActiveTab(target);
+        }
+      });
+    });
   }
 
   // ---------------------------------------------------------------------
@@ -511,10 +1048,39 @@
   // Status Mix list: show top STATUS_MIX_BASE rows; the rest collapse behind
   // a single expand toggle ("Show N more" / "Show fewer").
   const STATUS_MIX_BASE = 20;
+
+  // Classify a status-mix entry into a top-level bucket. "ended" covers
+  // dispositions where prosecution is over (granted patents and dead apps);
+  // "pending" is everything still live. The 150/161 codes match the same
+  // patented/abandoned semantics used by compute_kpis on the Python side.
+  function statusBucket(entry) {
+    if (entry.code === 150 || entry.code === 161) return "ended";
+    const label = (entry.label || "").toLowerCase();
+    if (label.includes("patented") || label.includes("abandoned") ||
+        label.includes("expired") || label.includes("issued")) {
+      return "ended";
+    }
+    return "pending";
+  }
+
   function renderDonut() {
     const totalEl = document.getElementById("status-mix-total");
     const legend = document.getElementById("donut-legend");
-    const mix = (state.charts && state.charts.statusMix) || [];
+    const mixAll = (state.charts && state.charts.statusMix) || [];
+
+    const buckets = { pending: [], ended: [] };
+    mixAll.forEach((e) => buckets[statusBucket(e)].push(e));
+
+    document.querySelectorAll("#status-mix-tabs .status-tab").forEach((btn) => {
+      const b = btn.getAttribute("data-bucket");
+      const count = (buckets[b] || []).reduce((acc, e) => acc + e.count, 0);
+      const isActive = b === state.statusMixBucket;
+      btn.classList.toggle("active", isActive);
+      btn.setAttribute("aria-selected", isActive ? "true" : "false");
+      btn.dataset.count = String(count);
+    });
+
+    const mix = buckets[state.statusMixBucket] || [];
     const total = mix.reduce((acc, e) => acc + e.count, 0);
     if (totalEl) {
       totalEl.textContent = total ? `${total.toLocaleString()} apps` : "";

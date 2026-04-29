@@ -72,64 +72,11 @@
         <div class="page-head-meta" id="page-head-meta">LOADING…</div>
       </div>
 
-      <div class="kpi-grid" id="kpi-grid" aria-live="polite"></div>
-
-      <div class="analytics-grid">
-        <div class="card">
-          <div class="card-head">
-            <div>
-              <div class="card-title">Days Filing → Notice of Allowance</div>
-              <div class="card-sub">distribution · current selection</div>
-            </div>
-          </div>
-          <div class="card-body">
-            <div class="bars" id="bars-chart" role="img" aria-label="Histogram of days from filing to Notice of Allowance"></div>
-            <div class="bars-legend" id="bars-legend"></div>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="card-head">
-            <div>
-              <div class="card-title">Status Mix</div>
-              <div class="card-sub"><span id="status-mix-total"></span></div>
-            </div>
-          </div>
-          <div class="card-body">
-            <div class="status-list" id="donut-legend" role="list" aria-label="Status mix"></div>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="card-head">
-            <div>
-              <div class="card-title">Prosecution Signals</div>
-              <div class="card-sub">selection averages</div>
-            </div>
-          </div>
-          <div class="card-body">
-            <div class="stat-list" id="signals-list"></div>
-          </div>
-        </div>
-      </div>
-
-      <div class="analytics-grid analytics-grid-wide">
-        <div class="card">
-          <div class="card-head">
-            <div>
-              <div class="card-title">Response Speed → Allowance (CTNF)</div>
-              <div class="card-sub" id="ctnf-speed-sub">PER NON-FINAL OFFICE ACTION</div>
-            </div>
-            <div class="card-help" title="For each non-final office action (CTNF), bucket by days from CTNF mail date to the applicant's first response, then show what the next examiner action was. Allowed = next mailed action was a Notice of Allowance. Rejected = next mailed action was another CTNF or a Final Rejection (CTFR). Pending CTNFs (no next examiner action yet) are excluded from the rate so an in-flight cohort doesn't drag it down.">?</div>
-          </div>
-          <div class="card-body">
-            <div class="ctnf-speed" id="ctnf-speed-chart" role="img" aria-label="Allowance rate by CTNF response speed"></div>
-            <div class="bars-legend" id="ctnf-speed-legend"></div>
-          </div>
-        </div>
-      </div>
-
-      <div class="filter-bar" id="filter-bar">
+      <!-- Sticky global filter bar. Pinned above the tabs so a filter
+           change scopes every tab without forcing the user to scroll
+           past the analytics to reach it. -->
+      <div class="filter-bar filter-bar-sticky" id="filter-bar">
+        <div class="quick-presets" id="quick-presets" role="group" aria-label="Quick filter presets"></div>
         <span class="filter-bar-label">Filter</span>
         <div id="filter-chips" class="filter-chips-inline"></div>
         <div class="filter-bar-spacer"></div>
@@ -143,28 +90,217 @@
         </button>
       </div>
 
-      <div class="table-card">
-        <div class="table-scroll" id="table-scroll">
-          <table id="portfolio-table">
-            <thead id="portfolio-thead"></thead>
-            <tbody id="portfolio-tbody"></tbody>
-          </table>
-        </div>
+      <!-- Top-level tabs. Tab state persists in ?tab=. Switching tabs is
+           pure visibility — data is fetched once per filter change. -->
+      <nav class="tabs" id="page-tabs" role="tablist" aria-label="Portfolio sections">
+        <button type="button" class="tab active" data-tab="overview" role="tab" aria-selected="true">Overview</button>
+        <button type="button" class="tab" data-tab="charts" role="tab" aria-selected="false">Charts</button>
+        <button type="button" class="tab" data-tab="allowance" role="tab" aria-selected="false">Allowance Analytics</button>
+        <button type="button" class="tab" data-tab="matters" role="tab" aria-selected="false">Matters</button>
+      </nav>
 
-        <div class="selection-bar" id="selection-bar" hidden>
-          <span id="selection-count">0 selected</span>
-          <div class="selection-actions">
-            <button class="btn" id="selection-export-btn">Export CSV</button>
-            <button class="btn" id="selection-docket-btn" disabled title="Coming soon">Open in Docket</button>
-            <button class="btn" id="selection-tag-btn" disabled title="Coming soon">Bulk tag</button>
+      <!-- ============== Overview tab ============== -->
+      <section class="tab-pane" data-tab="overview" role="tabpanel">
+        <div class="kpi-grid" id="kpi-grid" aria-live="polite"></div>
+
+        <div class="analytics-grid">
+          <div class="card">
+            <div class="card-head">
+              <div>
+                <div class="card-title">Status Mix</div>
+                <div class="card-sub"><span id="status-mix-total"></span></div>
+              </div>
+              <div class="status-tabs" id="status-mix-tabs" role="tablist" aria-label="Status mix bucket">
+                <button type="button" class="status-tab active" data-bucket="pending" role="tab" aria-selected="true">Pending</button>
+                <button type="button" class="status-tab" data-bucket="ended" role="tab" aria-selected="false">Granted / Abandoned</button>
+              </div>
+            </div>
+            <div class="card-body">
+              <div class="status-list" id="donut-legend" role="list" aria-label="Status mix"></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <div>
+                <div class="card-title">Prosecution Signals</div>
+                <div class="card-sub">selection averages</div>
+              </div>
+            </div>
+            <div class="card-body">
+              <div class="stat-list" id="signals-list"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============== Charts tab ============== -->
+      <section class="tab-pane" data-tab="charts" role="tabpanel" hidden>
+        <div class="analytics-grid analytics-grid-wide">
+          <div class="card">
+            <div class="card-head">
+              <div>
+                <div class="card-title">Days Filing → Notice of Allowance</div>
+                <div class="card-sub">distribution · current selection</div>
+              </div>
+            </div>
+            <div class="card-body">
+              <div class="bars" id="bars-chart" role="img" aria-label="Histogram of days from filing to Notice of Allowance"></div>
+              <div class="bars-legend" id="bars-legend"></div>
+            </div>
           </div>
         </div>
 
-        <div class="table-foot">
-          <div id="table-foot-label">Loading…</div>
-          <div class="pagination" id="pagination"></div>
+        <div class="analytics-grid analytics-grid-wide">
+          <div class="card">
+            <div class="card-head">
+              <div>
+                <div class="card-title">Response Speed → Allowance (CTNF)</div>
+                <div class="card-sub" id="ctnf-speed-sub">PER NON-FINAL OFFICE ACTION</div>
+              </div>
+              <div class="card-help" title="For each non-final office action (CTNF), bucket by days from CTNF mail date to the applicant's first response, then show what the next examiner action was. Allowed = next mailed action was a Notice of Allowance. Rejected = next mailed action was another CTNF or a Final Rejection (CTFR). Pending CTNFs (no next examiner action yet) are excluded from the rate so an in-flight cohort doesn't drag it down.">?</div>
+            </div>
+            <div class="card-body">
+              <div class="ctnf-speed" id="ctnf-speed-chart" role="img" aria-label="Allowance rate by CTNF response speed"></div>
+              <div class="bars-legend" id="ctnf-speed-legend"></div>
+            </div>
+          </div>
         </div>
-      </div>
+      </section>
+
+      <!-- ============== Allowance Analytics tab (NEW, spec v2) ============== -->
+      <section class="tab-pane" data-tab="allowance" role="tabpanel" hidden>
+        <!-- Analytics-specific filter bar (cohort axis + recency window).
+             Only scopes the cards on this tab; the global filter bar above
+             continues to scope every tab. -->
+        <div class="aa-filter-bar">
+          <div class="aa-filter-group">
+            <span class="aa-filter-label">Cohort Axis</span>
+            <div class="seg-row" id="aa-axis-segs" role="group" aria-label="Cohort axis">
+              <button type="button" class="seg active" data-axis="filing"   aria-pressed="true">Filing Date</button>
+              <button type="button" class="seg"        data-axis="disposal" aria-pressed="false">Disposal Date</button>
+              <button type="button" class="seg"        data-axis="noa"      aria-pressed="false">NOA Date</button>
+            </div>
+          </div>
+          <div class="aa-filter-group">
+            <span class="aa-filter-label">Recency Window</span>
+            <div class="pill-row" id="aa-recency-pills" role="group" aria-label="Recency window">
+              <button type="button" class="aa-pill"        data-recency="3y"     aria-pressed="false">Last 3 yrs</button>
+              <button type="button" class="aa-pill active" data-recency="5y"     aria-pressed="true">Last 5 yrs</button>
+              <button type="button" class="aa-pill"        data-recency="10y"    aria-pressed="false">Last 10 yrs</button>
+              <button type="button" class="aa-pill"        data-recency="all"    aria-pressed="false">All time</button>
+              <button type="button" class="aa-pill"        data-recency="custom" aria-pressed="false">Custom…</button>
+            </div>
+          </div>
+          <div class="aa-filter-group" id="aa-custom-range" hidden>
+            <span class="aa-filter-label">Custom Range</span>
+            <div class="aa-date-pair">
+              <input type="date" id="aa-custom-start" class="aa-date-input">
+              <span class="aa-date-arrow" aria-hidden="true">→</span>
+              <input type="date" id="aa-custom-end" class="aa-date-input">
+            </div>
+          </div>
+          <button type="button" class="btn aa-apply-btn" id="aa-apply-btn">Apply</button>
+        </div>
+
+        <div class="aa-scope-line" id="aa-scope-line" aria-live="polite"></div>
+
+        <!-- Primary 3-up KPI strip: Traditional / CHM / FAA -->
+        <div class="aa-primary" id="aa-primary"></div>
+
+        <!-- Cohort trend chart -->
+        <div class="card aa-trend-card">
+          <div class="card-head">
+            <div>
+              <div class="card-title">Allowance Rate by Cohort Year</div>
+              <div class="card-sub" id="aa-trend-sub">TRADITIONAL · CHM · FIRST-ACTION</div>
+            </div>
+            <div class="aa-trend-legend" aria-hidden="true">
+              <span class="aa-leg-item"><span class="aa-leg-swatch aa-leg-swatch-trad"></span>Traditional</span>
+              <span class="aa-leg-item"><span class="aa-leg-swatch aa-leg-swatch-chm"></span>CHM</span>
+              <span class="aa-leg-item"><span class="aa-leg-swatch aa-leg-swatch-faa"></span>First-Action</span>
+              <span class="aa-leg-item aa-leg-item-muted">○ maturing cohort</span>
+            </div>
+          </div>
+          <div class="card-body">
+            <div id="aa-trend-chart" class="aa-trend-chart" role="img" aria-label="Allowance rate trend by cohort year"></div>
+            <div class="aa-trend-note">
+              Hollow circles + dashed connectors flag cohorts that still contain pending applications;
+              their rates will continue to evolve as those matters reach final disposition.
+            </div>
+          </div>
+        </div>
+
+        <!-- Secondary 6-up KPI grid -->
+        <h2 class="aa-section-h2">Supplementary Metrics</h2>
+        <div class="aa-secondary-grid" id="aa-secondary-grid"></div>
+
+        <!-- Two breakdown tables (Art Unit + Path-to-Allowance) -->
+        <h2 class="aa-section-h2">Allowance Rate Breakdowns</h2>
+        <div class="aa-breakdowns">
+          <div class="card aa-bd-card">
+            <div class="card-head">
+              <div>
+                <div class="card-title">By Art Unit (Top 10)</div>
+                <div class="card-sub">trad / chm / first-action</div>
+              </div>
+            </div>
+            <div class="card-body">
+              <div id="aa-by-art-unit"></div>
+            </div>
+          </div>
+          <div class="card aa-bd-card">
+            <div class="card-head">
+              <div>
+                <div class="card-title">By Path to Allowance</div>
+                <div class="card-sub">share of allowed apps</div>
+              </div>
+            </div>
+            <div class="card-body">
+              <div id="aa-by-path"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="aa-method">
+          <strong>Methodology.</strong>
+          Recency window applies to the cohort-axis date selected above; rows whose cohort date
+          falls outside the window are excluded entirely from the analytics on this tab.
+          A row is "closed" when its application_status_code is 150 (Patented) or 161 (Abandoned);
+          rows still pending are excluded from the Traditional and First-Action denominators
+          but counted in Pendency. The Carley-Hegde-Marco rate counts NOA-Mailed (93) and
+          Issue Fee Verified (159) as already allowed and treats abandonments-with-a-child as
+          continuations of prosecution rather than losses. RCE counts come from the
+          application_analytics table (event-derived); foreign-priority share is true when the
+          Biblio XML has a ForeignPriorityList entry or any PCT national-stage parent.
+        </div>
+      </section>
+
+      <!-- ============== Matters tab ============== -->
+      <section class="tab-pane" data-tab="matters" role="tabpanel" hidden>
+        <div class="table-card">
+          <div class="table-scroll" id="table-scroll">
+            <table id="portfolio-table">
+              <thead id="portfolio-thead"></thead>
+              <tbody id="portfolio-tbody"></tbody>
+            </table>
+          </div>
+
+          <div class="selection-bar" id="selection-bar" hidden>
+            <span id="selection-count">0 selected</span>
+            <div class="selection-actions">
+              <button class="btn" id="selection-export-btn">Export CSV</button>
+              <button class="btn" id="selection-docket-btn" disabled title="Coming soon">Open in Docket</button>
+              <button class="btn" id="selection-tag-btn" disabled title="Coming soon">Bulk tag</button>
+            </div>
+          </div>
+
+          <div class="table-foot">
+            <div id="table-foot-label">Loading…</div>
+            <div class="pagination" id="pagination"></div>
+          </div>
+        </div>
+      </section>
 
     </div>
   </div>

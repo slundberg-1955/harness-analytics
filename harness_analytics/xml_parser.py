@@ -126,6 +126,159 @@ def has_child_continuation_from_xml(xml_text: str | None) -> bool:
     return has_child_continuation_from_root(root)
 
 
+# Allowance Analytics v2 derived fields. All come from the already-stored
+# Biblio XML so we never need to refetch from Patent Center.
+#
+# `noa_mailed_date`: prefer the explicit `<NoticeOfAllowanceMailedDate>`
+# element (newer Patent Center schemas surface it directly); otherwise fall
+# back to the earliest FileContentHistory entry whose TransactionDescription
+# matches "Notice of Allowance" (mailed direction). The
+# ``application_analytics`` row also stores ``first_noa_date`` derived from
+# event classification — but that table isn't always populated for a row
+# (e.g. fresh ingests, partial backfills), so the XML helper is the more
+# reliable source for the recency cohort axis.
+_NOA_DESC_PATTERNS = (
+    "notice of allowance",
+    "mail notice of allowance",
+)
+
+
+def noa_mailed_date_from_root(root: Any) -> Optional[date]:
+    if root is None:
+        return None
+    for raw in root.xpath(".//NoticeOfAllowanceMailedDate/text()"):
+        d = parse_date(str(raw))
+        if d is not None:
+            return d
+    candidates: list[date] = []
+    for el in root.xpath(".//FileContentHistories/FileContentHistory"):
+        desc = (extract_text(el, "TransactionDescription/text()") or "").lower()
+        if any(p in desc for p in _NOA_DESC_PATTERNS):
+            d = parse_date(extract_text(el, "TransactionDate/text()"))
+            if d is not None:
+                candidates.append(d)
+    return min(candidates) if candidates else None
+
+
+def noa_mailed_date_from_xml(xml_text: str | None) -> Optional[date]:
+    if not xml_text or not xml_text.strip():
+        return None
+    try:
+        root = etree.fromstring(xml_text.encode("utf-8"))
+    except etree.XMLSyntaxError:
+        return None
+    return noa_mailed_date_from_root(root)
+
+
+# `abandonment_date`: prefer explicit `<AbandonmentDate>`; otherwise pick the
+# earliest FileContentHistory entry whose description is a Notice/Letter of
+# Abandonment. Status code 161 alone is insufficient because it doesn't tell
+# us *when* the application went abandoned.
+_ABANDON_DESC_PATTERNS = (
+    "abandonment",
+    "letter of abandonment",
+    "notice of abandonment",
+)
+
+
+def abandonment_date_from_root(root: Any) -> Optional[date]:
+    if root is None:
+        return None
+    for raw in root.xpath(".//AbandonmentDate/text()"):
+        d = parse_date(str(raw))
+        if d is not None:
+            return d
+    candidates: list[date] = []
+    for el in root.xpath(".//FileContentHistories/FileContentHistory"):
+        desc = (extract_text(el, "TransactionDescription/text()") or "").lower()
+        if any(p in desc for p in _ABANDON_DESC_PATTERNS):
+            d = parse_date(extract_text(el, "TransactionDate/text()"))
+            if d is not None:
+                candidates.append(d)
+    return min(candidates) if candidates else None
+
+
+def abandonment_date_from_xml(xml_text: str | None) -> Optional[date]:
+    if not xml_text or not xml_text.strip():
+        return None
+    try:
+        root = etree.fromstring(xml_text.encode("utf-8"))
+    except etree.XMLSyntaxError:
+        return None
+    return abandonment_date_from_root(root)
+
+
+# `family_root_app_no`: walk ParentContinuityList where the current app is
+# the child, take the parent application number, and recurse upward. Patent
+# Center XML typically lists the immediate parent only, so the most useful
+# heuristic is "earliest parent in the chain we can see in this row's XML".
+# We pick the parent with the earliest filing date if available, otherwise
+# the first non-PCT parent listed. When no parent is listed, the application
+# is its own family root.
+def family_root_app_no_from_root(root: Any, current_app_no: str | None) -> Optional[str]:
+    if root is None:
+        return None
+    me = normalize_application_number_key(current_app_no) if current_app_no else ""
+    parents: list[tuple[Optional[date], str]] = []
+    for el in root.xpath(".//Continuity/ParentContinuityList/ParentContinuity"):
+        child = extract_text(el, "ChildApplicationNumber/text()")
+        parent = extract_text(el, "ParentApplicationNumber/text()")
+        if not parent:
+            continue
+        # Skip PCT parents: harness convention treats PCT national-stage
+        # parents as a separate priority axis, not as a family root.
+        if not is_non_pct_parent_application_number(parent):
+            continue
+        if me and child and normalize_application_number_key(child) != me:
+            # Only entries where this app is the direct child describe the
+            # current row's prosecution chain. Other entries describe other
+            # generations of the same family and can confuse the picker.
+            continue
+        d = parse_date(extract_text(el, "ParentApplicationFilingDate/text()") or extract_text(el, "FilingDate/text()"))
+        parents.append((d, parent.strip()))
+    if not parents:
+        return current_app_no.strip() if current_app_no else None
+    parents.sort(key=lambda p: (p[0] is None, p[0] or date.max))
+    return parents[0][1]
+
+
+def family_root_app_no_from_xml(application_number: str | None, xml_text: str | None) -> Optional[str]:
+    if not xml_text or not xml_text.strip():
+        return application_number.strip() if application_number else None
+    try:
+        root = etree.fromstring(xml_text.encode("utf-8"))
+    except etree.XMLSyntaxError:
+        return application_number.strip() if application_number else None
+    return family_root_app_no_from_root(root, application_number)
+
+
+# `has_foreign_priority`: spec §5.7 — true when ForeignPriorityList has any
+# entries, OR when ParentContinuityList contains a PCT national-stage entry.
+def has_foreign_priority_from_root(root: Any) -> bool:
+    if root is None:
+        return False
+    if root.xpath(".//ForeignPriorityList/ForeignPriority"):
+        return True
+    for el in root.xpath(".//Continuity/ParentContinuityList/ParentContinuity"):
+        parent = (extract_text(el, "ParentApplicationNumber/text()") or "").upper()
+        if parent.startswith("PCT/") or parent.startswith("PCT "):
+            return True
+        status = (extract_text(el, "ParentApplicationStatusCode/text()") or "").upper()
+        if status == "PCT":
+            return True
+    return False
+
+
+def has_foreign_priority_from_xml(xml_text: str | None) -> bool:
+    if not xml_text or not xml_text.strip():
+        return False
+    try:
+        root = etree.fromstring(xml_text.encode("utf-8"))
+    except etree.XMLSyntaxError:
+        return False
+    return has_foreign_priority_from_root(root)
+
+
 def earliest_priority_date_from_root(root: Any) -> Any:
     """Earliest claim from <DomesticPriorityList> + <ForeignPriorityList>.
 
@@ -258,6 +411,10 @@ def parse_biblio_xml(xml_text: str) -> dict[str, Any]:
     continuity_child = continuity_child_of_prior_us_parent(app_num, root) if app_num else False
     has_child_continuation = has_child_continuation_from_root(root)
     earliest_priority_date = earliest_priority_date_from_root(root)
+    abandonment_date = abandonment_date_from_root(root)
+    noa_mailed_date = noa_mailed_date_from_root(root)
+    family_root_app_no = family_root_app_no_from_root(root, app_num)
+    has_foreign_priority = has_foreign_priority_from_root(root)
 
     return {
         "application_number": app_num,
@@ -295,4 +452,8 @@ def parse_biblio_xml(xml_text: str) -> dict[str, Any]:
         "continuity_child_of_prior_us": continuity_child,
         "has_child_continuation": has_child_continuation,
         "earliest_priority_date": earliest_priority_date,
+        "abandonment_date": abandonment_date,
+        "noa_mailed_date": noa_mailed_date,
+        "family_root_app_no": family_root_app_no,
+        "has_foreign_priority": has_foreign_priority,
     }

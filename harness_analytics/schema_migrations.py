@@ -92,6 +92,32 @@ SELECT
     a.has_child_continuation,
     a.earliest_priority_date,
     a.tenant_id,
+    -- Allowance Analytics v2 fields. Three are direct columns on
+    -- ``applications`` (backfilled from xml_raw); ``noa_mailed_date`` and
+    -- ``final_rejection_count`` are aliased onto the existing
+    -- ``application_analytics`` columns so callers can speak the spec
+    -- vocabulary without a second column. ``disposal_date`` and
+    -- ``months_to_allowance`` are computed in-view so we don't store
+    -- denormalized data that can drift.
+    a.abandonment_date,
+    a.family_root_app_no,
+    a.has_foreign_priority,
+    -- Prefer the application-level NOA mailed date (XML-derived); fall
+    -- back to the analytics-row first_noa_date (event-derived) when the
+    -- XML didn't surface an explicit element. This makes the new column
+    -- usable today while ``noa_mailed_date`` is still backfilling.
+    COALESCE(a.noa_mailed_date, aa.first_noa_date) AS noa_mailed_date,
+    COALESCE(aa.final_oa_count, 0) AS final_rejection_count,
+    COALESCE(a.issue_date, a.noa_mailed_date, aa.first_noa_date, a.abandonment_date)
+        AS disposal_date,
+    CASE
+        WHEN a.filing_date IS NOT NULL
+         AND COALESCE(a.noa_mailed_date, aa.first_noa_date) IS NOT NULL
+        THEN ROUND(
+            (COALESCE(a.noa_mailed_date, aa.first_noa_date) - a.filing_date)
+            / 30.44::numeric, 1)
+        ELSE NULL
+    END AS months_to_allowance,
     -- Timeline summary columns (nullable when computed_deadlines doesn't exist yet
     -- or no deadlines have been computed for this app). Computed via correlated
     -- subqueries so that filter + sort on these columns just works.
@@ -758,6 +784,201 @@ def _backfill_earliest_priority_date_once(engine) -> None:
     logger.info("earliest_priority_date backfill thread started (daemon)")
 
 
+# Allowance Analytics v2: backfill the four XML-derived columns
+# (``abandonment_date``, ``noa_mailed_date``, ``family_root_app_no``,
+# ``has_foreign_priority``) for already-ingested rows. Each row is wrapped in
+# a per-row EXCEPTION so a single malformed XML can't abort the run, exactly
+# the same shape as the ``has_child_continuation`` backfill above.
+#
+# A single DO block does all four updates so we walk ``xml_raw`` once. The
+# ``ContinuityDescription`` filtering on the family-root xpath excludes PCT
+# parents (Harness convention treats them as a separate priority axis).
+_ALLOWANCE_BACKFILL_FLAG = "schema.allowanceMetricsBackfilled"
+_ALLOWANCE_BACKFILL_SQL = """
+DO $$
+DECLARE
+  r RECORD;
+  v_doc xml;
+  v_abandon DATE;
+  v_noa DATE;
+  v_family TEXT;
+  v_has_fp BOOLEAN;
+  v_done INTEGER := 0;
+BEGIN
+  FOR r IN
+    SELECT id, application_number, xml_raw
+      FROM applications
+     WHERE (abandonment_date IS NULL
+            OR noa_mailed_date IS NULL
+            OR family_root_app_no IS NULL
+            OR has_foreign_priority IS NULL)
+       AND xml_raw IS NOT NULL
+       AND xml_raw <> ''
+  LOOP
+    BEGIN
+      v_doc := xmlparse(content r.xml_raw);
+
+      -- abandonment_date: prefer explicit element; fall back to the earliest
+      -- FileContentHistory whose description mentions abandonment.
+      SELECT MIN(NULLIF(BTRIM(t::text), '')::date) INTO v_abandon
+        FROM unnest(
+          xpath('//AbandonmentDate/text()', v_doc)
+          || xpath(
+               '//FileContentHistories/FileContentHistory[
+                  contains(translate(TransactionDescription/text(),
+                    ''ABCDEFGHIJKLMNOPQRSTUVWXYZ'',
+                    ''abcdefghijklmnopqrstuvwxyz''),
+                    ''abandonment'')
+                ]/TransactionDate/text()',
+               v_doc)
+        ) AS t;
+
+      -- noa_mailed_date: prefer explicit element; fall back to earliest
+      -- FCH entry whose description mentions Notice of Allowance.
+      SELECT MIN(NULLIF(BTRIM(t::text), '')::date) INTO v_noa
+        FROM unnest(
+          xpath('//NoticeOfAllowanceMailedDate/text()', v_doc)
+          || xpath(
+               '//FileContentHistories/FileContentHistory[
+                  contains(translate(TransactionDescription/text(),
+                    ''ABCDEFGHIJKLMNOPQRSTUVWXYZ'',
+                    ''abcdefghijklmnopqrstuvwxyz''),
+                    ''notice of allowance'')
+                ]/TransactionDate/text()',
+               v_doc)
+        ) AS t;
+
+      -- family_root_app_no: pick the parent application number whose entry
+      -- lists this row's application as the child, excluding PCT parents.
+      -- Default to the row's own application number when nothing is listed.
+      SELECT NULLIF(BTRIM((
+               xpath(
+                 '//Continuity/ParentContinuityList/ParentContinuity[
+                    ChildApplicationNumber/text()=$child
+                    and not(starts-with(ParentApplicationNumber/text(), ''PCT''))
+                  ]/ParentApplicationNumber/text()',
+                 v_doc,
+                 ARRAY[ARRAY['child', r.application_number]]
+               )
+             )[1]::text), '')
+        INTO v_family;
+      IF v_family IS NULL THEN
+        v_family := r.application_number;
+      END IF;
+
+      -- has_foreign_priority: any ForeignPriority entry, or any PCT parent.
+      SELECT
+        EXISTS (SELECT 1 FROM unnest(xpath('//ForeignPriorityList/ForeignPriority', v_doc)) x)
+        OR EXISTS (
+          SELECT 1 FROM unnest(
+            xpath('//Continuity/ParentContinuityList/ParentContinuity/ParentApplicationNumber/text()', v_doc)
+          ) AS y
+          WHERE upper(y::text) LIKE 'PCT/%' OR upper(y::text) LIKE 'PCT %'
+        )
+      INTO v_has_fp;
+
+      UPDATE applications SET
+        abandonment_date     = COALESCE(abandonment_date, v_abandon),
+        noa_mailed_date      = COALESCE(noa_mailed_date, v_noa),
+        family_root_app_no   = COALESCE(family_root_app_no, v_family),
+        has_foreign_priority = COALESCE(has_foreign_priority, COALESCE(v_has_fp, FALSE))
+       WHERE id = r.id;
+
+      v_done := v_done + 1;
+    EXCEPTION WHEN OTHERS THEN
+      -- Mark malformed rows as resolved-with-defaults so we don't retry
+      -- them on every boot. has_foreign_priority defaults to FALSE; the
+      -- date fields stay NULL (legitimately unknown).
+      BEGIN
+        UPDATE applications SET
+          has_foreign_priority = COALESCE(has_foreign_priority, FALSE),
+          family_root_app_no   = COALESCE(family_root_app_no, application_number)
+         WHERE id = r.id;
+      EXCEPTION WHEN OTHERS THEN
+        NULL;
+      END;
+    END;
+  END LOOP;
+  RAISE NOTICE 'allowance_metrics backfill: % rows updated', v_done;
+END $$;
+"""
+
+
+def _set_allowance_backfill_flag(engine) -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO app_settings (key, value, updated_at) "
+                "VALUES (:k, '1', now()) "
+                "ON CONFLICT (key) DO UPDATE SET value = '1', updated_at = now()"
+            ),
+            {"k": _ALLOWANCE_BACKFILL_FLAG},
+        )
+
+
+def _run_allowance_backfill_worker(database_url: str) -> None:
+    engine = create_engine(database_url, pool_pre_ping=True)
+    try:
+        logger.info("Backfilling allowance_metrics from xml_raw (background)…")
+        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            conn.execute(text(_ALLOWANCE_BACKFILL_SQL))
+        _set_allowance_backfill_flag(engine)
+        logger.info("allowance_metrics backfill complete")
+    except Exception:
+        logger.exception("allowance_metrics backfill failed; will retry on next startup")
+    finally:
+        engine.dispose()
+
+
+def _backfill_allowance_metrics_once(engine) -> None:
+    """Schedule the one-time Allowance Analytics v2 backfill in a daemon thread."""
+    insp = inspect(engine)
+    if not insp.has_table("applications") or not insp.has_table("app_settings"):
+        return
+    cols = {c["name"] for c in insp.get_columns("applications")}
+    required = {
+        "abandonment_date",
+        "noa_mailed_date",
+        "family_root_app_no",
+        "has_foreign_priority",
+        "xml_raw",
+    }
+    if not required.issubset(cols):
+        return
+    with engine.connect() as conn:
+        already = conn.execute(
+            text("SELECT value FROM app_settings WHERE key = :k"),
+            {"k": _ALLOWANCE_BACKFILL_FLAG},
+        ).first()
+        if already and (already[0] or "").strip() in ("1", "true", "yes"):
+            return
+        pending = conn.execute(
+            text(
+                "SELECT 1 FROM applications "
+                "WHERE (abandonment_date IS NULL "
+                "       OR noa_mailed_date IS NULL "
+                "       OR family_root_app_no IS NULL "
+                "       OR has_foreign_priority IS NULL) "
+                "  AND xml_raw IS NOT NULL AND xml_raw <> '' LIMIT 1"
+            )
+        ).first()
+    if pending is None:
+        _set_allowance_backfill_flag(engine)
+        return
+
+    database_url = get_database_url()
+    if not database_url:
+        return
+    t = threading.Thread(
+        target=_run_allowance_backfill_worker,
+        args=(database_url,),
+        name="allowance-metrics-backfill",
+        daemon=True,
+    )
+    t.start()
+    logger.info("allowance_metrics backfill thread started (daemon)")
+
+
 def _ensure_patent_applications_view(engine) -> None:
     insp = inspect(engine)
     if not insp.has_table("applications") or not insp.has_table("application_analytics"):
@@ -822,6 +1043,30 @@ def ensure_schema_migrations() -> None:
         _add_column_if_missing(
             engine,
             "applications",
+            "abandonment_date",
+            "DATE",
+        )
+        _add_column_if_missing(
+            engine,
+            "applications",
+            "noa_mailed_date",
+            "DATE",
+        )
+        _add_column_if_missing(
+            engine,
+            "applications",
+            "family_root_app_no",
+            "TEXT",
+        )
+        _add_column_if_missing(
+            engine,
+            "applications",
+            "has_foreign_priority",
+            "BOOLEAN",
+        )
+        _add_column_if_missing(
+            engine,
+            "applications",
             "tenant_id",
             "TEXT NOT NULL DEFAULT 'global'",
         )
@@ -860,6 +1105,7 @@ def ensure_schema_migrations() -> None:
         _backfill_applicant_names_once(engine)
         _backfill_has_child_continuation_once(engine)
         _backfill_earliest_priority_date_once(engine)
+        _backfill_allowance_metrics_once(engine)
     finally:
         engine.dispose()
 

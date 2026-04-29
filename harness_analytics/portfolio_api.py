@@ -28,10 +28,16 @@ from harness_analytics.ctnf_outcome import (
     extract_outcomes_from_grouped_events,
 )
 from harness_analytics.portfolio_aggregates import (
+    COHORT_AXIS_TO_FIELD,
     STATUS_PILL,
+    apply_recency_window,
+    compute_breakdowns,
     compute_charts,
+    compute_cohort_trend,
     compute_ctnf_response_speed_to_noa,
     compute_kpis,
+    compute_scope,
+    resolve_recency_window,
     status_label,
     status_tone,
 )
@@ -103,6 +109,16 @@ _ROW_COLUMNS: list[str] = [
     "office_name",
     "updated_at",
     "has_child_continuation",
+    # Allowance Analytics v2 derived fields. Sourced from the
+    # ``patent_applications`` view which now exposes these columns/aliases
+    # (see schema_migrations._PATENT_APPLICATIONS_VIEW_SQL).
+    "abandonment_date",
+    "noa_mailed_date",
+    "disposal_date",
+    "months_to_allowance",
+    "final_rejection_count",
+    "family_root_app_no",
+    "has_foreign_priority",
     # M7: timeline summary fields, populated by correlated subqueries on
     # computed_deadlines from the patent_applications view (see
     # _PATENT_APPLICATIONS_VIEW_SQL).
@@ -208,6 +224,76 @@ def _parse_iso_date(raw: Optional[str]) -> Optional[str]:
     except ValueError:
         return None
     return d.isoformat()
+
+
+# Allowance Analytics v2 (spec §7.2) — strict validation of the new query
+# params. Spec explicitly forbids silent fallback on invalid input: counsel
+# will not notice and will misread numbers. Any malformed value raises 400.
+_ALLOWED_COHORT_AXES: frozenset[str] = frozenset(COHORT_AXIS_TO_FIELD.keys())
+_ALLOWED_RECENCY_PRESETS: frozenset[str] = frozenset({"3y", "5y", "10y", "all", "custom"})
+
+
+def _validate_allowance_params(
+    cohort_axis: Optional[str],
+    recency: Optional[str],
+    custom_start: Optional[str],
+    custom_end: Optional[str],
+) -> tuple[str, str, Optional[date], Optional[date]]:
+    """Return ``(axis, preset, start_date, end_date)`` or raise ``HTTPException(400)``.
+
+    - ``cohort_axis`` defaults to ``"filing"`` when unset.
+    - ``recency`` defaults to ``"all"`` (no window) when unset.
+    - When ``recency == "custom"``, both ``custom_start`` and ``custom_end``
+      must parse as ISO-8601 dates and ``end >= start``.
+    """
+    axis = (cohort_axis or "filing").strip().lower()
+    if axis not in _ALLOWED_COHORT_AXES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid cohortAxis: {cohort_axis!r}. "
+                   f"Allowed: {sorted(_ALLOWED_COHORT_AXES)}",
+        )
+
+    preset = (recency or "all").strip().lower()
+    if preset not in _ALLOWED_RECENCY_PRESETS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid recency: {recency!r}. "
+                   f"Allowed: {sorted(_ALLOWED_RECENCY_PRESETS)}",
+        )
+
+    start_d: Optional[date] = None
+    end_d: Optional[date] = None
+    if preset == "custom":
+        if not custom_start:
+            raise HTTPException(
+                status_code=400,
+                detail="recency=custom requires customStart=YYYY-MM-DD",
+            )
+        try:
+            start_d = datetime.fromisoformat(custom_start).date()
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid customStart: {custom_start!r} "
+                       f"(must be ISO-8601 date)",
+            ) from exc
+        if custom_end:
+            try:
+                end_d = datetime.fromisoformat(custom_end).date()
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid customEnd: {custom_end!r} "
+                           f"(must be ISO-8601 date)",
+                ) from exc
+        if end_d is not None and start_d is not None and end_d < start_d:
+            raise HTTPException(
+                status_code=400,
+                detail="customEnd must be on or after customStart",
+            )
+
+    return axis, preset, start_d, end_d
 
 
 def _build_where(params: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -375,6 +461,15 @@ def _row_to_json(row: dict[str, Any]) -> dict[str, Any]:
         "isJac": bool(row.get("is_jac")),
         "officeName": row.get("office_name"),
         "updatedAt": _iso(row.get("updated_at")),
+        # Allowance Analytics v2 fields, exposed for client-side breakdowns
+        # and the per-row table when the user opts in via the column picker.
+        "abandonmentDate": _iso(row.get("abandonment_date")),
+        "noaMailedDate": _iso(row.get("noa_mailed_date")),
+        "disposalDate": _iso(row.get("disposal_date")),
+        "monthsToAllowance": float(row["months_to_allowance"]) if row.get("months_to_allowance") is not None else None,
+        "finalRejectionCount": row.get("final_rejection_count") or 0,
+        "familyRootAppNo": row.get("family_root_app_no"),
+        "hasForeignPriority": bool(row.get("has_foreign_priority")) if row.get("has_foreign_priority") is not None else None,
         # M7: timeline summary projected straight from the view.
         "nextDeadlineDate": _iso(row.get("next_deadline_date")),
         "nextDeadlineLabel": row.get("next_deadline_label"),
@@ -569,6 +664,14 @@ def portfolio(
     dir: Optional[str] = None,
     hasOpenDeadlines: Optional[str] = None,
     dueWithin: Optional[str] = None,
+    # Allowance Analytics v2 (spec §4.4) — recency-window filter for the
+    # cohort-aware KPIs / cohort trend / breakdowns. Optional; absent values
+    # mean "no recency filter" and the response stays byte-identical to the
+    # pre-v2 implementation.
+    cohortAxis: Optional[str] = None,
+    recency: Optional[str] = None,
+    customStart: Optional[str] = None,
+    customEnd: Optional[str] = None,
     page: int = Query(1, ge=1),
     pageSize: int = Query(_DEFAULT_PAGE_SIZE, ge=1, le=_MAX_PAGE_SIZE),
     db: Session = Depends(get_db),
@@ -579,6 +682,14 @@ def portfolio(
         hasOpenDeadlines=hasOpenDeadlines, dueWithin=dueWithin,
     )
 
+    # Validate the new analytics params eagerly so a bad URL produces a
+    # 400 with a clear error body rather than silent zeroes downstream.
+    axis, preset, custom_start_d, custom_end_d = _validate_allowance_params(
+        cohortAxis, recency, customStart, customEnd
+    )
+    today = date.today()
+    window = resolve_recency_window(preset, custom_start_d, custom_end_d, today=today)
+
     cap = _aggregate_row_cap()
     all_rows = _fetch_rows(db, params, cap=cap)
     total = len(all_rows)
@@ -586,6 +697,12 @@ def portfolio(
     start = (page - 1) * pageSize
     end = start + pageSize
     page_rows = all_rows[start:end]
+
+    # Recency-windowed slice drives the analytics blocks (KPIs, cohort
+    # trend, breakdowns, scope). The table rows / `total` count stay scoped
+    # to the global filter chips so the Matters tab doesn't silently shed
+    # matters when an attorney narrows the analytics window. Spec §7.3.
+    windowed_rows = apply_recency_window(all_rows, axis, window)
 
     charts = compute_charts(all_rows)
     # CTNF response-speed -> outcome chart. Lives outside compute_charts()
@@ -599,6 +716,41 @@ def portfolio(
     ctnf_events = _fetch_ctnf_outcome_events(db, ctnf_app_ids)
     charts["ctnfResponseSpeed"] = compute_ctnf_response_speed_to_noa(ctnf_events)
 
+    breakdowns = compute_breakdowns(windowed_rows)
+    cohort_trend = compute_cohort_trend(windowed_rows, axis)
+    scope = compute_scope(windowed_rows)
+
+    # Two KPI sets: ``kpis`` covers the dashboard (Overview tab) and is
+    # all-time over the chip-filtered selection — preserves the pre-v2
+    # numbers byte-identically. ``analyticsKpis`` is the recency-windowed
+    # version for the Allowance Analytics tab. Plan decision: recency
+    # scopes ONLY the Allowance tab so the Matters table doesn't silently
+    # shed rows when an attorney narrows the analytics window.
+    kpis = compute_kpis(all_rows)
+    analytics_kpis = compute_kpis(
+        all_rows, cohort_axis=axis, recency_window=window
+    )
+
+    # Prior-period delta (spec §5 + mockup "▲ 2.4 pts vs prior 5y"). Compute
+    # the same KPIs over a window of identical length immediately preceding
+    # the current window. Skipped when the user picked "all" or "custom"
+    # (no obvious "prior" range), or when the current window has no
+    # apps at all (delta is meaningless). Only attaches deltas to the
+    # analytics KPI set; the dashboard band keeps its 0.0 placeholder.
+    if window[0] is not None and window[1] is not None and preset in {"3y", "5y", "10y"}:
+        duration = window[1] - window[0]
+        prior_window = (window[0] - duration, window[0])
+        prior_kpis = compute_kpis(all_rows, cohort_axis=axis, recency_window=prior_window)
+        analytics_kpis["allowanceRateDeltaPctPts"] = _safe_delta(
+            analytics_kpis.get("allowanceRatePct"), prior_kpis.get("allowanceRatePct")
+        )
+        analytics_kpis["chmAllowanceRateDeltaPctPts"] = _safe_delta(
+            analytics_kpis.get("chmAllowanceRatePct"), prior_kpis.get("chmAllowanceRatePct")
+        )
+        analytics_kpis["faaDeltaPctPts"] = _safe_delta(
+            analytics_kpis.get("faaPct"), prior_kpis.get("faaPct")
+        )
+
     return JSONResponse(
         {
             "rows": [_row_to_json(r) for r in page_rows],
@@ -607,11 +759,34 @@ def portfolio(
             "pageSize": pageSize,
             "aggregateRowCap": cap if cap and cap > 0 else None,
             "capped": capped,
-            "kpis": compute_kpis(all_rows),
+            "kpis": kpis,
+            "analyticsKpis": analytics_kpis,
             "charts": charts,
             "statusPill": {str(k): v for k, v in STATUS_PILL.items()},
+            # Allowance Analytics v2 (spec §4.4 response shape).
+            "cohortAxis": axis,
+            "resolvedWindow": {
+                "preset": preset,
+                "start": window[0].isoformat() if window[0] else None,
+                "end": window[1].isoformat() if window[1] else None,
+            },
+            "scope": scope,
+            "cohortTrend": cohort_trend,
+            "byArtUnit": breakdowns["byArtUnit"],
+            "byPathToAllowance": breakdowns["byPathToAllowance"],
         }
     )
+
+
+def _safe_delta(current: Any, prior: Any) -> float:
+    """Pct-point delta between two KPIs. Returns 0.0 when either side is
+    None so the frontend renders a neutral indicator rather than blowing up."""
+    if current is None or prior is None:
+        return 0.0
+    try:
+        return round(float(current) - float(prior), 1)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 @router.get("/portfolio.csv")

@@ -92,6 +92,10 @@ def _ingest_one_file(
     app.continuity_child_of_prior_us = bool(data.get("continuity_child_of_prior_us"))
     app.has_child_continuation = bool(data.get("has_child_continuation"))
     app.earliest_priority_date = data.get("earliest_priority_date")
+    app.abandonment_date = data.get("abandonment_date")
+    app.noa_mailed_date = data.get("noa_mailed_date")
+    app.family_root_app_no = data.get("family_root_app_no")
+    app.has_foreign_priority = data.get("has_foreign_priority")
     app.xml_raw = xml_text if store_xml_raw else None
     session.flush()
 

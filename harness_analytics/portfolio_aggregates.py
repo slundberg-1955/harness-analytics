@@ -8,6 +8,7 @@ database. Keep this module free of FastAPI / SQLAlchemy imports.
 from __future__ import annotations
 
 import math
+from datetime import date, datetime
 from statistics import mean, median
 from typing import Any, Iterable, Optional
 
@@ -60,6 +61,458 @@ def _days_to_noa_values(rows: Iterable[dict[str, Any]]) -> list[int]:
 # (The Traditional rate intentionally still uses Patented (150) only.)
 _CHM_ALLOWED_STATUS_CODES: frozenset[int] = frozenset({150, 93, 159})
 
+# Allowance Analytics v2 (spec §4-5).
+#
+# Cohort-axis options the user picks in the recency filter. Each maps to a
+# date column on the patent_applications view. Rows whose cohort date is null
+# are excluded from the analytic entirely (spec §4.3 — null cohort dates
+# would otherwise be silently bucketed and counsel will misread).
+COHORT_AXIS_TO_FIELD: dict[str, str] = {
+    "filing": "filing_date",
+    "disposal": "disposal_date",
+    "noa": "noa_mailed_date",
+}
+
+_RECENCY_PRESETS_YEARS: dict[str, int] = {"3y": 3, "5y": 5, "10y": 10}
+
+
+def _coerce_date(v: Any) -> Optional[date]:
+    """Best-effort cast to ``date`` for fields that may arrive as ISO strings."""
+    if v is None:
+        return None
+    if isinstance(v, datetime):
+        return v.date()
+    if isinstance(v, date):
+        return v
+    s = str(v).strip()
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s.split("T")[0]).date()
+    except ValueError:
+        return None
+
+
+def _years_ago(today: date, n: int) -> date:
+    """``today`` shifted ``n`` years earlier; safe for Feb 29 by clamping to 28."""
+    try:
+        return today.replace(year=today.year - n)
+    except ValueError:
+        return today.replace(year=today.year - n, day=28)
+
+
+def resolve_recency_window(
+    preset: Optional[str],
+    custom_start: Optional[date],
+    custom_end: Optional[date],
+    *,
+    today: Optional[date] = None,
+) -> tuple[Optional[date], Optional[date]]:
+    """Spec §4.2 — resolve a window selection into a ``(start, end)`` date pair.
+
+    ``None`` for either bound means "unbounded on that side". When ``preset``
+    is ``None`` or ``"all"``, returns ``(None, None)`` so callers can detect
+    "no recency filter active" and skip the slice.
+    """
+    if today is None:
+        today = date.today()
+    if not preset or preset == "all":
+        return (None, None)
+    if preset == "custom":
+        return (custom_start, custom_end or today)
+    years = _RECENCY_PRESETS_YEARS.get(preset)
+    if years is None:
+        return (None, None)
+    return (_years_ago(today, years), today)
+
+
+def apply_recency_window(
+    rows: Iterable[dict[str, Any]],
+    cohort_axis: str = "filing",
+    window: Optional[tuple[Optional[date], Optional[date]]] = None,
+) -> list[dict[str, Any]]:
+    """Slice ``rows`` to those whose cohort-axis date falls in ``window``.
+
+    Drops rows whose cohort-axis date is null (spec §4.3 — null dates are
+    "invisible" to the analytic, not silently bucketed). When ``window`` is
+    ``None`` or ``(None, None)``, returns the row list unchanged so the
+    caller can detect "no filter".
+    """
+    if window is None or (window[0] is None and window[1] is None):
+        return list(rows)
+    field = COHORT_AXIS_TO_FIELD.get(cohort_axis, "filing_date")
+    start, end = window
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        d = _coerce_date(r.get(field))
+        if d is None:
+            continue
+        if start is not None and d < start:
+            continue
+        if end is not None and d > end:
+            continue
+        out.append(r)
+    return out
+
+
+def _percentile(sorted_vals: list[float], p: float) -> float:
+    """Linear interpolation between adjacent sorted values; safe for any n>=1."""
+    n = len(sorted_vals)
+    if n == 1:
+        return sorted_vals[0]
+    pos = p * (n - 1)
+    lo = int(math.floor(pos))
+    hi = int(math.ceil(pos))
+    if lo == hi:
+        return sorted_vals[lo]
+    frac = pos - lo
+    return sorted_vals[lo] * (1 - frac) + sorted_vals[hi] * frac
+
+
+# ---------------------------------------------------------------------------
+# Allowance Analytics v2 KPIs (spec §5).
+#
+# Empty-window rule (spec §9): every NEW KPI returns ``None`` (not 0) when
+# its denominator is empty so the frontend can render ``—``. Existing legacy
+# fields (``allowanceRatePct``, ``chmAllowanceRatePct``) keep their original
+# zero-when-empty behavior to preserve byte-identical responses on rows that
+# pre-date this feature.
+# ---------------------------------------------------------------------------
+
+
+def compute_first_action_allowance(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """First-Action Allowance Rate (spec §5.1).
+
+    Of closed-in-window applications, the share that received an NOA without
+    ever filing an RCE and without ever receiving a Final Rejection.
+    """
+    closed = sum(
+        1
+        for r in rows
+        if r.get("application_status_code") in (150, 161)
+    )
+    if not closed:
+        return {"pct": None, "count": 0, "denom": 0}
+    num = sum(
+        1
+        for r in rows
+        if r.get("application_status_code") in _CHM_ALLOWED_STATUS_CODES
+        and _get_int(r, "rce_count") == 0
+        and _get_int(r, "final_rejection_count") == 0
+    )
+    return {
+        "pct": round(100.0 * num / closed, 1),
+        "count": num,
+        "denom": closed,
+    }
+
+
+def compute_time_to_allowance(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Median / P25 / P75 months from filing to NOA mailed (spec §5.2)."""
+    months: list[float] = []
+    for r in rows:
+        v = r.get("months_to_allowance")
+        if v is None:
+            continue
+        try:
+            months.append(float(v))
+        except (TypeError, ValueError):
+            continue
+    if not months:
+        return {"medianMonths": None, "p25Months": None, "p75Months": None, "n": 0}
+    months.sort()
+    return {
+        "medianMonths": round(_percentile(months, 0.50), 1),
+        "p25Months": round(_percentile(months, 0.25), 1),
+        "p75Months": round(_percentile(months, 0.75), 1),
+        "n": len(months),
+    }
+
+
+def compute_rce_intensity(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """RCE Intensity among allowed apps (spec §5.3)."""
+    allowed = [
+        r for r in rows
+        if r.get("application_status_code") in _CHM_ALLOWED_STATUS_CODES
+    ]
+    if not allowed:
+        return {"avgRceAmongAllowed": None, "pctAllowancesWithRce": None, "n": 0}
+    rce_counts = [_get_int(r, "rce_count") for r in allowed]
+    avg = round(sum(rce_counts) / len(allowed), 2)
+    with_rce = sum(1 for n in rce_counts if n >= 1)
+    pct = round(100.0 * with_rce / len(allowed), 1)
+    return {
+        "avgRceAmongAllowed": avg,
+        "pctAllowancesWithRce": pct,
+        "n": len(allowed),
+    }
+
+
+def compute_strategic_abandonment(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Of abandoned, the share with a CON/CIP/DIV child (spec §5.4)."""
+    abandoned = [r for r in rows if r.get("application_status_code") == 161]
+    if not abandoned:
+        return {"pct": None, "withChild": 0, "totalAbandoned": 0}
+    with_child = sum(1 for r in abandoned if r.get("has_child_continuation"))
+    return {
+        "pct": round(100.0 * with_child / len(abandoned), 1),
+        "withChild": with_child,
+        "totalAbandoned": len(abandoned),
+    }
+
+
+def compute_family_yield(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """For each patented app, count OTHER patented apps in the same family
+    chain (spec §5.5) and report the average. Anchors on
+    ``family_root_app_no`` populated by PR 1's XML backfill; falls back to
+    the application's own number when the root is missing (means the app is
+    its own family root, contributes 0 to the average).
+    """
+    patented = [r for r in rows if r.get("application_status_code") == 150]
+    if not patented:
+        return {"avg": None, "n": 0}
+    by_family: dict[str, list[Any]] = {}
+    for r in patented:
+        root = r.get("family_root_app_no") or r.get("application_number")
+        if not root:
+            continue
+        by_family.setdefault(str(root), []).append(r.get("application_number"))
+    counts: list[int] = []
+    for r in patented:
+        root = r.get("family_root_app_no") or r.get("application_number")
+        if root and str(root) in by_family:
+            counts.append(max(0, len(by_family[str(root)]) - 1))
+        else:
+            counts.append(0)
+    return {
+        "avg": round(sum(counts) / len(counts), 2),
+        "n": len(patented),
+    }
+
+
+def compute_pendency(rows: list[dict[str, Any]], *, today: Optional[date] = None) -> dict[str, Any]:
+    """Median months in prosecution among PENDING apps (spec §5.6).
+
+    Uses the open cohort, not the closed cohort — this is the live-portfolio
+    sanity check that pairs with Time-to-Allowance.
+    """
+    if today is None:
+        today = date.today()
+    pending_days: list[int] = []
+    for r in rows:
+        code = r.get("application_status_code")
+        if code in (150, 161):
+            continue
+        fd = _coerce_date(r.get("filing_date"))
+        if fd is None:
+            continue
+        pending_days.append((today - fd).days)
+    if not pending_days:
+        return {"medianMonths": None, "n": 0}
+    return {
+        "medianMonths": round(median(pending_days) / 30.44, 1),
+        "n": len(pending_days),
+    }
+
+
+def compute_foreign_priority_share(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Share of apps claiming non-US priority benefit (spec §5.7).
+
+    Sourced from ``has_foreign_priority`` populated by PR 1's XML backfill.
+    Rows where the column is still NULL (mid-backfill) are counted as False
+    so the metric stays well-defined; flag this in the methodology footer.
+    """
+    if not rows:
+        return {"pct": None, "n": 0, "total": 0}
+    n = sum(1 for r in rows if r.get("has_foreign_priority"))
+    return {
+        "pct": round(100.0 * n / len(rows), 1),
+        "n": n,
+        "total": len(rows),
+    }
+
+
+def compute_scope(rows: list[dict[str, Any]]) -> dict[str, int]:
+    """Three counts the scope-line under the filter bar reads from."""
+    total = len(rows)
+    closed = sum(
+        1 for r in rows if r.get("application_status_code") in (150, 161)
+    )
+    return {
+        "totalInWindow": total,
+        "closedInWindow": closed,
+        "pendingInWindow": total - closed,
+    }
+
+
+def _trad_chm_faa_for_group(group: list[dict[str, Any]]) -> dict[str, Optional[float]]:
+    """Helper used by both the cohort trend and the byArtUnit breakdown."""
+    patented = sum(1 for r in group if r.get("application_status_code") == 150)
+    abandoned = sum(1 for r in group if r.get("application_status_code") == 161)
+    closed = patented + abandoned
+    trad = round(100.0 * patented / closed, 1) if closed else None
+
+    chm_a = sum(
+        1 for r in group
+        if r.get("application_status_code") in _CHM_ALLOWED_STATUS_CODES
+        and _get_int(r, "rce_count") == 0
+    )
+    chm_ca = sum(
+        1 for r in group
+        if r.get("application_status_code") in _CHM_ALLOWED_STATUS_CODES
+        and _get_int(r, "rce_count") >= 1
+    )
+    chm_ab = sum(
+        1 for r in group
+        if r.get("application_status_code") == 161
+        and not r.get("has_child_continuation")
+    )
+    chm_num = chm_a + chm_ca
+    chm_den = chm_num + chm_ab
+    chm = round(100.0 * chm_num / chm_den, 1) if chm_den else None
+
+    faa_num = sum(
+        1 for r in group
+        if r.get("application_status_code") in _CHM_ALLOWED_STATUS_CODES
+        and _get_int(r, "rce_count") == 0
+        and _get_int(r, "final_rejection_count") == 0
+    )
+    faa = round(100.0 * faa_num / closed, 1) if closed else None
+    return {"traditionalPct": trad, "chmPct": chm, "faaPct": faa}
+
+
+def compute_cohort_trend(
+    rows: list[dict[str, Any]], cohort_axis: str = "filing"
+) -> list[dict[str, Any]]:
+    """One row per cohort year (spec §7.1).
+
+    Marks ``maturing=True`` when any pending app falls in the year — the
+    frontend renders those years as hollow circles + dashed connectors so
+    counsel doesn't read still-evolving data as a final number.
+    """
+    field = COHORT_AXIS_TO_FIELD.get(cohort_axis, "filing_date")
+    by_year: dict[int, list[dict[str, Any]]] = {}
+    for r in rows:
+        d = _coerce_date(r.get(field))
+        if d is None:
+            continue
+        by_year.setdefault(d.year, []).append(r)
+    out: list[dict[str, Any]] = []
+    for year in sorted(by_year):
+        group = by_year[year]
+        rates = _trad_chm_faa_for_group(group)
+        maturing = any(
+            r.get("application_status_code") not in (150, 161) for r in group
+        )
+        out.append(
+            {
+                "year": year,
+                "n": len(group),
+                "traditionalPct": rates["traditionalPct"],
+                "chmPct": rates["chmPct"],
+                "faaPct": rates["faaPct"],
+                "maturing": maturing,
+            }
+        )
+    return out
+
+
+# Path-to-allowance bucket display labels in the order they should render.
+_PATH_BUCKETS: tuple[tuple[str, str], ...] = (
+    ("firstAction",     "First-action allowance"),
+    ("afterOaNoRce",    "After ≥1 OA, no RCE"),
+    ("after1Rce",       "After 1 RCE"),
+    ("after2PlusRce",   "After ≥2 RCEs"),
+)
+
+
+def _classify_allowance_path(rce: int, final_rej: int) -> str:
+    if rce == 0 and final_rej == 0:
+        return "firstAction"
+    if rce == 0:
+        return "afterOaNoRce"
+    if rce == 1:
+        return "after1Rce"
+    return "after2PlusRce"
+
+
+def compute_breakdowns(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Top-10 art unit breakdown + 4-bucket path-to-allowance (spec §7.1).
+
+    Art-unit rows missing a ``group_art_unit`` are dropped (you can't show a
+    blank row in the table). Path-to-allowance buckets every allowed app
+    exactly once into one of the four buckets.
+    """
+    by_au_groups: dict[str, list[dict[str, Any]]] = {}
+    for r in rows:
+        au = r.get("group_art_unit")
+        if not au:
+            continue
+        by_au_groups.setdefault(str(au), []).append(r)
+
+    art_unit_rows: list[dict[str, Any]] = []
+    for au, group in by_au_groups.items():
+        patented = sum(1 for r in group if r.get("application_status_code") == 150)
+        abandoned = sum(1 for r in group if r.get("application_status_code") == 161)
+        closed = patented + abandoned
+        if closed == 0:
+            continue
+        rates = _trad_chm_faa_for_group(group)
+        months = [
+            float(r["months_to_allowance"])
+            for r in group
+            if r.get("months_to_allowance") is not None
+        ]
+        med = round(median(months), 1) if months else None
+        art_unit_rows.append(
+            {
+                "artUnit": au,
+                "closed": closed,
+                "tradPct": rates["traditionalPct"],
+                "chmPct": rates["chmPct"],
+                "faaPct": rates["faaPct"],
+                "medianMonths": med,
+            }
+        )
+    art_unit_rows.sort(key=lambda x: (-x["closed"], x["artUnit"]))
+    art_unit_rows = art_unit_rows[:10]
+
+    allowed = [
+        r for r in rows
+        if r.get("application_status_code") in _CHM_ALLOWED_STATUS_CODES
+    ]
+    bucket_groups: dict[str, list[dict[str, Any]]] = {key: [] for key, _ in _PATH_BUCKETS}
+    for r in allowed:
+        key = _classify_allowance_path(
+            _get_int(r, "rce_count"),
+            _get_int(r, "final_rejection_count"),
+        )
+        bucket_groups[key].append(r)
+
+    total_allowed = len(allowed)
+    by_path: list[dict[str, Any]] = []
+    for key, label in _PATH_BUCKETS:
+        bucket = bucket_groups[key]
+        count = len(bucket)
+        share = round(100.0 * count / total_allowed, 1) if total_allowed else 0.0
+        months = [
+            float(r["months_to_allowance"])
+            for r in bucket
+            if r.get("months_to_allowance") is not None
+        ]
+        med = round(median(months), 1) if months else None
+        by_path.append(
+            {
+                "key": key,
+                "path": label,
+                "count": count,
+                "sharePct": share,
+                "medianMonths": med,
+            }
+        )
+
+    return {"byArtUnit": art_unit_rows, "byPathToAllowance": by_path}
+
 
 def _deadlines_within(rows: Iterable[dict[str, Any]], days: int) -> int:
     """Count rows whose next_deadline_date falls within ``days`` of today.
@@ -92,7 +545,22 @@ def _deadlines_within(rows: Iterable[dict[str, Any]], days: int) -> int:
     return out
 
 
-def compute_kpis(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def compute_kpis(
+    rows: list[dict[str, Any]],
+    *,
+    cohort_axis: str = "filing",
+    recency_window: Optional[tuple[Optional[date], Optional[date]]] = None,
+) -> dict[str, Any]:
+    """Spec §7.1.
+
+    When ``recency_window`` is ``None`` (or ``(None, None)``), behavior is
+    byte-identical to the pre-v2 implementation (regression-tested in
+    ``test_traditional_and_chm_unchanged_when_no_recency_filter``). When a
+    window is supplied, ``rows`` is sliced via ``apply_recency_window`` at
+    the very top so every downstream KPI runs against the windowed set.
+    """
+    rows = apply_recency_window(rows, cohort_axis=cohort_axis, window=recency_window)
+
     total = len(rows)
     patented = sum(1 for r in rows if r.get("application_status_code") == 150)
     abandoned = sum(1 for r in rows if r.get("application_status_code") == 161)
@@ -142,6 +610,17 @@ def compute_kpis(rows: list[dict[str, Any]]) -> dict[str, Any]:
     rce_count = sum(1 for r in rows if _get_int(r, "rce_count") > 0)
     rce_rate = round(100.0 * rce_count / total, 1) if total else 0.0
 
+    # Allowance Analytics v2 secondary KPIs (spec §5). All of these honor the
+    # empty-window rule: NULL pct (rendered as "—" by the frontend) when the
+    # denominator is empty, never 0.0.
+    faa = compute_first_action_allowance(rows)
+    tta = compute_time_to_allowance(rows)
+    rce_intensity = compute_rce_intensity(rows)
+    strategic_ab = compute_strategic_abandonment(rows)
+    family_yield = compute_family_yield(rows)
+    pendency = compute_pendency(rows)
+    foreign_priority = compute_foreign_priority_share(rows)
+
     return {
         "totalApps": total,
         "patentedCount": patented,
@@ -149,9 +628,11 @@ def compute_kpis(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "abandonedCount": abandoned,
         "allowanceRatePct": allowance_pct,
         # Prior-period delta is not tracked yet; surfaced as 0.0 so the UI can
-        # show a neutral indicator. Spec calls for it but v1 ships without it.
+        # show a neutral indicator. PR 5 wires it via a second compute_kpis
+        # call against the prior-shifted window.
         "allowanceRateDeltaPctPts": 0.0,
         "chmAllowanceRatePct": chm_pct,
+        "chmAllowanceRateDeltaPctPts": 0.0,
         "chmAllowedNoRce": chm_allowed_no_rce,
         "chmAllowedWithRce": chm_allowed_with_rce,
         "chmAbandonedNoChild": chm_abandoned_no_child,
@@ -173,6 +654,17 @@ def compute_kpis(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "openDeadlines": sum(
             (_get_int(r, "open_deadline_count")) for r in rows
         ),
+        # Allowance Analytics v2 secondary KPIs.
+        "faaPct": faa["pct"],
+        "faaCount": faa["count"],
+        "faaDenom": faa["denom"],
+        "faaDeltaPctPts": 0.0,
+        "timeToAllowance": tta,
+        "rceIntensity": rce_intensity,
+        "strategicAbandonment": strategic_ab,
+        "familyYield": family_yield,
+        "pendency": pendency,
+        "foreignPriority": foreign_priority,
     }
 
 

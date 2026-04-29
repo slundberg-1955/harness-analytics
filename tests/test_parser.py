@@ -5,10 +5,14 @@ from pathlib import Path
 import pytest
 
 from harness_analytics.xml_parser import (
+    abandonment_date_from_xml,
     child_of_prior_us_parent_from_xml,
     continuity_child_of_prior_us_parent,
     earliest_priority_date_from_xml,
+    family_root_app_no_from_xml,
     has_child_continuation_from_xml,
+    has_foreign_priority_from_xml,
+    noa_mailed_date_from_xml,
     parse_biblio_xml,
 )
 
@@ -230,3 +234,221 @@ def test_earliest_priority_date_none_when_no_claims() -> None:
     assert data["earliest_priority_date"] is None
     assert earliest_priority_date_from_xml("") is None
     assert earliest_priority_date_from_xml(None) is None
+
+
+# ---------------------------------------------------------------------------
+# Allowance Analytics v2 derived fields (spec §6).
+# ---------------------------------------------------------------------------
+
+
+def test_noa_mailed_date_prefers_explicit_element() -> None:
+    """When <NoticeOfAllowanceMailedDate> exists, use it verbatim."""
+    from datetime import date
+
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<PatentCenterApplication>
+  <ApplicationBibliographicData><ApplicationNumber>17000100</ApplicationNumber></ApplicationBibliographicData>
+  <NoticeOfAllowanceMailedDate>2024-03-15T00:00:00</NoticeOfAllowanceMailedDate>
+  <FileContentHistories>
+    <FileContentHistory>
+      <TransactionDate>2024-09-01T00:00:00</TransactionDate>
+      <TransactionDescription>Mail Notice of Allowance</TransactionDescription>
+    </FileContentHistory>
+  </FileContentHistories>
+  <ImageFileWrapperList/>
+</PatentCenterApplication>"""
+    data = parse_biblio_xml(xml)
+    assert data["noa_mailed_date"] == date(2024, 3, 15)
+    assert noa_mailed_date_from_xml(xml) == date(2024, 3, 15)
+
+
+def test_noa_mailed_date_falls_back_to_file_content_history() -> None:
+    from datetime import date
+
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<PatentCenterApplication>
+  <ApplicationBibliographicData><ApplicationNumber>17000101</ApplicationNumber></ApplicationBibliographicData>
+  <FileContentHistories>
+    <FileContentHistory>
+      <TransactionDate>2023-06-01T00:00:00</TransactionDate>
+      <TransactionDescription>Mail Non-Final Rejection</TransactionDescription>
+    </FileContentHistory>
+    <FileContentHistory>
+      <TransactionDate>2024-04-12T00:00:00</TransactionDate>
+      <TransactionDescription>Mail Notice of Allowance</TransactionDescription>
+    </FileContentHistory>
+    <FileContentHistory>
+      <TransactionDate>2024-08-01T00:00:00</TransactionDate>
+      <TransactionDescription>Notice of Allowance and Fees Due</TransactionDescription>
+    </FileContentHistory>
+  </FileContentHistories>
+  <ImageFileWrapperList/>
+</PatentCenterApplication>"""
+    data = parse_biblio_xml(xml)
+    assert data["noa_mailed_date"] == date(2024, 4, 12)
+
+
+def test_noa_mailed_date_none_when_no_signal() -> None:
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<PatentCenterApplication>
+  <ApplicationBibliographicData><ApplicationNumber>17000102</ApplicationNumber></ApplicationBibliographicData>
+  <FileContentHistories/>
+  <ImageFileWrapperList/>
+</PatentCenterApplication>"""
+    data = parse_biblio_xml(xml)
+    assert data["noa_mailed_date"] is None
+    assert noa_mailed_date_from_xml("") is None
+    assert noa_mailed_date_from_xml(None) is None
+
+
+def test_abandonment_date_prefers_explicit_element() -> None:
+    from datetime import date
+
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<PatentCenterApplication>
+  <ApplicationBibliographicData><ApplicationNumber>17000110</ApplicationNumber></ApplicationBibliographicData>
+  <AbandonmentDate>2023-11-20T00:00:00</AbandonmentDate>
+  <FileContentHistories/>
+  <ImageFileWrapperList/>
+</PatentCenterApplication>"""
+    data = parse_biblio_xml(xml)
+    assert data["abandonment_date"] == date(2023, 11, 20)
+    assert abandonment_date_from_xml(xml) == date(2023, 11, 20)
+
+
+def test_abandonment_date_falls_back_to_file_content_history() -> None:
+    from datetime import date
+
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<PatentCenterApplication>
+  <ApplicationBibliographicData><ApplicationNumber>17000111</ApplicationNumber></ApplicationBibliographicData>
+  <FileContentHistories>
+    <FileContentHistory>
+      <TransactionDate>2023-04-01T00:00:00</TransactionDate>
+      <TransactionDescription>Notice of Abandonment</TransactionDescription>
+    </FileContentHistory>
+  </FileContentHistories>
+  <ImageFileWrapperList/>
+</PatentCenterApplication>"""
+    data = parse_biblio_xml(xml)
+    assert data["abandonment_date"] == date(2023, 4, 1)
+
+
+def test_family_root_picks_first_non_pct_parent() -> None:
+    """When this app has a non-PCT parent, that's the family root."""
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<PatentCenterApplication>
+  <ApplicationBibliographicData><ApplicationNumber>17000200</ApplicationNumber></ApplicationBibliographicData>
+  <Continuity>
+    <ParentContinuityList>
+      <ParentContinuity>
+        <ParentApplicationNumber>15123456</ParentApplicationNumber>
+        <ParentApplicationFilingDate>2018-07-15</ParentApplicationFilingDate>
+        <ChildApplicationNumber>17000200</ChildApplicationNumber>
+        <ContinuityDescription>is a Continuation of</ContinuityDescription>
+      </ParentContinuity>
+      <ParentContinuity>
+        <ParentApplicationNumber>14654321</ParentApplicationNumber>
+        <ParentApplicationFilingDate>2015-01-10</ParentApplicationFilingDate>
+        <ChildApplicationNumber>15123456</ChildApplicationNumber>
+        <ContinuityDescription>is a Continuation of</ContinuityDescription>
+      </ParentContinuity>
+    </ParentContinuityList>
+    <ChildContinuityList/>
+  </Continuity>
+  <FileContentHistories/>
+  <ImageFileWrapperList/>
+</PatentCenterApplication>"""
+    data = parse_biblio_xml(xml)
+    # Picks the only entry where this app is the direct child; the
+    # grandparent listing is correctly ignored (it describes the *parent's*
+    # parent and would otherwise leak into other rows in the family tree).
+    assert data["family_root_app_no"] == "15123456"
+    assert family_root_app_no_from_xml("17000200", xml) == "15123456"
+
+
+def test_family_root_falls_back_to_self_when_no_parent_listed() -> None:
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<PatentCenterApplication>
+  <ApplicationBibliographicData><ApplicationNumber>17000201</ApplicationNumber></ApplicationBibliographicData>
+  <Continuity><ParentContinuityList/><ChildContinuityList/></Continuity>
+  <FileContentHistories/>
+  <ImageFileWrapperList/>
+</PatentCenterApplication>"""
+    data = parse_biblio_xml(xml)
+    assert data["family_root_app_no"] == "17000201"
+
+
+def test_family_root_skips_pct_parents() -> None:
+    """PCT parents shouldn't anchor the family root — they're a separate axis."""
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<PatentCenterApplication>
+  <ApplicationBibliographicData><ApplicationNumber>17000202</ApplicationNumber></ApplicationBibliographicData>
+  <Continuity>
+    <ParentContinuityList>
+      <ParentContinuity>
+        <ParentApplicationNumber>PCT/US2018/050123</ParentApplicationNumber>
+        <ChildApplicationNumber>17000202</ChildApplicationNumber>
+        <ContinuityDescription>is a National Stage Entry of</ContinuityDescription>
+      </ParentContinuity>
+    </ParentContinuityList>
+    <ChildContinuityList/>
+  </Continuity>
+  <FileContentHistories/>
+  <ImageFileWrapperList/>
+</PatentCenterApplication>"""
+    data = parse_biblio_xml(xml)
+    assert data["family_root_app_no"] == "17000202"
+
+
+def test_has_foreign_priority_true_for_foreign_priority_list() -> None:
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<PatentCenterApplication>
+  <ApplicationBibliographicData><ApplicationNumber>17000300</ApplicationNumber></ApplicationBibliographicData>
+  <ForeignPriorityList>
+    <ForeignPriority>
+      <ApplicationNumber>EP1234567</ApplicationNumber>
+      <FilingDate>2021-05-01</FilingDate>
+      <CountryCode>EP</CountryCode>
+    </ForeignPriority>
+  </ForeignPriorityList>
+  <FileContentHistories/>
+  <ImageFileWrapperList/>
+</PatentCenterApplication>"""
+    data = parse_biblio_xml(xml)
+    assert data["has_foreign_priority"] is True
+    assert has_foreign_priority_from_xml(xml) is True
+
+
+def test_has_foreign_priority_true_for_pct_parent() -> None:
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<PatentCenterApplication>
+  <ApplicationBibliographicData><ApplicationNumber>17000301</ApplicationNumber></ApplicationBibliographicData>
+  <Continuity>
+    <ParentContinuityList>
+      <ParentContinuity>
+        <ParentApplicationNumber>PCT/US2019/012345</ParentApplicationNumber>
+        <ChildApplicationNumber>17000301</ChildApplicationNumber>
+        <ContinuityDescription>is a National Stage Entry of</ContinuityDescription>
+      </ParentContinuity>
+    </ParentContinuityList>
+    <ChildContinuityList/>
+  </Continuity>
+  <FileContentHistories/>
+  <ImageFileWrapperList/>
+</PatentCenterApplication>"""
+    data = parse_biblio_xml(xml)
+    assert data["has_foreign_priority"] is True
+
+
+def test_has_foreign_priority_false_for_us_only_application() -> None:
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<PatentCenterApplication>
+  <ApplicationBibliographicData><ApplicationNumber>17000302</ApplicationNumber></ApplicationBibliographicData>
+  <FileContentHistories/>
+  <ImageFileWrapperList/>
+</PatentCenterApplication>"""
+    data = parse_biblio_xml(xml)
+    assert data["has_foreign_priority"] is False
+    assert has_foreign_priority_from_xml("") is False
+    assert has_foreign_priority_from_xml(None) is False
