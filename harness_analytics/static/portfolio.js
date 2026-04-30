@@ -339,7 +339,7 @@
     state.page = parseInt(params.get("page") || "1", 10) || 1;
     // Allowance Analytics v2 layout state.
     const tab = params.get("tab");
-    if (tab && ["overview", "charts", "allowance", "matters"].includes(tab)) {
+    if (tab && ["overview", "charts", "allowance", "extensions", "matters"].includes(tab)) {
       state.tab = tab;
     }
     const axis = params.get("cohortAxis");
@@ -459,6 +459,7 @@
     renderQuickPresets();
     renderTabs();
     renderAllowanceTab();
+    renderExtensionsTab();
     renderBody();
     renderFoot();
     renderMeta();
@@ -531,7 +532,74 @@
     renderAaTrendChart();
     renderAaSecondary();
     renderAaBreakdowns();
+    // #region agent log — DEBUG-MODE diagnostic panel. Renders only when
+    // ?debug=1 is in the URL. Dumps the per-cohort _diag block + top-level
+    // _diag so we can see exactly what the server returned for cohortTrend
+    // and the has_analytics_row distribution. Removed after verification.
+    renderAaDebugPanel();
+    // #endregion
   }
+
+  // #region agent log
+  function renderAaDebugPanel() {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("debug") !== "1") return;
+    const data = state.lastData || {};
+    const trend = data.cohortTrend || [];
+    const diag = data._diag || {};
+    let host = document.getElementById("aa-debug-panel");
+    if (!host) {
+      host = document.createElement("div");
+      host.id = "aa-debug-panel";
+      host.style.cssText = "margin-top:24px;padding:16px;background:#0f172a;color:#e2e8f0;font-family:ui-monospace,monospace;font-size:11px;border-radius:8px;overflow-x:auto;line-height:1.5;";
+      const tab = document.getElementById("tab-allowance");
+      if (tab) tab.appendChild(host);
+    }
+    const cellL = 'style="padding:4px 8px;text-align:left"';
+    const cellR = 'style="padding:4px 8px;text-align:right"';
+    const cellW = 'style="padding:4px 8px;text-align:right;color:#fbbf24"';
+    const cellN = 'style="padding:4px 8px;text-align:right;color:#f87171"';
+    const rows = trend.map((d) => {
+      const x = d._diag || {};
+      return `<tr>
+        <td ${cellL}>${d.year}</td>
+        <td ${cellR}>${d.n}</td>
+        <td ${cellR}>${d.closed}</td>
+        <td ${cellR}>${d.faaPct ?? "—"}%</td>
+        <td ${cellR}>${x.allowedClass}</td>
+        <td ${cellR}>${x.allowedHarTrue}</td>
+        <td ${cellW}>${x.allowedHarFalse}</td>
+        <td ${cellN}>${x.allowedHarNone}</td>
+        <td ${cellR}>${x.preGuardFaaNum}</td>
+        <td ${cellR}>${x.postGuardFaaNum}</td>
+        <td ${cellR}>${x.faaExcluded}</td>
+      </tr>`;
+    }).join("");
+    host.innerHTML = `
+      <div style="font-weight:700;margin-bottom:8px;color:#fbbf24">DEBUG-MODE — cohort_trend diagnostics (remove ?debug=1 to hide)</div>
+      <div>cohortAxis=<b>${diag.cohortAxis}</b> · preset=${diag.preset} · rowsTotal=${diag.rowsTotal} · rowsInWindow=${diag.rowsInWindow}</div>
+      <div>has_analytics_row distribution across windowed rows: True=${diag.harTrue} · <span style="color:#fbbf24">False=${diag.harFalse}</span> · <span style="color:#f87171">None=${diag.harNone}</span></div>
+      <div>headline FAA: ${diag.headlineFaaPct}% (${diag.headlineFaaCount}/${diag.headlineFaaDenom}) · excluded=${diag.headlineFaaExcluded}</div>
+      <table style="margin-top:12px;border-collapse:collapse;font-size:11px">
+        <thead><tr style="background:#1e293b">
+          <th style="padding:4px 8px;text-align:left">Year</th>
+          <th style="padding:4px 8px">n</th>
+          <th style="padding:4px 8px">closed</th>
+          <th style="padding:4px 8px">FAA</th>
+          <th style="padding:4px 8px">allowedClass</th>
+          <th style="padding:4px 8px">har=T</th>
+          <th style="padding:4px 8px">har=F</th>
+          <th style="padding:4px 8px">har=None</th>
+          <th style="padding:4px 8px">preGuard</th>
+          <th style="padding:4px 8px">postGuard</th>
+          <th style="padding:4px 8px">excluded</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div style="margin-top:8px;font-size:10px;opacity:0.7">sampleRowKeys: ${(diag.sampleRowKeys || []).join(", ")}</div>
+    `;
+  }
+  // #endregion
 
   function renderAaSubBar() {
     document.querySelectorAll("#aa-axis-segs .seg").forEach((b) => {
@@ -858,6 +926,140 @@
         `;
       }
     }
+  }
+
+  // ---------------------------------------------------------------------
+  // Extensions tab — per-year extension counts (CTNF/CTFR/CTRS).
+  //
+  // Drives the stacked-bar chart + breakdown table. Data comes from the
+  // backend's ``extensionsByYear`` field (computed by
+  // ``extension_analytics.compute_extensions_by_year``). An "extension"
+  // is a heuristic: any qualifying response (response/RCE/Notice of
+  // Appeal) filed strictly more than 3 months after a CTNF/CTFR or 2
+  // months after a Restriction Requirement, bucketed by the year of the
+  // response.
+  // ---------------------------------------------------------------------
+  function renderExtensionsTab() {
+    const data = state.lastData && state.lastData.extensionsByYear;
+    renderExtensionsChart(data);
+    renderExtensionsTable(data);
+  }
+
+  function renderExtensionsChart(data) {
+    const host = document.getElementById("ext-chart");
+    if (!host) return;
+    const rows = (data && data.byYear) || [];
+    if (!rows.length) {
+      host.innerHTML = `<div class="ext-empty">No extensions of time detected in the current selection.</div>`;
+      return;
+    }
+    const W = 920, H = 296, padL = 56, padR = 24, padT = 18, padB = 50;
+    const innerW = W - padL - padR, innerH = H - padT - padB;
+    const maxTotal = Math.max(1, ...rows.map((r) => r.total || 0));
+    // Round the y-axis up to a nice number so the gridlines look clean.
+    const niceMax = (() => {
+      const candidates = [5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 5000];
+      for (const c of candidates) { if (c >= maxTotal) return c; }
+      return Math.ceil(maxTotal / 1000) * 1000;
+    })();
+    const yScale = (v) => padT + innerH - (v / niceMax) * innerH;
+    const bandW = innerW / rows.length;
+    const barW = Math.max(8, Math.min(48, bandW * 0.65));
+
+    const colors = { ctnf: "#2563eb", ctfr: "#e11d48", restriction: "#d97706" };
+
+    const yTicks = [0, 0.25, 0.5, 0.75, 1.0].map((p) => {
+      const v = Math.round(niceMax * p);
+      const y = yScale(v);
+      return `<g><line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="#e2e8f0" stroke-width="1"/>`
+        + `<text x="${padL - 8}" y="${y + 4}" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#64748b">${v.toLocaleString()}</text></g>`;
+    }).join("");
+
+    const bars = rows.map((r, i) => {
+      const cx = padL + bandW * (i + 0.5);
+      const xLeft = cx - barW / 2;
+      const ctnf = r.ctnf || 0;
+      const ctfr = r.ctfr || 0;
+      const ctrs = r.restriction || 0;
+      // Track running total in value-space, then convert to pixels per
+      // segment so per-segment rounding doesn't accumulate gaps.
+      let runningValue = 0;
+      const segs = [];
+      function pushSeg(value, color) {
+        if (value <= 0) return;
+        const yBottom = yScale(runningValue);
+        const yTop = yScale(runningValue + value);
+        const h = Math.max(1, yBottom - yTop);
+        segs.push(`<rect x="${xLeft}" y="${yTop}" width="${barW}" height="${h}" fill="${color}"/>`);
+        runningValue += value;
+      }
+      pushSeg(ctnf, colors.ctnf);
+      pushSeg(ctfr, colors.ctfr);
+      pushSeg(ctrs, colors.restriction);
+
+      const tipParts = [];
+      if (ctnf) tipParts.push(`CTNF ${ctnf}`);
+      if (ctfr) tipParts.push(`CTFR ${ctfr}`);
+      if (ctrs) tipParts.push(`Restriction ${ctrs}`);
+      const tip = `${r.year}${tipParts.length ? " · " + tipParts.join(" · ") : ""} · Total ${r.total}`;
+      const totalLabel = r.total > 0
+        ? `<text x="${cx}" y="${yScale(r.total) - 6}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#475569">${r.total}</text>`
+        : "";
+      return `<g><title>${escapeHtml(tip)}</title>${segs.join("")}${totalLabel}</g>`;
+    }).join("");
+
+    const xLabels = rows.map((r, i) => {
+      const cx = padL + bandW * (i + 0.5);
+      return `<text x="${cx}" y="${H - padB + 18}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#64748b">${r.year}</text>`;
+    }).join("");
+
+    host.innerHTML = `
+      <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+        ${yTicks}
+        ${bars}
+        ${xLabels}
+      </svg>
+    `;
+  }
+
+  function renderExtensionsTable(data) {
+    const tbody = document.getElementById("ext-tbody");
+    const tfoot = document.getElementById("ext-tfoot");
+    const sub = document.getElementById("ext-sub");
+    if (!tbody || !tfoot) return;
+    const rows = (data && data.byYear) || [];
+    const totals = (data && data.totals) || { ctnf: 0, ctfr: 0, restriction: 0, total: 0 };
+    if (sub) {
+      const apps = (data && data.appsContributing) || 0;
+      sub.textContent = `YEAR THE LATE RESPONSE WAS FILED · CTNF/CTFR > 3 MONTHS · RESTRICTION > 2 MONTHS · ${apps.toLocaleString()} APP${apps === 1 ? "" : "S"} WITH ≥1 EXTENSION`;
+    }
+    if (!rows.length) {
+      tbody.innerHTML = `<tr><td colspan="5" class="muted" style="padding:18px;text-align:center">No extensions detected.</td></tr>`;
+      tfoot.innerHTML = "";
+      return;
+    }
+    function cell(value) {
+      const cls = value ? "ext-num" : "ext-num ext-zero";
+      return `<td class="${cls}">${value ? value.toLocaleString() : "0"}</td>`;
+    }
+    tbody.innerHTML = rows.map((r) => `
+      <tr>
+        <td class="ext-year">${r.year}</td>
+        ${cell(r.ctnf)}
+        ${cell(r.ctfr)}
+        ${cell(r.restriction)}
+        <td class="ext-num ext-col-total">${(r.total || 0).toLocaleString()}</td>
+      </tr>
+    `).join("");
+    tfoot.innerHTML = `
+      <tr>
+        <td>Total</td>
+        <td class="ext-num">${(totals.ctnf || 0).toLocaleString()}</td>
+        <td class="ext-num">${(totals.ctfr || 0).toLocaleString()}</td>
+        <td class="ext-num">${(totals.restriction || 0).toLocaleString()}</td>
+        <td class="ext-num">${(totals.total || 0).toLocaleString()}</td>
+      </tr>
+    `;
   }
 
   // ---------------------------------------------------------------------

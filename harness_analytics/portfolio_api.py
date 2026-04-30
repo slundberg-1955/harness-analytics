@@ -27,6 +27,7 @@ from harness_analytics.ctnf_outcome import (
     RESPONSE_EVENT_TYPES,
     extract_outcomes_from_grouped_events,
 )
+from harness_analytics.extension_analytics import compute_extensions_by_year
 from harness_analytics.portfolio_aggregates import (
     COHORT_AXIS_TO_FIELD,
     STATUS_PILL,
@@ -495,41 +496,45 @@ def _iso(v: Any) -> Optional[str]:
     return str(v)
 
 
-# IFW document codes whose mail dates participate in the CTNF outcome
-# ladder. Kept narrow on purpose: NOA = success terminator; CTNF/CTFR =
-# rejection terminator. Anything else (interview summaries, A.NE, etc.)
-# is intentionally ignored so the chart represents pure
-# response-then-examiner-verdict cycles.
-_CTNF_LADDER_DOC_CODES: tuple[str, ...] = ("CTNF", "CTFR", "NOA")
+# IFW document codes whose mail dates participate in the extension analytic.
+#
+# CTNF / CTFR    — non-final / final office actions (3-month deadline)
+# CTRS           — restriction requirement (2-month deadline)
+# NOA            — notice of allowance, terminates the response window
+# N.APP          — notice of appeal; counted as an applicant "response" for
+#                  the user's "any response/RCE/Appeal" definition. RCE
+#                  + RESPONSE_NONFINAL/_FINAL come from prosecution_events.
+#
+# The CTNF outcome chart only consumes the CTNF/CTFR/NOA subset, so the
+# extra CTRS / N.APP rows are ignored by ``extract_outcomes_from_grouped_events``.
+_EXTENSION_LADDER_DOC_CODES: tuple[str, ...] = ("CTNF", "CTFR", "CTRS", "NOA", "N.APP")
 
 
-def _fetch_ctnf_outcome_events(
+def _fetch_extension_inputs(
     db: Session, application_ids: list[int]
-) -> list[dict[str, Any]]:
-    """Build the CTNF response-speed event list for the given app IDs.
+) -> dict[int, dict[str, list[Any]]]:
+    """Return the per-app event grouping used by both CTNF outcome + extension analytics.
 
-    One round-trip per signal type (CTNF/CTFR/NOA mail dates from
-    file_wrapper_documents, plus response events from prosecution_events).
-    Empty input -> empty output, no DB call.
+    One round-trip for IFW mail dates, one for prosecution responses.
+    The shape matches ``ctnf_outcome.extract_outcomes_from_grouped_events``::
 
-    The returned events are camelCase JSON-shaped so they can be passed
-    straight to ``portfolio_aggregates.compute_ctnf_response_speed_to_noa``
-    or surfaced to clients verbatim. Each event corresponds to one CTNF
-    on one application that produced a usable outcome (see
-    ``ctnf_outcome.extract_outcomes_for_application``).
+        {app_id: {"ctnf": [...], "ctfr": [...], "ctrs": [...],
+                  "noa":  [...], "response": [...]}}
+
+    ``response`` collects RESPONSE_NONFINAL / RESPONSE_FINAL / RCE
+    transactions PLUS Notice-of-Appeal (``N.APP``) IFW mail dates so the
+    extension calculator's "any response / RCE / Appeal" rule is honored
+    even though prosecution_events doesn't classify appeals.
     """
     if not application_ids:
-        return []
+        return {}
 
     grouped: dict[int, dict[str, list[Any]]] = {
-        aid: {"ctnf": [], "ctfr": [], "noa": [], "response": []}
+        aid: {"ctnf": [], "ctfr": [], "ctrs": [], "noa": [], "response": []}
         for aid in application_ids
     }
 
-    # IFW mail dates. Collapsed into a single query keyed by document_code
-    # IN (...) so we make one network round-trip instead of three. The
-    # ladder code list is a small fixed constant so it's safe to inline.
-    code_list = ", ".join(f"'{c}'" for c in _CTNF_LADDER_DOC_CODES)
+    code_list = ", ".join(f"'{c}'" for c in _EXTENSION_LADDER_DOC_CODES)
     ifw_rows = db.execute(
         text(
             "SELECT application_id, document_code, mail_room_date "
@@ -549,10 +554,13 @@ def _fetch_ctnf_outcome_events(
             bucket["ctnf"].append(mrd)
         elif key == "CTFR":
             bucket["ctfr"].append(mrd)
+        elif key == "CTRS":
+            bucket["ctrs"].append(mrd)
         elif key == "NOA":
             bucket["noa"].append(mrd)
+        elif key == "N.APP":
+            bucket["response"].append(mrd)
 
-    # Prosecution responses (RESPONSE_NONFINAL / RESPONSE_FINAL / RCE).
     type_list = ", ".join(f"'{t}'" for t in sorted(RESPONSE_EVENT_TYPES))
     resp_rows = db.execute(
         text(
@@ -569,6 +577,13 @@ def _fetch_ctnf_outcome_events(
             continue
         bucket["response"].append(td)
 
+    return grouped
+
+
+def _ctnf_outcome_events_from_grouped(
+    grouped: dict[int, dict[str, list[Any]]],
+) -> list[dict[str, Any]]:
+    """Convert the shared event grouping into the CTNF outcome JSON shape."""
     outcomes = extract_outcomes_from_grouped_events(grouped)
     return [
         {
@@ -711,16 +726,20 @@ def portfolio(
     windowed_rows = apply_recency_window(all_rows, axis, window)
 
     charts = compute_charts(all_rows)
-    # CTNF response-speed -> outcome chart. Lives outside compute_charts()
-    # because it needs an extra DB round-trip (file_wrapper_documents +
-    # prosecution_events), and compute_charts is intentionally pure.
+    # CTNF response-speed -> outcome chart and the per-year extensions
+    # tab both feed off the same per-app event grouping (CTNF/CTFR/CTRS/NOA
+    # mail dates + applicant responses), so we fetch once and fan out.
+    # Lives outside compute_charts() because it needs an extra DB
+    # round-trip (file_wrapper_documents + prosecution_events).
     ctnf_app_ids = [
         r["application_id"]
         for r in all_rows
         if r.get("application_id") is not None
     ]
-    ctnf_events = _fetch_ctnf_outcome_events(db, ctnf_app_ids)
+    ext_grouped = _fetch_extension_inputs(db, ctnf_app_ids)
+    ctnf_events = _ctnf_outcome_events_from_grouped(ext_grouped)
     charts["ctnfResponseSpeed"] = compute_ctnf_response_speed_to_noa(ctnf_events)
+    extensions_by_year = compute_extensions_by_year(ext_grouped)
 
     breakdowns = compute_breakdowns(windowed_rows)
     cohort_trend = compute_cohort_trend(windowed_rows, axis)
@@ -783,6 +802,29 @@ def portfolio(
             # Data-coverage signals for the path-to-allowance card.
             "pathExcluded": breakdowns["pathExcluded"],
             "pathTotalAllowed": breakdowns["pathTotalAllowed"],
+            # Extensions tab — per-year extension counts derived from
+            # OA mail dates vs. applicant response dates. See
+            # extension_analytics.compute_extensions_by_year for the rule.
+            "extensionsByYear": extensions_by_year,
+            # #region agent log — DEBUG-MODE per-request diagnostics. Tells us
+            # which cohort axis is in play (hyp C), whether `has_analytics_row`
+            # came back from the view at all (hyp B/E), and the headline FAA
+            # post-guard so we can compare it to the cohort 100%s.
+            "_diag": {
+                "cohortAxis": axis,
+                "preset": preset,
+                "rowsTotal": len(all_rows),
+                "rowsInWindow": len(windowed_rows),
+                "harTrue": sum(1 for r in windowed_rows if r.get("has_analytics_row") is True),
+                "harFalse": sum(1 for r in windowed_rows if r.get("has_analytics_row") is False),
+                "harNone": sum(1 for r in windowed_rows if r.get("has_analytics_row") is None),
+                "headlineFaaPct": analytics_kpis.get("faaPct"),
+                "headlineFaaCount": analytics_kpis.get("faaCount"),
+                "headlineFaaDenom": analytics_kpis.get("faaDenom"),
+                "headlineFaaExcluded": analytics_kpis.get("faaExcluded"),
+                "sampleRowKeys": sorted(list(windowed_rows[0].keys()))[:60] if windowed_rows else [],
+            },
+            # #endregion
         }
     )
 

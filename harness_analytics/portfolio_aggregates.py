@@ -453,6 +453,32 @@ def compute_cohort_trend(
         maturing = any(
             r.get("application_status_code") not in (150, 161) for r in group
         )
+        # #region agent log — DEBUG-MODE per-cohort diagnostics. Counts the
+        # has_analytics_row distribution + the numerator-eligible candidates
+        # so we can see whether 100% FAA on recent cohorts is (a) survivorship
+        # of clean closes (hyp A), (b) the NULL guard never firing because the
+        # column is missing/None (hyp B/E), or (c) something in between.
+        _allowed = [
+            r for r in group
+            if r.get("application_status_code") in _CHM_ALLOWED_STATUS_CODES
+        ]
+        _diag = {
+            "harTrue": sum(1 for r in group if r.get("has_analytics_row") is True),
+            "harFalse": sum(1 for r in group if r.get("has_analytics_row") is False),
+            "harNone": sum(1 for r in group if r.get("has_analytics_row") is None),
+            "allowedClass": len(_allowed),
+            "allowedHarTrue": sum(1 for r in _allowed if r.get("has_analytics_row") is True),
+            "allowedHarFalse": sum(1 for r in _allowed if r.get("has_analytics_row") is False),
+            "allowedHarNone": sum(1 for r in _allowed if r.get("has_analytics_row") is None),
+            "preGuardFaaNum": sum(
+                1 for r in _allowed
+                if _get_int(r, "rce_count") == 0
+                and _get_int(r, "final_rejection_count") == 0
+            ),
+            "postGuardFaaNum": rates["faaCount"],
+            "faaExcluded": rates["faaExcluded"],
+        }
+        # #endregion
         out.append(
             {
                 "year": year,
@@ -469,6 +495,7 @@ def compute_cohort_trend(
                 # row, dropped from the FAA numerator (mirrors the headline KPI).
                 "faaExcluded": rates["faaExcluded"],
                 "maturing": maturing,
+                "_diag": _diag,  # DEBUG-MODE only: render in ?debug=1 panel
             }
         )
     return out
