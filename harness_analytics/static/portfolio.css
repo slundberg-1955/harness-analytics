@@ -1096,7 +1096,7 @@ tbody tr:focus-visible {
 
 .aa-primary {
   display: grid;
-  grid-template-columns: 1.4fr 1fr 1fr;
+  grid-template-columns: 1.2fr 1fr 1fr 1fr;
   gap: 0;
   background: white;
   border: 1px solid var(--slate-200);
@@ -1191,6 +1191,7 @@ tbody tr:focus-visible {
 }
 .aa-leg-swatch-trad { background: var(--slate-900); }
 .aa-leg-swatch-chm  { background: var(--emerald-600); }
+.aa-leg-swatch-sct  { background: #7c3aed; }
 .aa-leg-swatch-faa  { background: var(--amber-600); }
 
 .aa-trend-chart { width: 100%; min-height: 280px; }

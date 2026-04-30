@@ -701,6 +701,8 @@
     const chmAb = k.chmAbandonedNoChild || 0;
     const faaCount = k.faaCount || 0;
     const faaDenom = k.faaDenom || closed;
+    const sctCount = k.singleCtnfCount || 0;
+    const sctDenom = k.singleCtnfDenom || faaDenom;
     host.innerHTML = `
       <div class="aa-kpi">
         <div class="aa-kpi-label">Traditional Allowance Rate</div>
@@ -715,15 +717,21 @@
         <div class="aa-kpi-sub">A=${chmA} · CA=${chmCa} · AB=${chmAb} · excludes strategic abandonments</div>
       </div>
       <div class="aa-kpi">
-        <div class="aa-kpi-label">First-Action Allowance Rate</div>
+        <div class="aa-kpi-label">Allowance w/ No Rejections</div>
         ${pct(k.faaPct)}
         ${delta(k.faaDeltaPctPts)}
-        <div class="aa-kpi-sub">${faaCount.toLocaleString()} of ${faaDenom.toLocaleString()} allowances · examiner's first action was the NOA</div>
+        <div class="aa-kpi-sub">${faaCount.toLocaleString()} of ${faaDenom.toLocaleString()} allowances · examiner's first action was the NOA (0 OAs, 0 RCEs)</div>
         ${
           k.faaExcluded > 0
             ? `<div class="aa-kpi-warn" title="These applications have a status of Patented or Allowed but no row in application_analytics, so we can't verify whether they had an RCE or Final Rejection. Excluded from the numerator to avoid inflating the rate.">⚠ ${k.faaExcluded.toLocaleString()} allowed app${k.faaExcluded === 1 ? "" : "s"} excluded for incomplete prosecution data</div>`
             : ""
         }
+      </div>
+      <div class="aa-kpi">
+        <div class="aa-kpi-label">Allowance after Single CTNF</div>
+        ${pct(k.singleCtnfPct)}
+        ${delta(k.singleCtnfDeltaPctPts)}
+        <div class="aa-kpi-sub">${sctCount.toLocaleString()} of ${sctDenom.toLocaleString()} allowances · allowed after exactly 1 non-final OA, 0 FRs, 0 RCEs</div>
       </div>
     `;
   }
@@ -827,6 +835,7 @@
         ${yTicks}
         ${buildLine("traditionalPct", "#0f172a")}
         ${buildLine("chmPct",         "#059669")}
+        ${buildLine("singleCtnfPct",  "#7c3aed")}
         ${buildLine("faaPct",         "#d97706")}
         ${xLabels}
       </svg>
@@ -900,7 +909,7 @@
         const totalExcluded = rows.reduce((sum, r) => sum + (r.faaExcluded || 0), 0);
         auHost.innerHTML = `
           <table class="aa-bd-table">
-            <thead><tr><th>Art Unit</th><th class="aa-r">Closed</th><th class="aa-r">Trad</th><th class="aa-r">CHM</th><th class="aa-r">FAA</th><th class="aa-r">Mo. Med</th></tr></thead>
+            <thead><tr><th>Art Unit</th><th class="aa-r">Closed</th><th class="aa-r">Trad</th><th class="aa-r">CHM</th><th class="aa-r" title="Allowance with no rejections — examiner's first action was the NOA">FAA</th><th class="aa-r" title="Allowance after exactly 1 non-final OA, 0 FRs, 0 RCEs">1-CTNF</th><th class="aa-r">Mo. Med</th></tr></thead>
             <tbody>
               ${rows.map((r) => {
                 const trad = r.tradPct;
@@ -917,6 +926,7 @@
                   <td class="aa-r">${trad != null ? `<span class="aa-bd-bar" style="width:${barWidth}px"></span>${trad}%` : "—"}</td>
                   <td class="aa-r">${r.chmPct != null ? r.chmPct + "%" : "—"}</td>
                   <td class="aa-r">${r.faaPct != null ? r.faaPct + "%" : "—"}${faaSuffix}</td>
+                  <td class="aa-r">${r.singleCtnfPct != null ? r.singleCtnfPct + "%" : "—"}</td>
                   <td class="aa-r">${r.medianMonths != null ? r.medianMonths : "—"}</td>
                 </tr>`;
               }).join("")}

@@ -214,11 +214,12 @@
           <div class="card-head">
             <div>
               <div class="card-title">Allowance Rate by Cohort Year</div>
-              <div class="card-sub" id="aa-trend-sub">TRADITIONAL · CHM · FIRST-ACTION</div>
+              <div class="card-sub" id="aa-trend-sub">TRADITIONAL · CHM · SINGLE-CTNF · FIRST-ACTION</div>
             </div>
             <div class="aa-trend-legend" aria-hidden="true">
               <span class="aa-leg-item"><span class="aa-leg-swatch aa-leg-swatch-trad"></span>Traditional</span>
               <span class="aa-leg-item"><span class="aa-leg-swatch aa-leg-swatch-chm"></span>CHM</span>
+              <span class="aa-leg-item"><span class="aa-leg-swatch aa-leg-swatch-sct"></span>Single-CTNF</span>
               <span class="aa-leg-item"><span class="aa-leg-swatch aa-leg-swatch-faa"></span>First-Action</span>
               <span class="aa-leg-item aa-leg-item-muted">○ maturing cohort</span>
             </div>
@@ -275,10 +276,14 @@
           rows still pending are excluded from the Traditional denominator but counted in Pendency.
           The Carley-Hegde-Marco rate counts NOA-Mailed (93) and Issue Fee Verified (159) as
           already allowed and treats abandonments-with-a-child as continuations of prosecution
-          rather than losses. The First-Action Allowance Rate is the share of all allowances
-          (Patented + NOA Mailed + Allowed for Issue) where the examiner's FIRST action was the
-          Notice of Allowance — zero non-final OAs, zero final rejections, zero RCEs in the file
-          history. Industry baseline is roughly 10-25% by art unit. RCE counts come from the
+          rather than losses.           The First-Action Allowance Rate ("Allowance w/ No Rejections") is the share of all
+          allowances (Patented + NOA Mailed + Allowed for Issue) where the examiner's FIRST
+          action was the Notice of Allowance — zero non-final OAs, zero final rejections, zero
+          RCEs in the file history. Industry baseline is roughly 10-25% by art unit. The
+          "Allowance after Single CTNF" rate is the companion metric: of the same allowance
+          population, the share that were allowed after exactly one non-final OA (and zero FRs,
+          zero RCEs) — the classic "respond once, get allowed" path. Industry typical 50-65%.
+          The two rates are mutually exclusive subsets of the same denominator. RCE counts come from the
           application_analytics table (event-derived); foreign-priority share is true when the
           Biblio XML has a ForeignPriorityList entry or any PCT national-stage parent.
         </div>

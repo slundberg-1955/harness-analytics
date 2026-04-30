@@ -235,6 +235,48 @@ def compute_first_action_allowance(rows: list[dict[str, Any]]) -> dict[str, Any]
     }
 
 
+def compute_single_ctnf_allowance(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Single-CTNF Allowance Rate (companion to FAA).
+
+    Of all allowed applications, the share that were allowed after EXACTLY
+    one non-final office action — the classic "respond once, get allowed"
+    prosecution path. Numerator requires:
+
+    * ``nonfinal_oa_count == 1`` (one CTNF, no more)
+    * ``final_oa_count == 0`` (no Final Rejection)
+    * ``rce_count == 0`` (no RCE)
+
+    Mutually exclusive with first-action allowance (which requires zero
+    non-finals); both share the same denominator. Industry baseline is
+    typically 50-65% for mixed portfolios.
+    """
+    denom = 0
+    excluded = 0
+    num = 0
+    for r in rows:
+        code = r.get("application_status_code")
+        if code not in _CHM_ALLOWED_STATUS_CODES:
+            continue
+        if r.get("has_analytics_row") is False:
+            excluded += 1
+            continue
+        denom += 1
+        if (
+            _get_int(r, "nonfinal_oa_count") == 1
+            and _get_int(r, "final_oa_count") == 0
+            and _get_int(r, "rce_count") == 0
+        ):
+            num += 1
+    if not denom:
+        return {"pct": None, "count": 0, "denom": 0, "excluded": excluded}
+    return {
+        "pct": round(100.0 * num / denom, 1),
+        "count": num,
+        "denom": denom,
+        "excluded": excluded,
+    }
+
+
 def compute_time_to_allowance(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Median / P25 / P75 months from filing to NOA mailed (spec §5.2)."""
     months: list[float] = []
@@ -413,13 +455,14 @@ def _trad_chm_faa_for_group(group: list[dict[str, Any]]) -> dict[str, Any]:
     chm_den = chm_num + chm_ab
     chm = round(100.0 * chm_num / chm_den, 1) if chm_den else None
 
-    # FAA: strict first-action — examiner's FIRST action was the NOA
-    # (zero non-final OAs, zero final OAs, zero RCEs). Denominator is all
-    # allowed apps (CHM_ALLOWED). See compute_first_action_allowance for
-    # the full rationale. Numerator is by definition a subset of the
-    # denominator so the rate is always bounded [0, 100].
+    # FAA + Single-CTNF: both share the same allowed-class denominator.
+    # FAA           = "examiner's first action was the NOA" (0/0/0).
+    # Single-CTNF   = "allowed after exactly one non-final OA" (1/0/0).
+    # Numerators are by definition strict subsets of the denominator so
+    # both rates are bounded [0, 100]. Mutually exclusive cohorts.
     faa_denom = 0
     faa_num = 0
+    single_ctnf_num = 0
     faa_excluded = 0
     for r in group:
         if r.get("application_status_code") not in _CHM_ALLOWED_STATUS_CODES:
@@ -428,19 +471,24 @@ def _trad_chm_faa_for_group(group: list[dict[str, Any]]) -> dict[str, Any]:
             faa_excluded += 1
             continue
         faa_denom += 1
-        if (
-            _get_int(r, "nonfinal_oa_count") == 0
-            and _get_int(r, "final_oa_count") == 0
-            and _get_int(r, "rce_count") == 0
-        ):
-            faa_num += 1
+        nonfinal = _get_int(r, "nonfinal_oa_count")
+        final = _get_int(r, "final_oa_count")
+        rce = _get_int(r, "rce_count")
+        if final == 0 and rce == 0:
+            if nonfinal == 0:
+                faa_num += 1
+            elif nonfinal == 1:
+                single_ctnf_num += 1
     faa = round(100.0 * faa_num / faa_denom, 1) if faa_denom else None
+    single_ctnf = round(100.0 * single_ctnf_num / faa_denom, 1) if faa_denom else None
     return {
         "traditionalPct": trad,
         "chmPct": chm,
         "faaPct": faa,
+        "singleCtnfPct": single_ctnf,
         "closed": closed,
         "faaCount": faa_num,
+        "singleCtnfCount": single_ctnf_num,
         "faaExcluded": faa_excluded,
     }
 
@@ -506,6 +554,8 @@ def compute_cohort_trend(
                 "traditionalPct": rates["traditionalPct"],
                 "chmPct": rates["chmPct"],
                 "faaPct": rates["faaPct"],
+                # Companion to FAA: allowance after exactly one non-final OA.
+                "singleCtnfPct": rates["singleCtnfPct"],
                 # Allowed-class apps in this cohort with no application_analytics
                 # row, dropped from the FAA numerator (mirrors the headline KPI).
                 "faaExcluded": rates["faaExcluded"],
@@ -571,6 +621,7 @@ def compute_breakdowns(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 "tradPct": rates["traditionalPct"],
                 "chmPct": rates["chmPct"],
                 "faaPct": rates["faaPct"],
+                "singleCtnfPct": rates["singleCtnfPct"],
                 "faaExcluded": rates["faaExcluded"],
                 "medianMonths": med,
             }
@@ -729,6 +780,7 @@ def compute_kpis(
     # empty-window rule: NULL pct (rendered as "—" by the frontend) when the
     # denominator is empty, never 0.0.
     faa = compute_first_action_allowance(rows)
+    single_ctnf = compute_single_ctnf_allowance(rows)
     tta = compute_time_to_allowance(rows)
     rce_intensity = compute_rce_intensity(rows)
     strategic_ab = compute_strategic_abandonment(rows)
@@ -777,6 +829,13 @@ def compute_kpis(
         # the FAA numerator (data-quality guard, see compute_first_action_allowance).
         "faaExcluded": faa.get("excluded", 0),
         "faaDeltaPctPts": 0.0,
+        # Companion to FAA: allowance after exactly one non-final OA, no FR,
+        # no RCE. Same denominator as FAA.
+        "singleCtnfPct": single_ctnf["pct"],
+        "singleCtnfCount": single_ctnf["count"],
+        "singleCtnfDenom": single_ctnf["denom"],
+        "singleCtnfExcluded": single_ctnf.get("excluded", 0),
+        "singleCtnfDeltaPctPts": 0.0,
         "timeToAllowance": tta,
         "rceIntensity": rce_intensity,
         "strategicAbandonment": strategic_ab,

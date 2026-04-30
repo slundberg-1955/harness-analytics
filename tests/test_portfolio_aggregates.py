@@ -14,6 +14,7 @@ from harness_analytics.portfolio_aggregates import (
     compute_ctnf_response_speed_to_noa,
     compute_family_yield,
     compute_first_action_allowance,
+    compute_single_ctnf_allowance,
     compute_foreign_priority_share,
     compute_kpis,
     compute_pendency,
@@ -533,6 +534,52 @@ def test_first_action_allowance_excludes_apps_without_analytics_row() -> None:
     assert out["denom"] == 1, "only A has verifiable analytics; B/C excluded"
     assert out["pct"] == 100.0
     assert out["excluded"] == 2
+
+
+def test_single_ctnf_allowance_basic() -> None:
+    """Single-CTNF: allowance after exactly one non-final OA, no FR, no RCE."""
+    rows = [
+        # Allowed after 1 CTNF (counts in num + denom).
+        _row("A", status=150, nonfinal=1, final=0, rce=0),
+        # Allowed first-action — NOT counted (zero CTNFs).
+        _row("B", status=150, nonfinal=0, final=0, rce=0),
+        # Allowed after 2 CTNFs — NOT counted.
+        _row("C", status=150, nonfinal=2, final=0, rce=0),
+        # Allowed with FR — NOT counted (had a final rejection).
+        _row("D", status=150, nonfinal=1, final=1, rce=0),
+        # Abandoned — not in denom.
+        _row("E", status=161),
+    ]
+    out = compute_single_ctnf_allowance(rows)
+    assert out["count"] == 1, "only A is single-CTNF"
+    assert out["denom"] == 4, "A,B,C,D are all in CHM_ALLOWED"
+    assert out["pct"] == 25.0
+
+
+def test_single_ctnf_and_faa_share_denominator() -> None:
+    """The two metrics are mutually exclusive subsets of the same denominator."""
+    rows = [
+        _row("A", status=150, nonfinal=0, final=0, rce=0),  # FAA
+        _row("B", status=150, nonfinal=1, final=0, rce=0),  # single-CTNF
+        _row("C", status=150, nonfinal=2, final=0, rce=0),  # neither
+    ]
+    faa = compute_first_action_allowance(rows)
+    sct = compute_single_ctnf_allowance(rows)
+    assert faa["denom"] == sct["denom"] == 3
+    assert faa["count"] + sct["count"] <= faa["denom"]
+
+
+def test_compute_kpis_surfaces_single_ctnf() -> None:
+    rows = [
+        _row("A", status=150, nonfinal=0, final=0, rce=0),
+        _row("B", status=150, nonfinal=1, final=0, rce=0),
+    ]
+    k = compute_kpis(rows)
+    assert k["faaPct"] == 50.0
+    assert k["faaCount"] == 1
+    assert k["singleCtnfPct"] == 50.0
+    assert k["singleCtnfCount"] == 1
+    assert k["singleCtnfDenom"] == 2
 
 
 def test_first_action_allowance_includes_in_flight_in_denom() -> None:
