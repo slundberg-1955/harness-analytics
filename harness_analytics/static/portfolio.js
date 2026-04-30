@@ -269,9 +269,17 @@
     });
 
     // Allowance Analytics sub-bar: cohort axis (segs) + recency window
-    // (pills) + custom date pair + Apply. Apply triggers refresh; the
-    // segs/pills update state immediately but only re-render on Apply so
-    // attorneys can stage multiple changes before paying for a request.
+    // (pills) auto-apply on click — the previous "stage and click Apply"
+    // model surprised users (the highlight changed but the numbers didn't).
+    // Custom date pair is the one place we still require a manual Apply
+    // because typing into a date input fires multiple change events.
+    function applyAaParams() {
+      setParam("cohortAxis", state.aaCohortAxis === "filing" ? null : state.aaCohortAxis);
+      setParam("recency", state.aaRecency === "5y" ? null : state.aaRecency);
+      setParam("customStart", state.aaRecency === "custom" ? state.aaCustomStart || null : null);
+      setParam("customEnd", state.aaRecency === "custom" ? state.aaCustomEnd || null : null);
+      refresh();
+    }
     document.getElementById("aa-axis-segs").addEventListener("click", (e) => {
       const btn = e.target.closest(".seg");
       if (!btn) return;
@@ -279,14 +287,22 @@
       if (!axis || axis === state.aaCohortAxis) return;
       state.aaCohortAxis = axis;
       renderAaSubBar();
+      applyAaParams();
     });
     document.getElementById("aa-recency-pills").addEventListener("click", (e) => {
       const btn = e.target.closest(".aa-pill");
       if (!btn) return;
       const r = btn.getAttribute("data-recency");
       if (!r || r === state.aaRecency) return;
+      const wasCustom = state.aaRecency === "custom";
       state.aaRecency = r;
       renderAaSubBar();
+      // "custom" reveals the date pair but does not refetch yet — wait for
+      // the user to fill the inputs and click Apply. Switching AWAY from
+      // custom (e.g. back to 5y) refetches immediately so the displayed
+      // window matches the highlighted pill.
+      if (r !== "custom") applyAaParams();
+      else if (wasCustom) applyAaParams();
     });
     document.getElementById("aa-custom-start").addEventListener("change", (e) => {
       state.aaCustomStart = e.target.value || "";
@@ -294,13 +310,7 @@
     document.getElementById("aa-custom-end").addEventListener("change", (e) => {
       state.aaCustomEnd = e.target.value || "";
     });
-    document.getElementById("aa-apply-btn").addEventListener("click", () => {
-      setParam("cohortAxis", state.aaCohortAxis === "filing" ? null : state.aaCohortAxis);
-      setParam("recency", state.aaRecency === "5y" ? null : state.aaRecency);
-      setParam("customStart", state.aaRecency === "custom" ? state.aaCustomStart || null : null);
-      setParam("customEnd", state.aaRecency === "custom" ? state.aaCustomEnd || null : null);
-      refresh();
-    });
+    document.getElementById("aa-apply-btn").addEventListener("click", applyAaParams);
 
     window.addEventListener("popstate", () => {
       hydrateSearchFromUrl();
