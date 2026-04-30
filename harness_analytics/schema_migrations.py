@@ -92,32 +92,6 @@ SELECT
     a.has_child_continuation,
     a.earliest_priority_date,
     a.tenant_id,
-    -- Allowance Analytics v2 fields. Three are direct columns on
-    -- ``applications`` (backfilled from xml_raw); ``noa_mailed_date`` and
-    -- ``final_rejection_count`` are aliased onto the existing
-    -- ``application_analytics`` columns so callers can speak the spec
-    -- vocabulary without a second column. ``disposal_date`` and
-    -- ``months_to_allowance`` are computed in-view so we don't store
-    -- denormalized data that can drift.
-    a.abandonment_date,
-    a.family_root_app_no,
-    a.has_foreign_priority,
-    -- Prefer the application-level NOA mailed date (XML-derived); fall
-    -- back to the analytics-row first_noa_date (event-derived) when the
-    -- XML didn't surface an explicit element. This makes the new column
-    -- usable today while ``noa_mailed_date`` is still backfilling.
-    COALESCE(a.noa_mailed_date, aa.first_noa_date) AS noa_mailed_date,
-    COALESCE(aa.final_oa_count, 0) AS final_rejection_count,
-    COALESCE(a.issue_date, a.noa_mailed_date, aa.first_noa_date, a.abandonment_date)
-        AS disposal_date,
-    CASE
-        WHEN a.filing_date IS NOT NULL
-         AND COALESCE(a.noa_mailed_date, aa.first_noa_date) IS NOT NULL
-        THEN ROUND(
-            (COALESCE(a.noa_mailed_date, aa.first_noa_date) - a.filing_date)
-            / 30.44::numeric, 1)
-        ELSE NULL
-    END AS months_to_allowance,
     -- Timeline summary columns (nullable when computed_deadlines doesn't exist yet
     -- or no deadlines have been computed for this app). Computed via correlated
     -- subqueries so that filter + sort on these columns just works.
@@ -160,7 +134,34 @@ SELECT
     -- file_wrapper_documents / prosecution_events without an extra round
     -- trip. Appended at the end so CREATE OR REPLACE VIEW is allowed on
     -- existing prod schema. Not exposed in _row_to_json (server-side only).
-    a.id AS application_id
+    a.id AS application_id,
+    -- Allowance Analytics v2 fields. APPENDED AT THE TAIL — Postgres
+    -- CREATE OR REPLACE VIEW only allows new columns at the end of an
+    -- existing view's column list, so any later additions must keep
+    -- following this comment, never get inserted in the middle.
+    -- Three columns are direct on ``applications`` (backfilled from
+    -- xml_raw); the next four are aliases / in-view derivations so
+    -- callers can speak the spec vocabulary without storing denormalized
+    -- data that could drift.
+    a.abandonment_date,
+    a.family_root_app_no,
+    a.has_foreign_priority,
+    -- Prefer the application-level NOA mailed date (XML-derived); fall
+    -- back to the analytics-row first_noa_date (event-derived) when the
+    -- XML didn't surface an explicit element. This makes the new column
+    -- usable today while ``noa_mailed_date`` is still backfilling.
+    COALESCE(a.noa_mailed_date, aa.first_noa_date) AS noa_mailed_date,
+    COALESCE(aa.final_oa_count, 0) AS final_rejection_count,
+    COALESCE(a.issue_date, a.noa_mailed_date, aa.first_noa_date, a.abandonment_date)
+        AS disposal_date,
+    CASE
+        WHEN a.filing_date IS NOT NULL
+         AND COALESCE(a.noa_mailed_date, aa.first_noa_date) IS NOT NULL
+        THEN ROUND(
+            (COALESCE(a.noa_mailed_date, aa.first_noa_date) - a.filing_date)
+            / 30.44::numeric, 1)
+        ELSE NULL
+    END AS months_to_allowance
 FROM applications a
 LEFT JOIN application_analytics aa ON aa.application_id = a.id
 """
