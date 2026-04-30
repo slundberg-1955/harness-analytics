@@ -161,7 +161,16 @@ SELECT
             (COALESCE(a.noa_mailed_date, aa.first_noa_date) - a.filing_date)
             / 30.44::numeric, 1)
         ELSE NULL
-    END AS months_to_allowance
+    END AS months_to_allowance,
+    -- Data-quality flag (Allowance Analytics v2): TRUE when this row has a
+    -- joined application_analytics row. compute_first_action_allowance uses
+    -- it to exclude apps with no analytics-row from the FAA numerator,
+    -- because rce_count / final_oa_count COALESCE to 0 in that case and
+    -- would otherwise misclassify them as "first-action" allowances. Apps
+    -- still count toward the FAA denominator (closed = patented + abandoned)
+    -- because application_status_code lives on `applications` and is
+    -- populated independent of the analytics job.
+    (aa.application_id IS NOT NULL) AS has_analytics_row
 FROM applications a
 LEFT JOIN application_analytics aa ON aa.application_id = a.id
 """

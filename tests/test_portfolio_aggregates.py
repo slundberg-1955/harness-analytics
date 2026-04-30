@@ -51,6 +51,7 @@ def _row(
     family_root_app_no: str | None = None,
     has_foreign_priority: bool | None = False,
     art_unit: str | None = None,
+    has_analytics_row: bool = True,
 ) -> dict:
     return {
         "application_number": app_no,
@@ -77,6 +78,10 @@ def _row(
         "family_root_app_no": family_root_app_no,
         "has_foreign_priority": has_foreign_priority,
         "group_art_unit": art_unit,
+        # Data-quality flag for FAA. Defaults True so legacy tests behave
+        # exactly like before (rce/final-rejection ints are trusted). New
+        # tests pass has_analytics_row=False to exercise the exclusion path.
+        "has_analytics_row": has_analytics_row,
     }
 
 
@@ -484,6 +489,7 @@ def test_first_action_allowance_rate_basic() -> None:
     assert out["count"] == 2
     assert out["denom"] == 4
     assert out["pct"] == 50.0
+    assert out["excluded"] == 0
 
 
 def test_first_action_allowance_excludes_final_rejection() -> None:
@@ -496,6 +502,7 @@ def test_first_action_allowance_excludes_final_rejection() -> None:
     out = compute_first_action_allowance(rows)
     assert out["count"] == 0
     assert out["pct"] == 0.0
+    assert out["excluded"] == 0
 
 
 def test_first_action_allowance_empty_window_returns_none() -> None:
@@ -503,6 +510,70 @@ def test_first_action_allowance_empty_window_returns_none() -> None:
     out = compute_first_action_allowance([])
     assert out["pct"] is None
     assert out["denom"] == 0
+    assert out["excluded"] == 0
+
+
+def test_first_action_allowance_excludes_apps_without_analytics_row() -> None:
+    """Data-quality guard: an allowed-class app with no application_analytics
+    row (has_analytics_row=False) MUST NOT count toward the FAA numerator.
+    Pre-fix the COALESCE coerced rce/final_rejection to 0 and these apps
+    masqueraded as first-action allowances, which inflated the prod rate to
+    ~75%. They still count toward the closed denominator because the status
+    code on `applications` is reliable.
+    """
+    rows = [
+        _row("A", status=150, rce=0, final_rejection_count=0, has_analytics_row=True),
+        _row("B", status=150, rce=0, final_rejection_count=0, has_analytics_row=False),
+        _row("C", status=150, rce=0, final_rejection_count=0, has_analytics_row=False),
+        _row("D", status=161, has_analytics_row=False),  # abandoned: not in num pool anyway
+    ]
+    out = compute_first_action_allowance(rows)
+    assert out["count"] == 1, "only A is a verified first-action allowance"
+    assert out["denom"] == 4, "all 4 closed apps still count in the denominator"
+    assert out["pct"] == 25.0
+    assert out["excluded"] == 2, "B and C are allowed-class but had no analytics data"
+
+
+def test_first_action_allowance_excluded_does_not_double_count_abandoned() -> None:
+    """Abandoned apps without an analytics row should NOT be reported in
+    `excluded` — they were never numerator candidates to begin with."""
+    rows = [
+        _row("A", status=161, has_analytics_row=False),
+        _row("B", status=161, has_analytics_row=False),
+    ]
+    out = compute_first_action_allowance(rows)
+    assert out["count"] == 0
+    assert out["denom"] == 2
+    assert out["excluded"] == 0
+
+
+def test_first_action_allowance_missing_flag_treats_as_present() -> None:
+    """Backward-compat: if a row dict has no `has_analytics_row` key (legacy
+    callers, hand-rolled fixtures), treat it as present so the integer
+    rce/final_rejection_count fields are trusted as-is."""
+    legacy_row = {
+        "application_number": "A",
+        "application_status_code": 150,
+        "rce_count": 0,
+        "final_rejection_count": 0,
+    }
+    out = compute_first_action_allowance([legacy_row])
+    assert out["count"] == 1
+    assert out["denom"] == 1
+    assert out["excluded"] == 0
+
+
+def test_compute_kpis_surfaces_faa_excluded_count() -> None:
+    """The FAA card on the Allowance Analytics tab reads `faaExcluded` from
+    the kpis dict; verify it threads through compute_kpis."""
+    rows = [
+        _row("A", status=150, rce=0, final_rejection_count=0, has_analytics_row=True),
+        _row("B", status=150, rce=0, final_rejection_count=0, has_analytics_row=False),
+    ]
+    k = compute_kpis(rows)
+    assert k["faaCount"] == 1
+    assert k["faaDenom"] == 2
+    assert k["faaExcluded"] == 1
 
 
 def test_cohort_trend_groups_by_filing_year() -> None:

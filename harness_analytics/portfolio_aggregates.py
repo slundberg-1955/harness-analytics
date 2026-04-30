@@ -185,25 +185,46 @@ def compute_first_action_allowance(rows: list[dict[str, Any]]) -> dict[str, Any]
 
     Of closed-in-window applications, the share that received an NOA without
     ever filing an RCE and without ever receiving a Final Rejection.
+
+    Data-quality guard: when an allowed app has no row in
+    ``application_analytics`` (``has_analytics_row IS FALSE``), we cannot
+    distinguish "no RCE / no Final Rejection" from "we never analyzed
+    prosecution history". Coercing missing analytics to zeros (the pre-fix
+    behavior via ``COALESCE(..., 0)``) artificially inflated the rate to
+    ~75% on the production dataset because the analytics job hasn't run on
+    older apps. We now exclude such apps from the numerator and report the
+    exclusion count so the FAA card can warn users.
+
+    Apps without an analytics row still count toward the closed denominator
+    because ``application_status_code`` lives on ``applications`` and is
+    reliable independent of the analytics job. ``has_analytics_row`` missing
+    from a row dict (legacy callers / unit tests) is treated as True so we
+    fall back to the pre-fix integer-zero semantics for callers that don't
+    populate the flag.
     """
-    closed = sum(
-        1
-        for r in rows
-        if r.get("application_status_code") in (150, 161)
-    )
+    closed = 0
+    excluded = 0
+    num = 0
+    for r in rows:
+        code = r.get("application_status_code")
+        if code in (150, 161):
+            closed += 1
+        if code in _CHM_ALLOWED_STATUS_CODES:
+            if r.get("has_analytics_row") is False:
+                excluded += 1
+                continue
+            if (
+                _get_int(r, "rce_count") == 0
+                and _get_int(r, "final_rejection_count") == 0
+            ):
+                num += 1
     if not closed:
-        return {"pct": None, "count": 0, "denom": 0}
-    num = sum(
-        1
-        for r in rows
-        if r.get("application_status_code") in _CHM_ALLOWED_STATUS_CODES
-        and _get_int(r, "rce_count") == 0
-        and _get_int(r, "final_rejection_count") == 0
-    )
+        return {"pct": None, "count": 0, "denom": 0, "excluded": excluded}
     return {
         "pct": round(100.0 * num / closed, 1),
         "count": num,
         "denom": closed,
+        "excluded": excluded,
     }
 
 
@@ -658,6 +679,9 @@ def compute_kpis(
         "faaPct": faa["pct"],
         "faaCount": faa["count"],
         "faaDenom": faa["denom"],
+        # Allowed-class apps with no application_analytics row, dropped from
+        # the FAA numerator (data-quality guard, see compute_first_action_allowance).
+        "faaExcluded": faa.get("excluded", 0),
         "faaDeltaPctPts": 0.0,
         "timeToAllowance": tta,
         "rceIntensity": rce_intensity,

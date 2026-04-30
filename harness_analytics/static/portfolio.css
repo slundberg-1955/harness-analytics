@@ -1142,6 +1142,20 @@ tbody tr:focus-visible {
   color: var(--slate-500);
   margin-top: 8px;
 }
+/* Data-coverage caveat under the FAA card. Keeps the same monospace family
+   as the sub-line so they read as a stack, but tints amber to flag that the
+   user should mentally bracket the headline number. */
+.aa-kpi-warn {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--amber-700, #b45309);
+  background: var(--amber-50, #fffbeb);
+  border: 1px solid var(--amber-200, #fde68a);
+  border-radius: 6px;
+  padding: 4px 8px;
+  margin-top: 6px;
+  cursor: help;
+}
 .aa-kpi-delta {
   position: absolute;
   top: 22px;

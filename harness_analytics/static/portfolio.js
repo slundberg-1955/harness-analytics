@@ -616,6 +616,11 @@
         ${pct(k.faaPct)}
         ${delta(k.faaDeltaPctPts)}
         <div class="aa-kpi-sub">${faaCount.toLocaleString()} of ${faaDenom.toLocaleString()} closed · no RCE, no Final Rejection</div>
+        ${
+          k.faaExcluded > 0
+            ? `<div class="aa-kpi-warn" title="These applications have a status of Patented or Allowed but no row in application_analytics, so we can't verify whether they had an RCE or Final Rejection. Excluded from the numerator to avoid inflating the rate.">⚠ ${k.faaExcluded.toLocaleString()} allowed app${k.faaExcluded === 1 ? "" : "s"} excluded for incomplete prosecution data</div>`
+            : ""
+        }
       </div>
     `;
   }

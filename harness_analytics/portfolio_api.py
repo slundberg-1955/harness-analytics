@@ -119,6 +119,11 @@ _ROW_COLUMNS: list[str] = [
     "final_rejection_count",
     "family_root_app_no",
     "has_foreign_priority",
+    # Data-quality flag: drives FAA exclusion (see view comment + spec §9
+    # empty-window rule applied per-row). Null aa joins -> excluded from the
+    # FAA numerator so missing analytics rows don't masquerade as
+    # first-action allowances.
+    "has_analytics_row",
     # M7: timeline summary fields, populated by correlated subqueries on
     # computed_deadlines from the patent_applications view (see
     # _PATENT_APPLICATIONS_VIEW_SQL).
@@ -470,6 +475,7 @@ def _row_to_json(row: dict[str, Any]) -> dict[str, Any]:
         "finalRejectionCount": row.get("final_rejection_count") or 0,
         "familyRootAppNo": row.get("family_root_app_no"),
         "hasForeignPriority": bool(row.get("has_foreign_priority")) if row.get("has_foreign_priority") is not None else None,
+        "hasAnalyticsRow": bool(row.get("has_analytics_row")) if row.get("has_analytics_row") is not None else None,
         # M7: timeline summary projected straight from the view.
         "nextDeadlineDate": _iso(row.get("next_deadline_date")),
         "nextDeadlineLabel": row.get("next_deadline_label"),
