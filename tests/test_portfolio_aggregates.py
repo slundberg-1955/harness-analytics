@@ -475,154 +475,107 @@ def test_recency_window_custom_uses_supplied_dates() -> None:
 
 
 def test_first_action_allowance_rate_basic() -> None:
-    """Spec §10 case 3 / §5.1: numerator counts clean allowances (status 150/93/159
-    with rce=0 and final=0); denominator is "closed" = patented + abandoned only.
-    Setup: 4 closed (3 patented + 1 abandoned), 2 of the patented are first-action.
+    """Strict first-action: examiner's first action was the NOA. Numerator
+    requires zero non-final OAs, zero final OAs, zero RCEs. Denominator is
+    all allowed apps (CHM_ALLOWED).
     """
     rows = [
-        _row("A", status=150, rce=0, final_rejection_count=0),   # FAA num + closed denom
-        _row("B", status=150, rce=0, final_rejection_count=0),   # FAA num + closed denom
-        _row("C", status=150, rce=1, final_rejection_count=0),   # closed, excluded from num (RCE)
-        _row("D", status=161),                                    # closed, excluded from num
+        # First-action allowance (counts in num + denom).
+        _row("A", status=150, nonfinal=0, final=0, rce=0),
+        # Allowed but had a non-final OA — denom only.
+        _row("B", status=150, nonfinal=1, final=0, rce=0),
+        # Allowed but had an RCE — denom only.
+        _row("C", status=150, nonfinal=0, final=0, rce=1),
+        # NOA-mailed, clean — counts in num + denom (in-flight allowance).
+        _row("D", status=93, nonfinal=0, final=0, rce=0),
+        # Abandoned — not in denom (denom is all allowances, not closed).
+        _row("E", status=161),
     ]
     out = compute_first_action_allowance(rows)
-    assert out["count"] == 2
-    assert out["denom"] == 4
+    assert out["count"] == 2, "A + D are first-action allowances"
+    assert out["denom"] == 4, "A,B,C,D are all in CHM_ALLOWED"
     assert out["pct"] == 50.0
     assert out["excluded"] == 0
 
 
-def test_first_action_allowance_excludes_final_rejection() -> None:
-    """Spec §10 case 4: status allowed and rce=0 but final_rejection_count>=1
-    is NOT a first-action allowance."""
+def test_first_action_allowance_excludes_apps_with_nonfinal_oa() -> None:
+    """An app allowed AFTER one or more non-final OAs is NOT first-action,
+    even though it had no FR or RCE. This is the strict USPTO definition."""
     rows = [
-        _row("A", status=150, rce=0, final_rejection_count=1),
-        _row("B", status=161),
+        _row("A", status=150, nonfinal=1, final=0, rce=0),
+        _row("B", status=150, nonfinal=2, final=0, rce=0),
     ]
     out = compute_first_action_allowance(rows)
     assert out["count"] == 0
+    assert out["denom"] == 2
     assert out["pct"] == 0.0
-    assert out["excluded"] == 0
 
 
 def test_first_action_allowance_empty_window_returns_none() -> None:
-    """Spec §9 empty-window rule: no closed rows -> pct is None, not 0."""
-    out = compute_first_action_allowance([])
+    """No allowed apps in window -> pct is None, not 0."""
+    out = compute_first_action_allowance([_row("A", status=161)])
     assert out["pct"] is None
     assert out["denom"] == 0
     assert out["excluded"] == 0
 
 
 def test_first_action_allowance_excludes_apps_without_analytics_row() -> None:
-    """Data-quality guard: an allowed-class app with no application_analytics
-    row (has_analytics_row=False) MUST NOT count toward the FAA numerator.
-    Pre-fix the COALESCE coerced rce/final_rejection to 0 and these apps
-    masqueraded as first-action allowances, which inflated the prod rate to
-    ~75%. They still count toward the closed denominator because the status
-    code on `applications` is reliable.
-    """
+    """Data-quality guard: an allowed app with no application_analytics
+    row can't be verified as first-action — exclude from BOTH numerator
+    and denominator (separate ``excluded`` count surfaced for the UI)."""
     rows = [
-        _row("A", status=150, rce=0, final_rejection_count=0, has_analytics_row=True),
-        _row("B", status=150, rce=0, final_rejection_count=0, has_analytics_row=False),
-        _row("C", status=150, rce=0, final_rejection_count=0, has_analytics_row=False),
-        _row("D", status=161, has_analytics_row=False),  # abandoned: not in num pool anyway
+        _row("A", status=150, nonfinal=0, final=0, rce=0, has_analytics_row=True),
+        _row("B", status=150, nonfinal=0, final=0, rce=0, has_analytics_row=False),
+        _row("C", status=150, nonfinal=0, final=0, rce=0, has_analytics_row=False),
     ]
     out = compute_first_action_allowance(rows)
-    assert out["count"] == 1, "only A is a verified first-action allowance"
-    assert out["denom"] == 4, "all 4 closed apps still count in the denominator"
-    assert out["pct"] == 25.0
-    assert out["excluded"] == 2, "B and C are allowed-class but had no analytics data"
+    assert out["count"] == 1
+    assert out["denom"] == 1, "only A has verifiable analytics; B/C excluded"
+    assert out["pct"] == 100.0
+    assert out["excluded"] == 2
 
 
-def test_first_action_allowance_excludes_in_flight_allowed_status() -> None:
-    """Regression for the >100% cohort-FAA bug surfaced by debug 2026-04-30-c.
-
-    Pre-fix the FAA numerator counted any app with status in CHM_ALLOWED
-    {150, 93, 159} but the denominator only counted status in {150, 161}.
-    For cohorts with many apps in 93 (NOA Mailed, awaiting issue fee) or
-    159 (Allowed for Issue, not yet patented), num exceeded denom and the
-    rate exceeded 100% (171.8% in 2024, 438.9% in 2025). After the fix
-    the numerator is restricted to status==150 only so num ⊆ denom.
-    """
+def test_first_action_allowance_includes_in_flight_in_denom() -> None:
+    """NOA-mailed (93) and Allowed for Issue (159) are in the denom and
+    can be in the numerator if their prosecution was clean. They are
+    pre-issue states but are already 'allowances' for this metric."""
     rows = [
-        # 1 patented clean (counts in num + denom)
-        _row("A", status=150, rce=0, final_rejection_count=0),
-        # 2 abandoned (count in denom only — bring rate down)
-        _row("B", status=161),
-        _row("C", status=161),
-        # 5 NOA-mailed clean: pre-fix would have inflated num, now ignored
-        _row("D", status=93, rce=0, final_rejection_count=0),
-        _row("E", status=93, rce=0, final_rejection_count=0),
-        _row("F", status=93, rce=0, final_rejection_count=0),
-        _row("G", status=159, rce=0, final_rejection_count=0),
-        _row("H", status=159, rce=0, final_rejection_count=0),
+        _row("A", status=93, nonfinal=0, final=0, rce=0),
+        _row("B", status=159, nonfinal=0, final=0, rce=0),
+        _row("C", status=150, nonfinal=1, final=0, rce=0),  # not first-action
     ]
     out = compute_first_action_allowance(rows)
-    assert out["count"] == 1, "only A is patented + clean"
-    assert out["denom"] == 3, "denom = 1 patented + 2 abandoned"
-    assert out["pct"] == round(100.0 / 3, 1)
-    # And critically: pct never exceeds 100.
-    assert out["pct"] <= 100.0
+    assert out["denom"] == 3
+    assert out["count"] == 2
+    assert out["pct"] == round(200.0 / 3, 1)
 
 
 def test_cohort_trend_faa_never_exceeds_100() -> None:
-    """Regression: the cohort chart's per-year FAA was producing values
-    over 100% for cohorts dominated by in-flight (status 93/159) apps.
-    Numerator MUST be a strict subset of the denominator."""
+    """Regression for the original >100% bug. Numerator and denominator
+    now use the same status set so the rate is bounded [0, 100]."""
     rows = [
-        # 2024 cohort dominated by NOA-mailed apps with one abandonment.
         _row("X", filing_date=date(2024, 1, 1), status=161),
-        _row("Y", filing_date=date(2024, 2, 1), status=93, rce=0, final_rejection_count=0),
-        _row("Z", filing_date=date(2024, 3, 1), status=93, rce=0, final_rejection_count=0),
+        _row("Y", filing_date=date(2024, 2, 1), status=93, nonfinal=0, final=0, rce=0),
+        _row("Z", filing_date=date(2024, 3, 1), status=93, nonfinal=2, final=0, rce=0),
     ]
     out = compute_cohort_trend(rows, "filing")
     y2024 = next(r for r in out if r["year"] == 2024)
     assert y2024["faaPct"] is not None
-    assert y2024["faaPct"] <= 100.0, f"FAA must be <= 100, got {y2024['faaPct']}"
-    assert y2024["closed"] == 1
-    # Numerator should be 0 since no patented apps in this cohort.
-    assert y2024["faaPct"] == 0.0
-
-
-def test_first_action_allowance_excluded_does_not_double_count_abandoned() -> None:
-    """Abandoned apps without an analytics row should NOT be reported in
-    `excluded` — they were never numerator candidates to begin with."""
-    rows = [
-        _row("A", status=161, has_analytics_row=False),
-        _row("B", status=161, has_analytics_row=False),
-    ]
-    out = compute_first_action_allowance(rows)
-    assert out["count"] == 0
-    assert out["denom"] == 2
-    assert out["excluded"] == 0
-
-
-def test_first_action_allowance_missing_flag_treats_as_present() -> None:
-    """Backward-compat: if a row dict has no `has_analytics_row` key (legacy
-    callers, hand-rolled fixtures), treat it as present so the integer
-    rce/final_rejection_count fields are trusted as-is."""
-    legacy_row = {
-        "application_number": "A",
-        "application_status_code": 150,
-        "rce_count": 0,
-        "final_rejection_count": 0,
-    }
-    out = compute_first_action_allowance([legacy_row])
-    assert out["count"] == 1
-    assert out["denom"] == 1
-    assert out["excluded"] == 0
+    assert 0.0 <= y2024["faaPct"] <= 100.0, f"FAA must be in [0,100], got {y2024['faaPct']}"
+    # Y is first-action (1/2 allowed), Z has a non-final (not first-action).
+    assert y2024["faaPct"] == 50.0
 
 
 def test_compute_kpis_surfaces_faa_excluded_count() -> None:
     """The FAA card on the Allowance Analytics tab reads `faaExcluded` from
     the kpis dict; verify it threads through compute_kpis."""
     rows = [
-        _row("A", status=150, rce=0, final_rejection_count=0, has_analytics_row=True),
-        _row("B", status=150, rce=0, final_rejection_count=0, has_analytics_row=False),
+        _row("A", status=150, nonfinal=0, final=0, rce=0, has_analytics_row=True),
+        _row("B", status=150, nonfinal=0, final=0, rce=0, has_analytics_row=False),
     ]
     k = compute_kpis(rows)
     assert k["faaCount"] == 1
-    assert k["faaDenom"] == 2
+    assert k["faaDenom"] == 1, "B excluded from denom (no analytics row)"
     assert k["faaExcluded"] == 1
 
 
@@ -782,10 +735,16 @@ def test_traditional_and_chm_unchanged_when_no_recency_filter() -> None:
 def test_cohort_trend_surfaces_closed_and_faa_excluded() -> None:
     """The cohort chart needs (a) closed-N per year for the n= sub-label
     that exposes survivorship bias, and (b) faaExcluded per year for the
-    hover tooltip and color treatment."""
+    hover tooltip and color treatment.
+
+    Under strict-first-action semantics, FAA denom is allowed apps with
+    a verifiable analytics row; an allowed-class app missing its
+    analytics row is excluded from BOTH num and denom and reported in
+    faaExcluded."""
     rows = [
-        # 2024: 1 patented w/ analytics, 1 patented w/o analytics, 1 pending.
-        _row("A", filing_date=date(2024, 1, 1), status=150, has_analytics_row=True),
+        # 2024: 1 patented w/ analytics & clean, 1 patented w/o analytics, 1 pending.
+        _row("A", filing_date=date(2024, 1, 1), status=150, has_analytics_row=True,
+             nonfinal=0, final=0, rce=0),
         _row("B", filing_date=date(2024, 2, 1), status=150, has_analytics_row=False),
         _row("C", filing_date=date(2024, 3, 1), status=41, status_text="Non-Final"),
     ]
@@ -796,8 +755,9 @@ def test_cohort_trend_surfaces_closed_and_faa_excluded() -> None:
     assert y["n"] == 3, "n is total apps in cohort"
     assert y["closed"] == 2, "closed is patented + abandoned (B counts even w/o analytics row)"
     assert y["faaExcluded"] == 1, "B is allowed-class but no analytics row"
-    # FAA = 1 (only A) / 2 closed = 50% — pre-fix this would have been 100%.
-    assert y["faaPct"] == 50.0
+    # FAA denom = 1 (only A is allowed-class with verifiable analytics).
+    # FAA num   = 1 (A had no rejections). So faaPct == 100.
+    assert y["faaPct"] == 100.0
     assert y["maturing"] is True
 
 

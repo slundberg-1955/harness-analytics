@@ -181,57 +181,56 @@ def _percentile(sorted_vals: list[float], p: float) -> float:
 
 
 def compute_first_action_allowance(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """First-Action Allowance Rate (spec §5.1).
+    """First-Action Allowance Rate.
 
-    Of closed-in-window applications, the share that were patented without
-    ever filing an RCE and without ever receiving a Final Rejection.
+    Of all allowed applications, the share where the examiner's FIRST
+    action was the Notice of Allowance — no non-final OA, no final
+    rejection, no RCE in the file history.
 
-    Numerator and denominator MUST agree on what "closed" means:
+    * Denominator = ``status ∈ CHM_ALLOWED`` (Patented + NOA Mailed +
+      Allowed for Issue) — ALL allowances, in-flight or already issued.
+    * Numerator   = same status set AND ``nonfinal_oa_count == 0``
+      AND ``final_oa_count == 0`` AND ``rce_count == 0``.
 
-    * Denominator = ``status ∈ {150 patented, 161 abandoned}``.
-    * Numerator   = ``status == 150 patented`` AND no RCE AND no Final
-      Rejection. Apps in 93 (NOA mailed, awaiting issue fee) or 159
-      (Allowed for Issue) are NOT counted because they have not yet
-      closed — they may still abandon by failing to pay the issue fee.
-
-    Counting in-flight (93/159) apps in the numerator while restricting
-    the denominator to closed (150/161) was the original v2 bug: for
-    recent filing cohorts where many apps are in the post-NOA window,
-    ``num`` exceeded ``denom``, producing impossible per-cohort rates
-    like 171.8% (2024) and 438.9% (2025). See debug runId=2026-04-30-c.
+    User-validated against industry expectation: this rate is normally
+    25-35% (USPTO baseline ~10-25% by art unit, higher for portfolios
+    weighted toward mechanical / chemical art units). Earlier iterations
+    of this function (a) used ``status ∈ closed`` as the denominator and
+    ``status ∈ CHM_ALLOWED`` as the numerator, producing impossible
+    cohort rates >100%, and (b) ignored ``nonfinal_oa_count`` so apps
+    allowed after one or more non-final rejections were counted as
+    first-action. Both behaviors are corrected here.
 
     Data-quality guard: when an allowed-class app has no row in
     ``application_analytics`` (``has_analytics_row IS FALSE``), we cannot
-    distinguish "no RCE / no Final Rejection" from "we never analyzed
-    prosecution history" — exclude from the numerator. Apps without an
-    analytics row still count toward the closed denominator because
-    ``application_status_code`` lives on ``applications`` and is reliable
-    independent of the analytics job. Production data currently has 0
-    such rows (analytics job is fully caught up); the guard remains as
-    future-proofing.
+    verify the OA / RCE / Final-Rejection counts (the underlying COALESCE
+    treats them as zero) — exclude such apps from the numerator AND from
+    the denominator (they're not allowed-with-known-data). Production
+    data currently has zero such rows; guard remains as future-proofing.
     """
-    closed = 0
+    denom = 0
     excluded = 0
     num = 0
     for r in rows:
         code = r.get("application_status_code")
-        if code in (150, 161):
-            closed += 1
-        if code == 150:
-            if r.get("has_analytics_row") is False:
-                excluded += 1
-                continue
-            if (
-                _get_int(r, "rce_count") == 0
-                and _get_int(r, "final_rejection_count") == 0
-            ):
-                num += 1
-    if not closed:
+        if code not in _CHM_ALLOWED_STATUS_CODES:
+            continue
+        if r.get("has_analytics_row") is False:
+            excluded += 1
+            continue
+        denom += 1
+        if (
+            _get_int(r, "nonfinal_oa_count") == 0
+            and _get_int(r, "final_oa_count") == 0
+            and _get_int(r, "rce_count") == 0
+        ):
+            num += 1
+    if not denom:
         return {"pct": None, "count": 0, "denom": 0, "excluded": excluded}
     return {
-        "pct": round(100.0 * num / closed, 1),
+        "pct": round(100.0 * num / denom, 1),
         "count": num,
-        "denom": closed,
+        "denom": denom,
         "excluded": excluded,
     }
 
@@ -414,25 +413,28 @@ def _trad_chm_faa_for_group(group: list[dict[str, Any]]) -> dict[str, Any]:
     chm_den = chm_num + chm_ab
     chm = round(100.0 * chm_num / chm_den, 1) if chm_den else None
 
-    # FAA numerator restricted to status==150 (patented) only — see
-    # compute_first_action_allowance for the rationale. Including apps in
-    # 93/159 here while dividing by closed (150+161) was the original bug
-    # that produced impossible cohort rates (171.8% in 2024, 438.9% in
-    # 2025). Numerator MUST be a strict subset of the denominator.
+    # FAA: strict first-action — examiner's FIRST action was the NOA
+    # (zero non-final OAs, zero final OAs, zero RCEs). Denominator is all
+    # allowed apps (CHM_ALLOWED). See compute_first_action_allowance for
+    # the full rationale. Numerator is by definition a subset of the
+    # denominator so the rate is always bounded [0, 100].
+    faa_denom = 0
     faa_num = 0
     faa_excluded = 0
     for r in group:
-        if r.get("application_status_code") != 150:
+        if r.get("application_status_code") not in _CHM_ALLOWED_STATUS_CODES:
             continue
         if r.get("has_analytics_row") is False:
             faa_excluded += 1
             continue
+        faa_denom += 1
         if (
-            _get_int(r, "rce_count") == 0
-            and _get_int(r, "final_rejection_count") == 0
+            _get_int(r, "nonfinal_oa_count") == 0
+            and _get_int(r, "final_oa_count") == 0
+            and _get_int(r, "rce_count") == 0
         ):
             faa_num += 1
-    faa = round(100.0 * faa_num / closed, 1) if closed else None
+    faa = round(100.0 * faa_num / faa_denom, 1) if faa_denom else None
     return {
         "traditionalPct": trad,
         "chmPct": chm,

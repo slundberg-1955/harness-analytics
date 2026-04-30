@@ -272,10 +272,13 @@
           Recency window applies to the cohort-axis date selected above; rows whose cohort date
           falls outside the window are excluded entirely from the analytics on this tab.
           A row is "closed" when its application_status_code is 150 (Patented) or 161 (Abandoned);
-          rows still pending are excluded from the Traditional and First-Action denominators
-          but counted in Pendency. The Carley-Hegde-Marco rate counts NOA-Mailed (93) and
-          Issue Fee Verified (159) as already allowed and treats abandonments-with-a-child as
-          continuations of prosecution rather than losses. RCE counts come from the
+          rows still pending are excluded from the Traditional denominator but counted in Pendency.
+          The Carley-Hegde-Marco rate counts NOA-Mailed (93) and Issue Fee Verified (159) as
+          already allowed and treats abandonments-with-a-child as continuations of prosecution
+          rather than losses. The First-Action Allowance Rate is the share of all allowances
+          (Patented + NOA Mailed + Allowed for Issue) where the examiner's FIRST action was the
+          Notice of Allowance — zero non-final OAs, zero final rejections, zero RCEs in the file
+          history. Industry baseline is roughly 10-25% by art unit. RCE counts come from the
           application_analytics table (event-derived); foreign-priority share is true when the
           Biblio XML has a ForeignPriorityList entry or any PCT national-stage parent.
         </div>
