@@ -1361,3 +1361,86 @@ tbody tr:focus-visible {
   .aa-secondary-grid { grid-template-columns: 1fr 1fr; }
   .aa-breakdowns { grid-template-columns: 1fr; }
 }
+
+/* =====================================================================
+ * Extensions tab.
+ * =================================================================== */
+
+.ext-card { margin-bottom: 16px; }
+.ext-legend {
+  display: flex;
+  gap: 14px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--slate-600);
+  flex-wrap: wrap;
+}
+.ext-leg-item { display: inline-flex; align-items: center; gap: 6px; }
+.ext-leg-swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  vertical-align: middle;
+}
+.ext-leg-swatch-ctnf { background: var(--blue-600); }
+.ext-leg-swatch-ctfr { background: var(--rose-600); }
+.ext-leg-swatch-ctrs { background: var(--amber-600); }
+
+.ext-chart { width: 100%; min-height: 280px; margin-bottom: 18px; }
+.ext-chart svg { display: block; width: 100%; height: 280px; }
+.ext-empty {
+  padding: 60px 16px;
+  text-align: center;
+  font-family: var(--font-mono);
+  color: var(--slate-500);
+}
+
+.ext-table-wrap {
+  border: 1px solid var(--slate-200);
+  border-radius: var(--radius);
+  overflow-x: auto;
+  margin-bottom: 18px;
+}
+.ext-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.ext-table th {
+  text-align: left;
+  background: var(--slate-50);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--slate-500);
+  font-weight: 500;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--slate-200);
+}
+.ext-table th.ext-col-num,
+.ext-table td.ext-num { text-align: right; font-variant-numeric: tabular-nums; }
+.ext-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--slate-100);
+  font-family: var(--font-mono);
+  color: var(--slate-700);
+}
+.ext-table td.ext-year { color: var(--slate-900); font-weight: 500; }
+.ext-table td.ext-zero { color: var(--slate-400); }
+.ext-table tbody tr:last-child td { border-bottom: none; }
+.ext-table tfoot td {
+  background: var(--slate-50);
+  border-top: 2px solid var(--slate-200);
+  border-bottom: none;
+  font-weight: 600;
+  color: var(--slate-900);
+}
+.ext-col-total { font-weight: 600; }
+
+.ext-method {
+  border-top: 1px solid var(--slate-200);
+  padding-top: 14px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--slate-500);
+  line-height: 1.7;
+}
+.ext-method strong { color: var(--slate-700); font-weight: 600; }

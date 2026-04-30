@@ -96,6 +96,7 @@
         <button type="button" class="tab active" data-tab="overview" role="tab" aria-selected="true">Overview</button>
         <button type="button" class="tab" data-tab="charts" role="tab" aria-selected="false">Charts</button>
         <button type="button" class="tab" data-tab="allowance" role="tab" aria-selected="false">Allowance Analytics</button>
+        <button type="button" class="tab" data-tab="extensions" role="tab" aria-selected="false">Extensions</button>
         <button type="button" class="tab" data-tab="matters" role="tab" aria-selected="false">Matters</button>
       </nav>
 
@@ -277,6 +278,54 @@
           continuations of prosecution rather than losses. RCE counts come from the
           application_analytics table (event-derived); foreign-priority share is true when the
           Biblio XML has a ForeignPriorityList entry or any PCT national-stage parent.
+        </div>
+      </section>
+
+      <!-- ============== Extensions tab ============== -->
+      <section class="tab-pane" data-tab="extensions" role="tabpanel" hidden>
+        <div class="card ext-card">
+          <div class="card-head">
+            <div>
+              <div class="card-title">Extensions of Time by Year</div>
+              <div class="card-sub" id="ext-sub">YEAR THE LATE RESPONSE WAS FILED · CTNF/CTFR &gt; 3 MONTHS · RESTRICTION &gt; 2 MONTHS</div>
+            </div>
+            <div class="ext-legend" aria-hidden="true">
+              <span class="ext-leg-item"><span class="ext-leg-swatch ext-leg-swatch-ctnf"></span>CTNF</span>
+              <span class="ext-leg-item"><span class="ext-leg-swatch ext-leg-swatch-ctfr"></span>CTFR</span>
+              <span class="ext-leg-item"><span class="ext-leg-swatch ext-leg-swatch-ctrs"></span>Restriction</span>
+            </div>
+          </div>
+          <div class="card-body">
+            <div id="ext-chart" class="ext-chart" role="img" aria-label="Stacked bar chart of extensions per year"></div>
+            <div class="ext-table-wrap">
+              <table class="ext-table" id="ext-table">
+                <thead>
+                  <tr>
+                    <th class="ext-col-year">Year</th>
+                    <th class="ext-col-num">CTNF Extensions</th>
+                    <th class="ext-col-num">CTFR Extensions</th>
+                    <th class="ext-col-num">Restriction Extensions</th>
+                    <th class="ext-col-num ext-col-total">Total</th>
+                  </tr>
+                </thead>
+                <tbody id="ext-tbody"></tbody>
+                <tfoot id="ext-tfoot"></tfoot>
+              </table>
+            </div>
+            <div class="ext-method">
+              <strong>Methodology.</strong>
+              An "extension" here is a heuristic proxy: a qualifying applicant
+              response (response, RCE, or Notice of Appeal) filed strictly
+              more than 3 calendar months after the CTNF or CTFR mail date,
+              or more than 2 calendar months after a Restriction Requirement
+              (CTRS). Each extension is bucketed by the calendar year of the
+              response. Per office action we look at the first qualifying
+              response between the OA mail date and the earlier of the next
+              examiner action or the first Notice of Allowance. Counts the
+              full chip-filtered selection — not affected by the recency
+              window on the Allowance Analytics tab.
+            </div>
+          </div>
         </div>
       </section>
 
