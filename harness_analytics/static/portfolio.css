@@ -1202,6 +1202,16 @@ tbody tr:focus-visible {
   color: var(--slate-500);
   line-height: 1.6;
 }
+.aa-trend-note code {
+  background: var(--slate-100, #f1f5f9);
+  padding: 0 4px;
+  border-radius: 3px;
+  font-size: 10px;
+}
+.aa-trend-note-warn {
+  color: var(--amber-700, #b45309);
+  font-weight: 600;
+}
 
 /* =====================================================================
  * Secondary 6-up KPI grid (small, dense, aligned to baseline).
@@ -1304,6 +1314,28 @@ tbody tr:focus-visible {
   vertical-align: middle;
   margin-right: 6px;
   border-radius: 2px;
+}
+/* Footnote under a breakdown table — surfaces FAA exclusions or path
+   exclusions so the user knows the numbers may be deflated. */
+.aa-bd-foot {
+  margin-top: 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--amber-700, #b45309);
+  line-height: 1.5;
+}
+.aa-bd-foot code {
+  background: var(--slate-100, #f1f5f9);
+  color: var(--slate-700);
+  padding: 0 4px;
+  border-radius: 3px;
+}
+/* Inline asterisk in the FAA cell pointing at the footnote. */
+.aa-bd-warn {
+  color: var(--amber-700, #b45309);
+  cursor: help;
+  margin-left: 2px;
+  font-weight: 700;
 }
 
 .aa-method {

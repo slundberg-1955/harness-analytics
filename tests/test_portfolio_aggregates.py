@@ -729,6 +729,63 @@ def test_traditional_and_chm_unchanged_when_no_recency_filter() -> None:
         assert k_before[legacy] == k_after[legacy], f"legacy field {legacy} drifted"
 
 
+def test_cohort_trend_surfaces_closed_and_faa_excluded() -> None:
+    """The cohort chart needs (a) closed-N per year for the n= sub-label
+    that exposes survivorship bias, and (b) faaExcluded per year for the
+    hover tooltip and color treatment."""
+    rows = [
+        # 2024: 1 patented w/ analytics, 1 patented w/o analytics, 1 pending.
+        _row("A", filing_date=date(2024, 1, 1), status=150, has_analytics_row=True),
+        _row("B", filing_date=date(2024, 2, 1), status=150, has_analytics_row=False),
+        _row("C", filing_date=date(2024, 3, 1), status=41, status_text="Non-Final"),
+    ]
+    out = compute_cohort_trend(rows, "filing")
+    assert len(out) == 1
+    y = out[0]
+    assert y["year"] == 2024
+    assert y["n"] == 3, "n is total apps in cohort"
+    assert y["closed"] == 2, "closed is patented + abandoned (B counts even w/o analytics row)"
+    assert y["faaExcluded"] == 1, "B is allowed-class but no analytics row"
+    # FAA = 1 (only A) / 2 closed = 50% — pre-fix this would have been 100%.
+    assert y["faaPct"] == 50.0
+    assert y["maturing"] is True
+
+
+def test_breakdowns_path_excluded_surfaces_unknown_count() -> None:
+    """Allowed-class apps with no analytics row should be reported as
+    pathExcluded, NOT silently bucketed into firstAction."""
+    rows = [
+        _row("A", status=150, rce=0, final_rejection_count=0, has_analytics_row=True),
+        _row("B", status=150, rce=0, final_rejection_count=0, has_analytics_row=False),
+        _row("C", status=150, rce=1, final_rejection_count=0, has_analytics_row=True),
+    ]
+    out = compute_breakdowns(rows)
+    paths = {b["key"]: b for b in out["byPathToAllowance"]}
+    assert paths["firstAction"]["count"] == 1, "only A is verified first-action"
+    assert paths["after1Rce"]["count"] == 1, "C had 1 RCE"
+    assert out["pathExcluded"] == 1, "B is allowed but unknown path"
+    assert out["pathTotalAllowed"] == 3
+    # Shares are denominated against the classifiable subset (2), not 3.
+    assert paths["firstAction"]["sharePct"] == 50.0
+    assert paths["after1Rce"]["sharePct"] == 50.0
+
+
+def test_breakdowns_art_unit_carries_faa_excluded_per_row() -> None:
+    """byArtUnit rows must carry faaExcluded so the table can flag the
+    art units whose FAA is built on incomplete data."""
+    rows = [
+        _row("A", art_unit="2444", status=150, has_analytics_row=True),
+        _row("B", art_unit="2444", status=150, has_analytics_row=False),
+        _row("C", art_unit="2444", status=161),
+        _row("D", art_unit="3686", status=150, has_analytics_row=True),
+    ]
+    out = compute_breakdowns(rows)
+    aus = {r["artUnit"]: r for r in out["byArtUnit"]}
+    assert aus["2444"]["closed"] == 3
+    assert aus["2444"]["faaExcluded"] == 1, "B in 2444 is allowed-class no-analytics"
+    assert aus["3686"]["faaExcluded"] == 0
+
+
 def test_breakdowns_art_unit_top_n_and_path_buckets() -> None:
     rows = [
         # Art unit 2444 has 3 closed: 2 patented + 1 abandoned -> trad ~66.7%.

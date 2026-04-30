@@ -366,8 +366,22 @@ def compute_scope(rows: list[dict[str, Any]]) -> dict[str, int]:
     }
 
 
-def _trad_chm_faa_for_group(group: list[dict[str, Any]]) -> dict[str, Optional[float]]:
-    """Helper used by both the cohort trend and the byArtUnit breakdown."""
+def _trad_chm_faa_for_group(group: list[dict[str, Any]]) -> dict[str, Any]:
+    """Helper used by the cohort trend and the byArtUnit breakdown.
+
+    Returns rates plus the closed-app count and the count of allowed-class
+    apps excluded from the FAA numerator due to a missing
+    ``application_analytics`` row (mirrors the data-quality guard in
+    ``compute_first_action_allowance``). Consumers (cohort chart,
+    art-unit table) surface ``closed`` so users can see the denominator
+    behind a 100% bar, and ``faaExcluded`` to flag groups whose FAA may
+    be artificially deflated by missing data.
+
+    CHM stays at the legacy semantics (rce/final-rejection treated as 0
+    when missing) to keep the byte-stable regression tests green; the
+    pre-fix CHM-vs-FAA gap is small in practice and we prefer to fix one
+    metric at a time.
+    """
     patented = sum(1 for r in group if r.get("application_status_code") == 150)
     abandoned = sum(1 for r in group if r.get("application_status_code") == 161)
     closed = patented + abandoned
@@ -392,14 +406,28 @@ def _trad_chm_faa_for_group(group: list[dict[str, Any]]) -> dict[str, Optional[f
     chm_den = chm_num + chm_ab
     chm = round(100.0 * chm_num / chm_den, 1) if chm_den else None
 
-    faa_num = sum(
-        1 for r in group
-        if r.get("application_status_code") in _CHM_ALLOWED_STATUS_CODES
-        and _get_int(r, "rce_count") == 0
-        and _get_int(r, "final_rejection_count") == 0
-    )
+    faa_num = 0
+    faa_excluded = 0
+    for r in group:
+        if r.get("application_status_code") not in _CHM_ALLOWED_STATUS_CODES:
+            continue
+        if r.get("has_analytics_row") is False:
+            faa_excluded += 1
+            continue
+        if (
+            _get_int(r, "rce_count") == 0
+            and _get_int(r, "final_rejection_count") == 0
+        ):
+            faa_num += 1
     faa = round(100.0 * faa_num / closed, 1) if closed else None
-    return {"traditionalPct": trad, "chmPct": chm, "faaPct": faa}
+    return {
+        "traditionalPct": trad,
+        "chmPct": chm,
+        "faaPct": faa,
+        "closed": closed,
+        "faaCount": faa_num,
+        "faaExcluded": faa_excluded,
+    }
 
 
 def compute_cohort_trend(
@@ -429,9 +457,17 @@ def compute_cohort_trend(
             {
                 "year": year,
                 "n": len(group),
+                # Closed-app count (patented + abandoned) is the FAA / Trad
+                # denominator. Surfaced so the chart can show "n=closed"
+                # under each year — the visual cure for the survivorship
+                # bias that makes recent cohorts read as 100%.
+                "closed": rates["closed"],
                 "traditionalPct": rates["traditionalPct"],
                 "chmPct": rates["chmPct"],
                 "faaPct": rates["faaPct"],
+                # Allowed-class apps in this cohort with no application_analytics
+                # row, dropped from the FAA numerator (mirrors the headline KPI).
+                "faaExcluded": rates["faaExcluded"],
                 "maturing": maturing,
             }
         )
@@ -462,7 +498,11 @@ def compute_breakdowns(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
     Art-unit rows missing a ``group_art_unit`` are dropped (you can't show a
     blank row in the table). Path-to-allowance buckets every allowed app
-    exactly once into one of the four buckets.
+    that we can classify (i.e. has an analytics row) into one of the four
+    buckets; allowed apps with no analytics row are reported separately as
+    ``pathExcluded`` so the UI can show a data-coverage footnote instead of
+    silently misclassifying them as ``firstAction`` (which is the bug that
+    inflated the headline FAA to ~75% pre-fix).
     """
     by_au_groups: dict[str, list[dict[str, Any]]] = {}
     for r in rows:
@@ -473,12 +513,9 @@ def compute_breakdowns(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
     art_unit_rows: list[dict[str, Any]] = []
     for au, group in by_au_groups.items():
-        patented = sum(1 for r in group if r.get("application_status_code") == 150)
-        abandoned = sum(1 for r in group if r.get("application_status_code") == 161)
-        closed = patented + abandoned
-        if closed == 0:
-            continue
         rates = _trad_chm_faa_for_group(group)
+        if rates["closed"] == 0:
+            continue
         months = [
             float(r["months_to_allowance"])
             for r in group
@@ -488,10 +525,11 @@ def compute_breakdowns(rows: list[dict[str, Any]]) -> dict[str, Any]:
         art_unit_rows.append(
             {
                 "artUnit": au,
-                "closed": closed,
+                "closed": rates["closed"],
                 "tradPct": rates["traditionalPct"],
                 "chmPct": rates["chmPct"],
                 "faaPct": rates["faaPct"],
+                "faaExcluded": rates["faaExcluded"],
                 "medianMonths": med,
             }
         )
@@ -503,19 +541,26 @@ def compute_breakdowns(rows: list[dict[str, Any]]) -> dict[str, Any]:
         if r.get("application_status_code") in _CHM_ALLOWED_STATUS_CODES
     ]
     bucket_groups: dict[str, list[dict[str, Any]]] = {key: [] for key, _ in _PATH_BUCKETS}
+    path_excluded = 0
     for r in allowed:
+        if r.get("has_analytics_row") is False:
+            path_excluded += 1
+            continue
         key = _classify_allowance_path(
             _get_int(r, "rce_count"),
             _get_int(r, "final_rejection_count"),
         )
         bucket_groups[key].append(r)
 
-    total_allowed = len(allowed)
+    total_classified = sum(len(b) for b in bucket_groups.values())
     by_path: list[dict[str, Any]] = []
     for key, label in _PATH_BUCKETS:
         bucket = bucket_groups[key]
         count = len(bucket)
-        share = round(100.0 * count / total_allowed, 1) if total_allowed else 0.0
+        # Shares are denominated against classifiable apps so the four
+        # buckets sum to 100% (excluding the unknown count from the
+        # share base). The unknown count is reported separately.
+        share = round(100.0 * count / total_classified, 1) if total_classified else 0.0
         months = [
             float(r["months_to_allowance"])
             for r in bucket
@@ -532,7 +577,14 @@ def compute_breakdowns(rows: list[dict[str, Any]]) -> dict[str, Any]:
             }
         )
 
-    return {"byArtUnit": art_unit_rows, "byPathToAllowance": by_path}
+    return {
+        "byArtUnit": art_unit_rows,
+        "byPathToAllowance": by_path,
+        # Allowed-class apps that couldn't be bucketed because there's no
+        # application_analytics row. UI surfaces this as a footnote.
+        "pathExcluded": path_excluded,
+        "pathTotalAllowed": len(allowed),
+    }
 
 
 def _deadlines_within(rows: Iterable[dict[str, Any]], days: int) -> int:

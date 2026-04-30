@@ -634,7 +634,9 @@
     if (!host) return;
     const data = state.lastData || {};
     const trend = data.cohortTrend || [];
-    const W = 920, H = 280, padL = 56, padR = 24, padT = 18, padB = 36;
+    // Bottom padding bumped from 36 -> 50 to accommodate the new "n=closed"
+    // sub-label under each year tick (data-coverage signal).
+    const W = 920, H = 296, padL = 56, padR = 24, padT = 18, padB = 50;
     const innerW = W - padL - padR, innerH = H - padT - padB;
     if (!trend.length) {
       host.innerHTML = `<div class="empty-chart">No cohort data in the current window.</div>`;
@@ -696,11 +698,24 @@
       `<text x="${padL - 8}" y="${y(v) + 4}" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#64748b">${v}%</text></g>`
     ).join("");
 
+    // Year labels + a small "n=closed" line directly under each year so
+    // the survivorship-bias problem is visible at a glance: when 2024
+    // shows 100% but n=12, the user can immediately see the FAA bar is
+    // built on a tiny early-closing sample. Hover gives the full
+    // breakdown including FAA-excluded count if any apps were dropped
+    // for missing analytics data.
     const xLabels = trend.map((d) => {
       const cx = x(d.year);
       const label = String(d.year);
-      const note = d.maturing ? `<title>${d.n} apps · maturing cohort</title>` : `<title>${d.n} apps</title>`;
-      return `<text x="${cx}" y="${H - padB + 18}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#64748b">${label}${note}</text>`;
+      const closedN = d.closed != null ? d.closed : 0;
+      const excludedNote = d.faaExcluded
+        ? ` · ${d.faaExcluded} excluded from FAA (no analytics row)`
+        : "";
+      const tip = `${d.year} · ${d.n} apps in cohort · ${closedN} closed${d.maturing ? " · maturing cohort" : ""}${excludedNote}`;
+      return `
+        <text x="${cx}" y="${H - padB + 18}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#64748b"><title>${escapeHtml(tip)}</title>${label}</text>
+        <text x="${cx}" y="${H - padB + 30}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="9" fill="${closedN < 25 ? "#b45309" : "#94a3b8"}"><title>${escapeHtml(tip)}</title>n=${closedN}</text>
+      `;
     }).join("");
 
     host.innerHTML = `
@@ -779,6 +794,7 @@
       if (!rows.length) {
         auHost.innerHTML = `<div class="empty-chart">No closed apps grouped by art unit in window.</div>`;
       } else {
+        const totalExcluded = rows.reduce((sum, r) => sum + (r.faaExcluded || 0), 0);
         auHost.innerHTML = `
           <table class="aa-bd-table">
             <thead><tr><th>Art Unit</th><th class="aa-r">Closed</th><th class="aa-r">Trad</th><th class="aa-r">CHM</th><th class="aa-r">FAA</th><th class="aa-r">Mo. Med</th></tr></thead>
@@ -786,23 +802,36 @@
               ${rows.map((r) => {
                 const trad = r.tradPct;
                 const barWidth = trad != null ? Math.max(0, Math.min(80, trad * 0.8)) : 0;
+                // Asterisk + tooltip when this art unit had FAA-eligible apps
+                // dropped for missing analytics data; tells the user the FAA
+                // value here might be deflated.
+                const faaSuffix = r.faaExcluded
+                  ? `<span class="aa-bd-warn" title="${r.faaExcluded} allowed app${r.faaExcluded === 1 ? "" : "s"} in this art unit excluded from FAA (no analytics row)">*</span>`
+                  : "";
                 return `<tr>
                   <td>${escapeHtml(String(r.artUnit))}</td>
                   <td class="aa-r">${r.closed.toLocaleString()}</td>
                   <td class="aa-r">${trad != null ? `<span class="aa-bd-bar" style="width:${barWidth}px"></span>${trad}%` : "—"}</td>
                   <td class="aa-r">${r.chmPct != null ? r.chmPct + "%" : "—"}</td>
-                  <td class="aa-r">${r.faaPct != null ? r.faaPct + "%" : "—"}</td>
+                  <td class="aa-r">${r.faaPct != null ? r.faaPct + "%" : "—"}${faaSuffix}</td>
                   <td class="aa-r">${r.medianMonths != null ? r.medianMonths : "—"}</td>
                 </tr>`;
               }).join("")}
             </tbody>
           </table>
+          ${
+            totalExcluded > 0
+              ? `<div class="aa-bd-foot">* ${totalExcluded.toLocaleString()} allowed app${totalExcluded === 1 ? "" : "s"} (across all art units shown) excluded from FAA because their <code>application_analytics</code> row hasn't been computed.</div>`
+              : ""
+          }
         `;
       }
     }
     const pathHost = document.getElementById("aa-by-path");
     if (pathHost) {
       const rows = data.byPathToAllowance || [];
+      const pathExcluded = data.pathExcluded || 0;
+      const pathTotalAllowed = data.pathTotalAllowed || 0;
       if (!rows.length || !rows.some((r) => r.count > 0)) {
         pathHost.innerHTML = `<div class="empty-chart">No allowed apps in window.</div>`;
       } else {
@@ -821,6 +850,11 @@
               }).join("")}
             </tbody>
           </table>
+          ${
+            pathExcluded > 0
+              ? `<div class="aa-bd-foot">⚠ ${pathExcluded.toLocaleString()} of ${pathTotalAllowed.toLocaleString()} allowed app${pathTotalAllowed === 1 ? "" : "s"} not classified — no <code>application_analytics</code> row, so we can't tell which path they took. Shares above are denominated against the classifiable subset.</div>`
+              : ""
+          }
         `;
       }
     }

@@ -780,6 +780,9 @@ def portfolio(
             "cohortTrend": cohort_trend,
             "byArtUnit": breakdowns["byArtUnit"],
             "byPathToAllowance": breakdowns["byPathToAllowance"],
+            # Data-coverage signals for the path-to-allowance card.
+            "pathExcluded": breakdowns["pathExcluded"],
+            "pathTotalAllowed": breakdowns["pathTotalAllowed"],
         }
     )
 
