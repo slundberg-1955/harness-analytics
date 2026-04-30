@@ -546,11 +546,18 @@
 
   // #region agent log
   function renderAaDebugPanel() {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("debug") !== "1") return;
+    // Always-on for now (no ?debug=1 gate) — user has been unable to see
+    // the gated panel. Will be removed after verification.
     const data = state.lastData || {};
     const trend = data.cohortTrend || [];
     const diag = data._diag || {};
+    // Mirror to console so we have a fallback if the DOM panel fails to
+    // render. The DEBUG_BUILD_TAG is unique to this commit so the user
+    // can tell us if the latest deploy is actually live.
+    try {
+      console.log("[FAA-DEBUG-2026-04-30-c] _diag:", diag);
+      console.log("[FAA-DEBUG-2026-04-30-c] cohortTrend:", trend);
+    } catch (e) {}
     // Floats at top of viewport so the user cannot miss it regardless of
     // which tab they're on or how far they've scrolled. Includes a copy
     // button so they can paste the full JSON to me in one click.
@@ -587,7 +594,7 @@
     }, null, 2);
     host.innerHTML = `
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-        <div style="font-weight:700;color:#fbbf24">DEBUG-MODE — cohort_trend diagnostics</div>
+        <div style="font-weight:700;color:#fbbf24">DEBUG-MODE — cohort_trend diagnostics [build 2026-04-30-c]</div>
         <div>
           <button id="aa-debug-copy" style="background:#fbbf24;color:#0f172a;border:none;padding:4px 12px;border-radius:4px;font-weight:700;cursor:pointer;margin-right:8px">Copy JSON to clipboard</button>
           <button id="aa-debug-close" style="background:#475569;color:white;border:none;padding:4px 12px;border-radius:4px;cursor:pointer">×</button>
