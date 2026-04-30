@@ -1104,6 +1104,28 @@ tbody tr:focus-visible {
   margin-bottom: 16px;
   overflow: hidden;
 }
+/* Five-up variant: same bordered card chrome, equal-width columns. */
+.aa-primary-5 {
+  grid-template-columns: repeat(5, 1fr);
+}
+/* Footnote shown below the KPI strip when some allowed apps are
+   excluded (no application_analytics row, can't classify by action
+   count). Visually anchored to the strip. */
+.aa-kpi-strip-foot {
+  grid-column: 1 / -1;
+  padding: 8px 16px;
+  border-top: 1px solid var(--slate-200);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--amber-700, #b45309);
+  background: var(--amber-50, #fffbeb);
+}
+.aa-kpi-strip-foot code {
+  background: var(--slate-100, #f1f5f9);
+  color: var(--slate-700);
+  padding: 0 4px;
+  border-radius: 3px;
+}
 .aa-kpi {
   padding: 22px 24px;
   border-right: 1px solid var(--slate-200);
@@ -1193,6 +1215,13 @@ tbody tr:focus-visible {
 .aa-leg-swatch-chm  { background: var(--emerald-600); }
 .aa-leg-swatch-sct  { background: #7c3aed; }
 .aa-leg-swatch-faa  { background: var(--amber-600); }
+/* Cohort chart line colors per rejection-count bucket. Match the
+   headline 5-card KPI strip + the standalone bar (green→red). */
+.aa-leg-swatch-rc-0 { background: #16a34a; }
+.aa-leg-swatch-rc-1 { background: #84cc16; }
+.aa-leg-swatch-rc-2 { background: #f59e0b; }
+.aa-leg-swatch-rc-3 { background: #f97316; }
+.aa-leg-swatch-rc-4 { background: #dc2626; }
 
 .aa-trend-chart { width: 100%; min-height: 280px; }
 .aa-trend-chart svg { display: block; width: 100%; height: 280px; }

@@ -536,7 +536,6 @@
     renderAaPrimary();
     renderAaTrendChart();
     renderAaSecondary();
-    renderAaRejectionCountBreakdown();
     renderAaBreakdowns();
     // #region agent log — DEBUG-MODE diagnostic panel. Renders only when
     // ?debug=1 is in the URL. Dumps the per-cohort _diag block + top-level
@@ -682,60 +681,51 @@
     el.innerHTML = `Analytics computed over <strong>${inWindow.toLocaleString()}</strong> of ${total.toLocaleString()} filtered apps in window (${closed.toLocaleString()} closed) · cohort axis: ${axisLabel} · window: ${escapeHtml(windowDesc)}.`;
   }
 
+  // Headline KPI strip: five cards, one per "Allowed after N actions"
+  // bucket (0/1/2/3/4+). Replaces the prior Traditional/CHM/FAA/Single-CTNF
+  // strip. Same denominator for all five (CHM-allowed apps with a
+  // verifiable analytics row), so shares sum to 100%.
   function renderAaPrimary() {
     const host = document.getElementById("aa-primary");
     if (!host) return;
-    const k = state.analyticsKpis;
-    if (!k) { host.innerHTML = ""; return; }
+    const data = state.lastData || {};
+    const buckets = data.byRejectionCount || [];
+    const totalAllowed = data.rejectionCountTotalAllowed || 0;
+    const excluded = data.rejectionCountExcluded || 0;
+    if (!buckets.length || totalAllowed === 0) {
+      host.innerHTML = `<div class="aa-kpi"><div class="aa-kpi-label">Allowance Distribution</div><span class="aa-kpi-value muted">—</span><div class="aa-kpi-sub">No allowed apps in current window.</div></div>`;
+      return;
+    }
     function pct(v) {
       if (v === null || v === undefined) return `<span class="aa-kpi-value muted">—</span>`;
       return `<span class="aa-kpi-value">${v}<span class="aa-kpi-pct">%</span></span>`;
     }
-    function delta(v) {
-      if (!v) return "";
-      const cls = v > 0 ? "up" : "down";
-      const arrow = v > 0 ? "▲" : "▼";
-      return `<span class="aa-kpi-delta ${cls}">${arrow} ${Math.abs(v).toFixed(1)} pts</span>`;
+    // Stable display labels per bucket. "Action" = examiner office action
+    // that rejected (non-final OA or final rejection); RCEs are procedural
+    // and aren't counted as actions.
+    const labels = {
+      zero:     "Allowed w/ No Actions",
+      one:      "Allowed after 1 Action",
+      two:      "Allowed after 2 Actions",
+      three:    "Allowed after 3 Actions",
+      fourPlus: "Allowed after 4+ Actions",
+    };
+    const order = ["zero", "one", "two", "three", "fourPlus"];
+    const byKey = Object.fromEntries(buckets.map((b) => [b.key, b]));
+    host.innerHTML = order.map((key) => {
+      const b = byKey[key] || { count: 0, sharePct: 0, medianMonths: null };
+      const med = b.medianMonths != null ? `${b.medianMonths} mo median` : "no data";
+      return `
+        <div class="aa-kpi">
+          <div class="aa-kpi-label">${labels[key]}</div>
+          ${pct(b.sharePct)}
+          <div class="aa-kpi-sub">${b.count.toLocaleString()} of ${totalAllowed.toLocaleString()} allowances · ${med}</div>
+        </div>
+      `;
+    }).join("");
+    if (excluded > 0) {
+      host.insertAdjacentHTML("beforeend", `<div class="aa-kpi-strip-foot">⚠ ${excluded.toLocaleString()} allowed app${excluded === 1 ? "" : "s"} excluded — no <code>application_analytics</code> row, so action count is unknown.</div>`);
     }
-    const closed = (k.patentedCount || 0) + (k.abandonedCount || 0);
-    const chmA = k.chmAllowedNoRce || 0;
-    const chmCa = k.chmAllowedWithRce || 0;
-    const chmAb = k.chmAbandonedNoChild || 0;
-    const faaCount = k.faaCount || 0;
-    const faaDenom = k.faaDenom || closed;
-    const sctCount = k.singleCtnfCount || 0;
-    const sctDenom = k.singleCtnfDenom || faaDenom;
-    host.innerHTML = `
-      <div class="aa-kpi">
-        <div class="aa-kpi-label">Traditional Allowance Rate</div>
-        ${pct(k.allowanceRatePct)}
-        ${delta(k.allowanceRateDeltaPctPts)}
-        <div class="aa-kpi-sub">${(k.patentedCount || 0).toLocaleString()} patented / ${closed.toLocaleString()} closed · USPTO formula (Patented / (Patented + Abandoned))</div>
-      </div>
-      <div class="aa-kpi">
-        <div class="aa-kpi-label">CHM "True" Allowance Rate</div>
-        ${pct(k.chmAllowanceRatePct)}
-        ${delta(k.chmAllowanceRateDeltaPctPts)}
-        <div class="aa-kpi-sub">A=${chmA} · CA=${chmCa} · AB=${chmAb} · excludes strategic abandonments</div>
-      </div>
-      <div class="aa-kpi">
-        <div class="aa-kpi-label">Allowance w/ No Rejections</div>
-        ${pct(k.faaPct)}
-        ${delta(k.faaDeltaPctPts)}
-        <div class="aa-kpi-sub">${faaCount.toLocaleString()} of ${faaDenom.toLocaleString()} allowances · examiner's first action was the NOA (0 OAs, 0 RCEs)</div>
-        ${
-          k.faaExcluded > 0
-            ? `<div class="aa-kpi-warn" title="These applications have a status of Patented or Allowed but no row in application_analytics, so we can't verify whether they had an RCE or Final Rejection. Excluded from the numerator to avoid inflating the rate.">⚠ ${k.faaExcluded.toLocaleString()} allowed app${k.faaExcluded === 1 ? "" : "s"} excluded for incomplete prosecution data</div>`
-            : ""
-        }
-      </div>
-      <div class="aa-kpi">
-        <div class="aa-kpi-label">Allowance after Single CTNF</div>
-        ${pct(k.singleCtnfPct)}
-        ${delta(k.singleCtnfDeltaPctPts)}
-        <div class="aa-kpi-sub">${sctCount.toLocaleString()} of ${sctDenom.toLocaleString()} allowances · allowed after exactly 1 non-final OA, 0 FRs, 0 RCEs</div>
-      </div>
-    `;
   }
 
   // Pure-SVG cohort trend chart. Three polylines (Trad / CHM / FAA) over
@@ -761,12 +751,12 @@
     const x = (year) => padL + ((year - xMin) / xRange) * innerW;
     const y = (pct) => padT + innerH - (Math.max(0, Math.min(100, pct)) / 100) * innerH;
 
-    function buildLine(field, color) {
+    function buildLine(getValue, color) {
       // Build the polyline as a series of "M"/"L" segments. A solid
       // segment connects two non-maturing points; a dashed segment
       // connects whenever EITHER endpoint is maturing (so a still-evolving
       // year visually disclaims the line into and out of it).
-      const pts = trend.map((d) => ({ year: d.year, value: d[field], maturing: d.maturing }))
+      const pts = trend.map((d) => ({ year: d.year, value: getValue(d), maturing: d.maturing }))
         .filter((p) => p.value !== null && p.value !== undefined);
       if (pts.length === 0) return "";
       let solid = `M ${x(pts[0].year)} ${y(pts[0].value)}`;
@@ -831,14 +821,33 @@
       `;
     }).join("");
 
+    // Five lines, one per rejection-count bucket. Per-cohort shares sum
+    // to 100% so the lines together describe how the action-count
+    // distribution of allowances shifts across cohort years. Color ramp
+    // matches the headline KPI strip (green = clean → red = lots of
+    // actions).
+    function bucketShare(key) {
+      return (d) => {
+        const b = (d.byRejectionCount || []).find((x) => x.key === key);
+        return b ? b.sharePct : null;
+      };
+    }
+    const bucketColors = {
+      zero:     "#16a34a",
+      one:      "#84cc16",
+      two:      "#f59e0b",
+      three:    "#f97316",
+      fourPlus: "#dc2626",
+    };
     host.innerHTML = `
       <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
         ${maturingRect}
         ${yTicks}
-        ${buildLine("traditionalPct", "#0f172a")}
-        ${buildLine("chmPct",         "#059669")}
-        ${buildLine("singleCtnfPct",  "#7c3aed")}
-        ${buildLine("faaPct",         "#d97706")}
+        ${buildLine(bucketShare("zero"),     bucketColors.zero)}
+        ${buildLine(bucketShare("one"),      bucketColors.one)}
+        ${buildLine(bucketShare("two"),      bucketColors.two)}
+        ${buildLine(bucketShare("three"),    bucketColors.three)}
+        ${buildLine(bucketShare("fourPlus"), bucketColors.fourPlus)}
         ${xLabels}
       </svg>
     `;
@@ -900,96 +909,41 @@
     `).join("");
   }
 
-  // Distribution of allowances by total rejection count (CTNF + CTFR).
-  // Renders a single horizontal stacked bar + a 5-row table whose share
-  // column sums to 100% across the buckets. The "0 rejections" bucket
-  // mirrors the headline "Allowance w/ No Rejections" KPI; the "1
-  // rejection" bucket overlaps with "Allowance after Single CTNF"
-  // (modulo solo-CTFR cases which are vanishingly rare in practice).
-  function renderAaRejectionCountBreakdown() {
-    const host = document.getElementById("aa-by-rejection-count");
-    if (!host) return;
-    const data = state.lastData || {};
-    const rows = data.byRejectionCount || [];
-    const totalAllowed = data.rejectionCountTotalAllowed || 0;
-    const excluded = data.rejectionCountExcluded || 0;
-    if (!rows.length || !rows.some((r) => r.count > 0)) {
-      host.innerHTML = `<div class="empty-chart">No allowed apps in window.</div>`;
-      return;
-    }
-    // Color ramp: green (clean) → amber → red (lots of rejections).
-    const colors = {
-      zero:     "#16a34a",
-      one:      "#84cc16",
-      two:      "#f59e0b",
-      three:    "#f97316",
-      fourPlus: "#dc2626",
-    };
-    const segs = rows
-      .filter((r) => r.count > 0)
-      .map((r) => `<span class="aa-rc-seg" style="width:${r.sharePct}%;background:${colors[r.key] || "#94a3b8"}" title="${escapeHtml(r.label)}: ${r.count.toLocaleString()} (${r.sharePct}%)"></span>`)
-      .join("");
-    const tableRows = rows.map((r) => {
-      const swatch = `<span class="aa-rc-swatch" style="background:${colors[r.key] || "#94a3b8"}"></span>`;
-      const barWidth = Math.max(0, Math.min(80, (r.sharePct || 0) * 0.8));
-      return `<tr>
-        <td>${swatch}${escapeHtml(r.label)}</td>
-        <td class="aa-r">${r.count.toLocaleString()}</td>
-        <td class="aa-r"><span class="aa-bd-bar" style="width:${barWidth}px;background:${colors[r.key] || "#94a3b8"};opacity:0.65"></span>${r.sharePct}%</td>
-        <td class="aa-r">${r.medianMonths != null ? r.medianMonths : "—"}</td>
-      </tr>`;
-    }).join("");
-    host.innerHTML = `
-      <div class="aa-rc-stack">${segs}</div>
-      <table class="aa-bd-table">
-        <thead><tr><th>Bucket</th><th class="aa-r">Count</th><th class="aa-r">Share</th><th class="aa-r">Mo. Median</th></tr></thead>
-        <tbody>${tableRows}</tbody>
-        <tfoot>
-          <tr>
-            <td><strong>Total allowed (classified)</strong></td>
-            <td class="aa-r"><strong>${totalAllowed.toLocaleString()}</strong></td>
-            <td class="aa-r"><strong>100%</strong></td>
-            <td class="aa-r">—</td>
-          </tr>
-        </tfoot>
-      </table>
-      ${
-        excluded > 0
-          ? `<div class="aa-bd-foot">⚠ ${excluded.toLocaleString()} allowed app${excluded === 1 ? "" : "s"} excluded — no <code>application_analytics</code> row, so we can't count their rejections. Shares above are denominated against the classifiable subset.</div>`
-          : `<div class="aa-bd-foot">Rejections = non-final OAs + final rejections. RCEs are not counted as rejections (they're procedural). The "0 rejections" bucket equals the headline <em>Allowance w/ No Rejections</em> KPI; the "1 rejection" bucket is dominated by single-CTNF allowances.</div>`
-      }
-    `;
-  }
-
   function renderAaBreakdowns() {
     const data = state.lastData || {};
     const auHost = document.getElementById("aa-by-art-unit");
     if (auHost) {
       const rows = data.byArtUnit || [];
       if (!rows.length) {
-        auHost.innerHTML = `<div class="empty-chart">No closed apps grouped by art unit in window.</div>`;
+        auHost.innerHTML = `<div class="empty-chart">No allowed apps grouped by art unit in window.</div>`;
       } else {
-        const totalExcluded = rows.reduce((sum, r) => sum + (r.faaExcluded || 0), 0);
+        const totalExcluded = rows.reduce((sum, r) => sum + (r.excluded || 0), 0);
         auHost.innerHTML = `
           <table class="aa-bd-table">
-            <thead><tr><th>Art Unit</th><th class="aa-r">Closed</th><th class="aa-r">Trad</th><th class="aa-r">CHM</th><th class="aa-r" title="Allowance with no rejections — examiner's first action was the NOA">FAA</th><th class="aa-r" title="Allowance after exactly 1 non-final OA, 0 FRs, 0 RCEs">1-CTNF</th><th class="aa-r">Mo. Med</th></tr></thead>
+            <thead><tr>
+              <th>Art Unit</th>
+              <th class="aa-r" title="Allowed apps in this art unit">Allowed</th>
+              <th class="aa-r" title="Allowed with 0 rejecting office actions">0</th>
+              <th class="aa-r" title="Allowed after 1 office action">1</th>
+              <th class="aa-r" title="Allowed after 2 office actions">2</th>
+              <th class="aa-r" title="Allowed after 3 office actions">3</th>
+              <th class="aa-r" title="Allowed after 4 or more office actions">4+</th>
+              <th class="aa-r">Mo. Med</th>
+            </tr></thead>
             <tbody>
               ${rows.map((r) => {
-                const trad = r.tradPct;
-                const barWidth = trad != null ? Math.max(0, Math.min(80, trad * 0.8)) : 0;
-                // Asterisk + tooltip when this art unit had FAA-eligible apps
-                // dropped for missing analytics data; tells the user the FAA
-                // value here might be deflated.
-                const faaSuffix = r.faaExcluded
-                  ? `<span class="aa-bd-warn" title="${r.faaExcluded} allowed app${r.faaExcluded === 1 ? "" : "s"} in this art unit excluded from FAA (no analytics row)">*</span>`
+                const zeroBar = Math.max(0, Math.min(80, (r.zeroPct || 0) * 0.8));
+                const excludedSuffix = r.excluded
+                  ? `<span class="aa-bd-warn" title="${r.excluded} allowed app${r.excluded === 1 ? "" : "s"} in this art unit excluded — no application_analytics row, action count unknown">*</span>`
                   : "";
                 return `<tr>
                   <td>${escapeHtml(String(r.artUnit))}</td>
-                  <td class="aa-r">${r.closed.toLocaleString()}</td>
-                  <td class="aa-r">${trad != null ? `<span class="aa-bd-bar" style="width:${barWidth}px"></span>${trad}%` : "—"}</td>
-                  <td class="aa-r">${r.chmPct != null ? r.chmPct + "%" : "—"}</td>
-                  <td class="aa-r">${r.faaPct != null ? r.faaPct + "%" : "—"}${faaSuffix}</td>
-                  <td class="aa-r">${r.singleCtnfPct != null ? r.singleCtnfPct + "%" : "—"}</td>
+                  <td class="aa-r">${r.totalAllowed.toLocaleString()}${excludedSuffix}</td>
+                  <td class="aa-r">${r.zeroPct != null ? `<span class="aa-bd-bar" style="width:${zeroBar}px"></span>${r.zeroPct}%` : "—"}</td>
+                  <td class="aa-r">${r.onePct != null ? r.onePct + "%" : "—"}</td>
+                  <td class="aa-r">${r.twoPct != null ? r.twoPct + "%" : "—"}</td>
+                  <td class="aa-r">${r.threePct != null ? r.threePct + "%" : "—"}</td>
+                  <td class="aa-r">${r.fourPlusPct != null ? r.fourPlusPct + "%" : "—"}</td>
                   <td class="aa-r">${r.medianMonths != null ? r.medianMonths : "—"}</td>
                 </tr>`;
               }).join("")}
@@ -997,7 +951,7 @@
           </table>
           ${
             totalExcluded > 0
-              ? `<div class="aa-bd-foot">* ${totalExcluded.toLocaleString()} allowed app${totalExcluded === 1 ? "" : "s"} (across all art units shown) excluded from FAA because their <code>application_analytics</code> row hasn't been computed.</div>`
+              ? `<div class="aa-bd-foot">* ${totalExcluded.toLocaleString()} allowed app${totalExcluded === 1 ? "" : "s"} (across art units shown) excluded — no <code>application_analytics</code> row, so action count is unknown.</div>`
               : ""
           }
         `;

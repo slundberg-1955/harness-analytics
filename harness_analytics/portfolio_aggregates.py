@@ -633,6 +633,12 @@ def compute_cohort_trend(
                 # row, dropped from the FAA numerator (mirrors the headline KPI).
                 "faaExcluded": rates["faaExcluded"],
                 "maturing": maturing,
+                # Per-cohort rejection-count distribution. Five buckets
+                # (0/1/2/3/4+ examiner OAs that rejected) over allowed
+                # apps in this year. Drives the headline cohort chart now
+                # that absolute allowance rates are off the page. Shares
+                # sum to 100% per year (modulo `excluded`).
+                "byRejectionCount": compute_allowances_by_rejection_count(group)["buckets"],
                 "_diag": _diag,  # DEBUG-MODE only: render in ?debug=1 panel
             }
         )
@@ -678,8 +684,10 @@ def compute_breakdowns(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
     art_unit_rows: list[dict[str, Any]] = []
     for au, group in by_au_groups.items():
-        rates = _trad_chm_faa_for_group(group)
-        if rates["closed"] == 0:
+        rc = compute_allowances_by_rejection_count(group)
+        # Drop art units with no allowed apps; nothing to show in the
+        # action-count distribution table for them.
+        if rc["totalAllowed"] == 0:
             continue
         months = [
             float(r["months_to_allowance"])
@@ -687,19 +695,21 @@ def compute_breakdowns(rows: list[dict[str, Any]]) -> dict[str, Any]:
             if r.get("months_to_allowance") is not None
         ]
         med = round(median(months), 1) if months else None
+        bucket_shares = {b["key"]: b["sharePct"] for b in rc["buckets"]}
         art_unit_rows.append(
             {
                 "artUnit": au,
-                "closed": rates["closed"],
-                "tradPct": rates["traditionalPct"],
-                "chmPct": rates["chmPct"],
-                "faaPct": rates["faaPct"],
-                "singleCtnfPct": rates["singleCtnfPct"],
-                "faaExcluded": rates["faaExcluded"],
+                "totalAllowed": rc["totalAllowed"],
+                "excluded": rc["excluded"],
+                "zeroPct": bucket_shares.get("zero", 0.0),
+                "onePct": bucket_shares.get("one", 0.0),
+                "twoPct": bucket_shares.get("two", 0.0),
+                "threePct": bucket_shares.get("three", 0.0),
+                "fourPlusPct": bucket_shares.get("fourPlus", 0.0),
                 "medianMonths": med,
             }
         )
-    art_unit_rows.sort(key=lambda x: (-x["closed"], x["artUnit"]))
+    art_unit_rows.sort(key=lambda x: (-x["totalAllowed"], x["artUnit"]))
     art_unit_rows = art_unit_rows[:10]
 
     allowed = [

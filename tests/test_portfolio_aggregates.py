@@ -884,41 +884,44 @@ def test_breakdowns_path_excluded_surfaces_unknown_count() -> None:
     assert paths["after1Rce"]["sharePct"] == 50.0
 
 
-def test_breakdowns_art_unit_carries_faa_excluded_per_row() -> None:
-    """byArtUnit rows must carry faaExcluded so the table can flag the
-    art units whose FAA is built on incomplete data."""
+def test_breakdowns_art_unit_carries_excluded_per_row() -> None:
+    """byArtUnit rows must carry `excluded` so the table can flag the
+    art units whose action-count distribution is built on incomplete data."""
     rows = [
         _row("A", art_unit="2444", status=150, has_analytics_row=True),
         _row("B", art_unit="2444", status=150, has_analytics_row=False),
-        _row("C", art_unit="2444", status=161),
+        _row("C", art_unit="2444", status=161),  # abandoned, doesn't count
         _row("D", art_unit="3686", status=150, has_analytics_row=True),
     ]
     out = compute_breakdowns(rows)
     aus = {r["artUnit"]: r for r in out["byArtUnit"]}
-    assert aus["2444"]["closed"] == 3
-    assert aus["2444"]["faaExcluded"] == 1, "B in 2444 is allowed-class no-analytics"
-    assert aus["3686"]["faaExcluded"] == 0
+    # 2444 has 1 classifiable allowed (A); B is excluded.
+    assert aus["2444"]["totalAllowed"] == 1
+    assert aus["2444"]["excluded"] == 1
+    assert aus["3686"]["totalAllowed"] == 1
+    assert aus["3686"]["excluded"] == 0
 
 
-def test_breakdowns_art_unit_top_n_and_path_buckets() -> None:
+def test_breakdowns_art_unit_distribution_and_top_n() -> None:
     rows = [
-        # Art unit 2444 has 3 closed: 2 patented + 1 abandoned -> trad ~66.7%.
+        # Art unit 2444: 2 allowed (A1 first-action, A2 afterOaNoRce); 1 abandoned (no-op for distribution).
         _row("A1", art_unit="2444", status=150),
         _row("A2", art_unit="2444", status=150),
         _row("A3", art_unit="2444", status=161),
-        # Art unit 3686 has 1 closed (abandoned).
+        # Art unit 3686 has only an abandoned app -> dropped (no allowances).
         _row("B1", art_unit="3686", status=161),
         # No-AU row should be dropped from byArtUnit.
         _row("NOAU", art_unit=None, status=150),
-        # Path buckets: A1 (rce=0,fr=0) -> firstAction; A2 (rce=0,fr=1) -> afterOaNoRce.
-        # We force the second case via overrides:
     ]
-    rows[1]["final_rejection_count"] = 1  # A2 -> afterOaNoRce
+    rows[1]["final_rejection_count"] = 1
+    rows[1]["final_oa_count"] = 1  # A2 -> "1 action" bucket
     out = compute_breakdowns(rows)
     aus = {r["artUnit"]: r for r in out["byArtUnit"]}
     assert "2444" in aus
-    assert aus["2444"]["closed"] == 3
-    assert aus["2444"]["tradPct"] == round(100 * 2 / 3, 1)
+    assert "3686" not in aus, "art unit with 0 allowances must drop"
+    assert aus["2444"]["totalAllowed"] == 2
+    assert aus["2444"]["zeroPct"] == 50.0  # A1
+    assert aus["2444"]["onePct"] == 50.0   # A2
     # No-AU row dropped from breakdown.
     assert all(r["artUnit"] for r in out["byArtUnit"])
 
