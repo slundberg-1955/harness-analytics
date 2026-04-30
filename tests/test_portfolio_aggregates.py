@@ -534,6 +534,56 @@ def test_first_action_allowance_excludes_apps_without_analytics_row() -> None:
     assert out["excluded"] == 2, "B and C are allowed-class but had no analytics data"
 
 
+def test_first_action_allowance_excludes_in_flight_allowed_status() -> None:
+    """Regression for the >100% cohort-FAA bug surfaced by debug 2026-04-30-c.
+
+    Pre-fix the FAA numerator counted any app with status in CHM_ALLOWED
+    {150, 93, 159} but the denominator only counted status in {150, 161}.
+    For cohorts with many apps in 93 (NOA Mailed, awaiting issue fee) or
+    159 (Allowed for Issue, not yet patented), num exceeded denom and the
+    rate exceeded 100% (171.8% in 2024, 438.9% in 2025). After the fix
+    the numerator is restricted to status==150 only so num ⊆ denom.
+    """
+    rows = [
+        # 1 patented clean (counts in num + denom)
+        _row("A", status=150, rce=0, final_rejection_count=0),
+        # 2 abandoned (count in denom only — bring rate down)
+        _row("B", status=161),
+        _row("C", status=161),
+        # 5 NOA-mailed clean: pre-fix would have inflated num, now ignored
+        _row("D", status=93, rce=0, final_rejection_count=0),
+        _row("E", status=93, rce=0, final_rejection_count=0),
+        _row("F", status=93, rce=0, final_rejection_count=0),
+        _row("G", status=159, rce=0, final_rejection_count=0),
+        _row("H", status=159, rce=0, final_rejection_count=0),
+    ]
+    out = compute_first_action_allowance(rows)
+    assert out["count"] == 1, "only A is patented + clean"
+    assert out["denom"] == 3, "denom = 1 patented + 2 abandoned"
+    assert out["pct"] == round(100.0 / 3, 1)
+    # And critically: pct never exceeds 100.
+    assert out["pct"] <= 100.0
+
+
+def test_cohort_trend_faa_never_exceeds_100() -> None:
+    """Regression: the cohort chart's per-year FAA was producing values
+    over 100% for cohorts dominated by in-flight (status 93/159) apps.
+    Numerator MUST be a strict subset of the denominator."""
+    rows = [
+        # 2024 cohort dominated by NOA-mailed apps with one abandonment.
+        _row("X", filing_date=date(2024, 1, 1), status=161),
+        _row("Y", filing_date=date(2024, 2, 1), status=93, rce=0, final_rejection_count=0),
+        _row("Z", filing_date=date(2024, 3, 1), status=93, rce=0, final_rejection_count=0),
+    ]
+    out = compute_cohort_trend(rows, "filing")
+    y2024 = next(r for r in out if r["year"] == 2024)
+    assert y2024["faaPct"] is not None
+    assert y2024["faaPct"] <= 100.0, f"FAA must be <= 100, got {y2024['faaPct']}"
+    assert y2024["closed"] == 1
+    # Numerator should be 0 since no patented apps in this cohort.
+    assert y2024["faaPct"] == 0.0
+
+
 def test_first_action_allowance_excluded_does_not_double_count_abandoned() -> None:
     """Abandoned apps without an analytics row should NOT be reported in
     `excluded` — they were never numerator candidates to begin with."""

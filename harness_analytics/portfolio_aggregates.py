@@ -183,24 +183,32 @@ def _percentile(sorted_vals: list[float], p: float) -> float:
 def compute_first_action_allowance(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """First-Action Allowance Rate (spec §5.1).
 
-    Of closed-in-window applications, the share that received an NOA without
+    Of closed-in-window applications, the share that were patented without
     ever filing an RCE and without ever receiving a Final Rejection.
 
-    Data-quality guard: when an allowed app has no row in
+    Numerator and denominator MUST agree on what "closed" means:
+
+    * Denominator = ``status ∈ {150 patented, 161 abandoned}``.
+    * Numerator   = ``status == 150 patented`` AND no RCE AND no Final
+      Rejection. Apps in 93 (NOA mailed, awaiting issue fee) or 159
+      (Allowed for Issue) are NOT counted because they have not yet
+      closed — they may still abandon by failing to pay the issue fee.
+
+    Counting in-flight (93/159) apps in the numerator while restricting
+    the denominator to closed (150/161) was the original v2 bug: for
+    recent filing cohorts where many apps are in the post-NOA window,
+    ``num`` exceeded ``denom``, producing impossible per-cohort rates
+    like 171.8% (2024) and 438.9% (2025). See debug runId=2026-04-30-c.
+
+    Data-quality guard: when an allowed-class app has no row in
     ``application_analytics`` (``has_analytics_row IS FALSE``), we cannot
     distinguish "no RCE / no Final Rejection" from "we never analyzed
-    prosecution history". Coercing missing analytics to zeros (the pre-fix
-    behavior via ``COALESCE(..., 0)``) artificially inflated the rate to
-    ~75% on the production dataset because the analytics job hasn't run on
-    older apps. We now exclude such apps from the numerator and report the
-    exclusion count so the FAA card can warn users.
-
-    Apps without an analytics row still count toward the closed denominator
-    because ``application_status_code`` lives on ``applications`` and is
-    reliable independent of the analytics job. ``has_analytics_row`` missing
-    from a row dict (legacy callers / unit tests) is treated as True so we
-    fall back to the pre-fix integer-zero semantics for callers that don't
-    populate the flag.
+    prosecution history" — exclude from the numerator. Apps without an
+    analytics row still count toward the closed denominator because
+    ``application_status_code`` lives on ``applications`` and is reliable
+    independent of the analytics job. Production data currently has 0
+    such rows (analytics job is fully caught up); the guard remains as
+    future-proofing.
     """
     closed = 0
     excluded = 0
@@ -209,7 +217,7 @@ def compute_first_action_allowance(rows: list[dict[str, Any]]) -> dict[str, Any]
         code = r.get("application_status_code")
         if code in (150, 161):
             closed += 1
-        if code in _CHM_ALLOWED_STATUS_CODES:
+        if code == 150:
             if r.get("has_analytics_row") is False:
                 excluded += 1
                 continue
@@ -406,10 +414,15 @@ def _trad_chm_faa_for_group(group: list[dict[str, Any]]) -> dict[str, Any]:
     chm_den = chm_num + chm_ab
     chm = round(100.0 * chm_num / chm_den, 1) if chm_den else None
 
+    # FAA numerator restricted to status==150 (patented) only — see
+    # compute_first_action_allowance for the rationale. Including apps in
+    # 93/159 here while dividing by closed (150+161) was the original bug
+    # that produced impossible cohort rates (171.8% in 2024, 438.9% in
+    # 2025). Numerator MUST be a strict subset of the denominator.
     faa_num = 0
     faa_excluded = 0
     for r in group:
-        if r.get("application_status_code") not in _CHM_ALLOWED_STATUS_CODES:
+        if r.get("application_status_code") != 150:
             continue
         if r.get("has_analytics_row") is False:
             faa_excluded += 1
