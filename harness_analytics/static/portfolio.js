@@ -551,13 +551,15 @@
     const data = state.lastData || {};
     const trend = data.cohortTrend || [];
     const diag = data._diag || {};
+    // Floats at top of viewport so the user cannot miss it regardless of
+    // which tab they're on or how far they've scrolled. Includes a copy
+    // button so they can paste the full JSON to me in one click.
     let host = document.getElementById("aa-debug-panel");
     if (!host) {
       host = document.createElement("div");
       host.id = "aa-debug-panel";
-      host.style.cssText = "margin-top:24px;padding:16px;background:#0f172a;color:#e2e8f0;font-family:ui-monospace,monospace;font-size:11px;border-radius:8px;overflow-x:auto;line-height:1.5;";
-      const tab = document.getElementById("tab-allowance");
-      if (tab) tab.appendChild(host);
+      host.style.cssText = "position:fixed;top:8px;left:8px;right:8px;z-index:99999;padding:12px 16px;background:#0f172a;color:#e2e8f0;font-family:ui-monospace,monospace;font-size:11px;border-radius:8px;box-shadow:0 8px 32px rgba(0,0,0,0.4);max-height:80vh;overflow:auto;line-height:1.5;border:2px solid #fbbf24;";
+      document.body.appendChild(host);
     }
     const cellL = 'style="padding:4px 8px;text-align:left"';
     const cellR = 'style="padding:4px 8px;text-align:right"';
@@ -579,11 +581,22 @@
         <td ${cellR}>${x.faaExcluded}</td>
       </tr>`;
     }).join("");
+    const fullJson = JSON.stringify({
+      _diag: diag,
+      cohortTrend: trend.map((d) => ({ y: d.year, n: d.n, closed: d.closed, faaPct: d.faaPct, ...d._diag })),
+    }, null, 2);
     host.innerHTML = `
-      <div style="font-weight:700;margin-bottom:8px;color:#fbbf24">DEBUG-MODE — cohort_trend diagnostics (remove ?debug=1 to hide)</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <div style="font-weight:700;color:#fbbf24">DEBUG-MODE — cohort_trend diagnostics</div>
+        <div>
+          <button id="aa-debug-copy" style="background:#fbbf24;color:#0f172a;border:none;padding:4px 12px;border-radius:4px;font-weight:700;cursor:pointer;margin-right:8px">Copy JSON to clipboard</button>
+          <button id="aa-debug-close" style="background:#475569;color:white;border:none;padding:4px 12px;border-radius:4px;cursor:pointer">×</button>
+        </div>
+      </div>
       <div>cohortAxis=<b>${diag.cohortAxis}</b> · preset=${diag.preset} · rowsTotal=${diag.rowsTotal} · rowsInWindow=${diag.rowsInWindow}</div>
       <div>has_analytics_row distribution across windowed rows: True=${diag.harTrue} · <span style="color:#fbbf24">False=${diag.harFalse}</span> · <span style="color:#f87171">None=${diag.harNone}</span></div>
       <div>headline FAA: ${diag.headlineFaaPct}% (${diag.headlineFaaCount}/${diag.headlineFaaDenom}) · excluded=${diag.headlineFaaExcluded}</div>
+      <div style="margin-top:6px;font-size:10px;opacity:0.85">'has_analytics_row' in sampleRowKeys? <b style="color:${(diag.sampleRowKeys || []).includes('has_analytics_row') ? '#34d399' : '#f87171'}">${(diag.sampleRowKeys || []).includes('has_analytics_row') ? 'YES' : 'NO'}</b></div>
       <table style="margin-top:12px;border-collapse:collapse;font-size:11px">
         <thead><tr style="background:#1e293b">
           <th style="padding:4px 8px;text-align:left">Year</th>
@@ -602,6 +615,17 @@
       </table>
       <div style="margin-top:8px;font-size:10px;opacity:0.7">sampleRowKeys: ${(diag.sampleRowKeys || []).join(", ")}</div>
     `;
+    const copyBtn = document.getElementById("aa-debug-copy");
+    if (copyBtn) {
+      copyBtn.addEventListener("click", () => {
+        navigator.clipboard.writeText(fullJson).then(
+          () => { copyBtn.textContent = "Copied!"; setTimeout(() => { copyBtn.textContent = "Copy JSON to clipboard"; }, 1500); },
+          () => { copyBtn.textContent = "Copy failed"; }
+        );
+      });
+    }
+    const closeBtn = document.getElementById("aa-debug-close");
+    if (closeBtn) closeBtn.addEventListener("click", () => host.remove());
   }
   // #endregion
 
