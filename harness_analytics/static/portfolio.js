@@ -432,6 +432,10 @@
       state.analyticsKpis = data.analyticsKpis || data.kpis || null;
       state.charts = data.charts || null;
       state.lastData = data;
+      // #region agent log — DEBUG-MODE: expose last response on window so
+      // a console one-liner can dump diagnostics. Removed after we verify.
+      try { window.__lastData = data; } catch (e) {}
+      // #endregion
       state.focusedIndex = state.rows.length ? 0 : -1;
       renderAll();
     } catch (err) {
