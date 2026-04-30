@@ -339,7 +339,7 @@
     state.page = parseInt(params.get("page") || "1", 10) || 1;
     // Allowance Analytics v2 layout state.
     const tab = params.get("tab");
-    if (tab && ["overview", "charts", "allowance", "extensions", "matters"].includes(tab)) {
+    if (tab && ["overview", "charts", "allowance", "extensions", "applicants", "matters"].includes(tab)) {
       state.tab = tab;
     }
     const axis = params.get("cohortAxis");
@@ -464,6 +464,7 @@
     renderTabs();
     renderAllowanceTab();
     renderExtensionsTab();
+    renderApplicantTrendsTab();
     renderBody();
     renderFoot();
     renderMeta();
@@ -535,6 +536,7 @@
     renderAaPrimary();
     renderAaTrendChart();
     renderAaSecondary();
+    renderAaRejectionCountBreakdown();
     renderAaBreakdowns();
     // #region agent log — DEBUG-MODE diagnostic panel. Renders only when
     // ?debug=1 is in the URL. Dumps the per-cohort _diag block + top-level
@@ -898,6 +900,67 @@
     `).join("");
   }
 
+  // Distribution of allowances by total rejection count (CTNF + CTFR).
+  // Renders a single horizontal stacked bar + a 5-row table whose share
+  // column sums to 100% across the buckets. The "0 rejections" bucket
+  // mirrors the headline "Allowance w/ No Rejections" KPI; the "1
+  // rejection" bucket overlaps with "Allowance after Single CTNF"
+  // (modulo solo-CTFR cases which are vanishingly rare in practice).
+  function renderAaRejectionCountBreakdown() {
+    const host = document.getElementById("aa-by-rejection-count");
+    if (!host) return;
+    const data = state.lastData || {};
+    const rows = data.byRejectionCount || [];
+    const totalAllowed = data.rejectionCountTotalAllowed || 0;
+    const excluded = data.rejectionCountExcluded || 0;
+    if (!rows.length || !rows.some((r) => r.count > 0)) {
+      host.innerHTML = `<div class="empty-chart">No allowed apps in window.</div>`;
+      return;
+    }
+    // Color ramp: green (clean) → amber → red (lots of rejections).
+    const colors = {
+      zero:     "#16a34a",
+      one:      "#84cc16",
+      two:      "#f59e0b",
+      three:    "#f97316",
+      fourPlus: "#dc2626",
+    };
+    const segs = rows
+      .filter((r) => r.count > 0)
+      .map((r) => `<span class="aa-rc-seg" style="width:${r.sharePct}%;background:${colors[r.key] || "#94a3b8"}" title="${escapeHtml(r.label)}: ${r.count.toLocaleString()} (${r.sharePct}%)"></span>`)
+      .join("");
+    const tableRows = rows.map((r) => {
+      const swatch = `<span class="aa-rc-swatch" style="background:${colors[r.key] || "#94a3b8"}"></span>`;
+      const barWidth = Math.max(0, Math.min(80, (r.sharePct || 0) * 0.8));
+      return `<tr>
+        <td>${swatch}${escapeHtml(r.label)}</td>
+        <td class="aa-r">${r.count.toLocaleString()}</td>
+        <td class="aa-r"><span class="aa-bd-bar" style="width:${barWidth}px;background:${colors[r.key] || "#94a3b8"};opacity:0.65"></span>${r.sharePct}%</td>
+        <td class="aa-r">${r.medianMonths != null ? r.medianMonths : "—"}</td>
+      </tr>`;
+    }).join("");
+    host.innerHTML = `
+      <div class="aa-rc-stack">${segs}</div>
+      <table class="aa-bd-table">
+        <thead><tr><th>Bucket</th><th class="aa-r">Count</th><th class="aa-r">Share</th><th class="aa-r">Mo. Median</th></tr></thead>
+        <tbody>${tableRows}</tbody>
+        <tfoot>
+          <tr>
+            <td><strong>Total allowed (classified)</strong></td>
+            <td class="aa-r"><strong>${totalAllowed.toLocaleString()}</strong></td>
+            <td class="aa-r"><strong>100%</strong></td>
+            <td class="aa-r">—</td>
+          </tr>
+        </tfoot>
+      </table>
+      ${
+        excluded > 0
+          ? `<div class="aa-bd-foot">⚠ ${excluded.toLocaleString()} allowed app${excluded === 1 ? "" : "s"} excluded — no <code>application_analytics</code> row, so we can't count their rejections. Shares above are denominated against the classifiable subset.</div>`
+          : `<div class="aa-bd-foot">Rejections = non-final OAs + final rejections. RCEs are not counted as rejections (they're procedural). The "0 rejections" bucket equals the headline <em>Allowance w/ No Rejections</em> KPI; the "1 rejection" bucket is dominated by single-CTNF allowances.</div>`
+      }
+    `;
+  }
+
   function renderAaBreakdowns() {
     const data = state.lastData || {};
     const auHost = document.getElementById("aa-by-art-unit");
@@ -1105,6 +1168,180 @@
         <td class="ext-num">${(totals.total || 0).toLocaleString()}</td>
       </tr>
     `;
+  }
+
+  // ---------------------------------------------------------------------
+  // Applicant Trends tab — per-year filing volume + YoY growth.
+  //
+  // Two views:
+  //   * by-year  — portfolio totals, one row per filing year. Current year
+  //                is YTD and compares to same-period prior year.
+  //   * by-app   — top N applicants, last few years as columns + a Δ pill.
+  // Backend payload lives at ``state.lastData.applicantTrends`` and is
+  // produced by ``portfolio_aggregates.compute_applicant_trends``.
+  // ---------------------------------------------------------------------
+  function renderApplicantTrendsTab() {
+    const data = state.lastData && state.lastData.applicantTrends;
+    renderAtYearChart(data);
+    renderAtYearTable(data);
+    renderAtApplicantTable(data);
+  }
+
+  function fmtSignedInt(n) {
+    if (n == null) return "—";
+    if (n === 0) return "0";
+    return (n > 0 ? "+" : "") + n.toLocaleString();
+  }
+  function fmtSignedPct(n) {
+    if (n == null) return "—";
+    if (n === 0) return "0.0%";
+    return (n > 0 ? "+" : "") + n.toFixed(1) + "%";
+  }
+  function growthClass(n) {
+    if (n == null || n === 0) return "at-delta-flat";
+    return n > 0 ? "at-delta-up" : "at-delta-down";
+  }
+
+  function renderAtYearChart(data) {
+    const host = document.getElementById("at-year-chart");
+    if (!host) return;
+    const rows = (data && data.byYear) || [];
+    if (!rows.length) {
+      host.innerHTML = `<div class="ext-empty">No filings detected in the current selection.</div>`;
+      return;
+    }
+    const W = 920, H = 240, padL = 56, padR = 24, padT = 18, padB = 40;
+    const innerW = W - padL - padR, innerH = H - padT - padB;
+    const maxV = Math.max(1, ...rows.map((r) => r.filings || 0));
+    const niceMax = (() => {
+      const candidates = [5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000];
+      for (const c of candidates) { if (c >= maxV) return c; }
+      return Math.ceil(maxV / 1000) * 1000;
+    })();
+    const yScale = (v) => padT + innerH - (v / niceMax) * innerH;
+    const bandW = innerW / rows.length;
+    const barW = Math.max(8, Math.min(48, bandW * 0.65));
+
+    const yTicks = [0, 0.25, 0.5, 0.75, 1.0].map((p) => {
+      const v = Math.round(niceMax * p);
+      const y = yScale(v);
+      return `<g><line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="#e2e8f0" stroke-width="1"/>`
+        + `<text x="${padL - 8}" y="${y + 4}" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#64748b">${v.toLocaleString()}</text></g>`;
+    }).join("");
+
+    const bars = rows.map((r, i) => {
+      const cx = padL + bandW * (i + 0.5);
+      const xLeft = cx - barW / 2;
+      const v = r.filings || 0;
+      const yTop = yScale(v);
+      const h = Math.max(1, yScale(0) - yTop);
+      // Partial (current) year gets a hollow / outlined bar so attorneys
+      // visually distinguish "in-progress YTD" from "settled prior year"
+      // without reading the legend.
+      const fill = r.isPartial ? "#dbeafe" : "#2563eb";
+      const stroke = r.isPartial ? "#2563eb" : "transparent";
+      const dashAttr = r.isPartial ? ' stroke-dasharray="3 3"' : "";
+      const tip = `${r.year}${r.isPartial ? " (YTD)" : ""} · ${v.toLocaleString()} filing${v === 1 ? "" : "s"}`
+        + (r.deltaPct != null ? ` · ${fmtSignedPct(r.deltaPct)} ${r.compareLabel || ""}` : "");
+      const label = v > 0
+        ? `<text x="${cx}" y="${yTop - 6}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#475569">${v.toLocaleString()}</text>`
+        : "";
+      return `<g><title>${escapeHtml(tip)}</title>`
+        + `<rect x="${xLeft}" y="${yTop}" width="${barW}" height="${h}" fill="${fill}" stroke="${stroke}" stroke-width="1.5"${dashAttr}/>`
+        + `${label}</g>`;
+    }).join("");
+
+    const xLabels = rows.map((r, i) => {
+      const cx = padL + bandW * (i + 0.5);
+      const suffix = r.isPartial ? " YTD" : "";
+      return `<text x="${cx}" y="${H - padB + 18}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#64748b">${r.year}${suffix}</text>`;
+    }).join("");
+
+    host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${yTicks}${bars}${xLabels}</svg>`;
+  }
+
+  function renderAtYearTable(data) {
+    const tbody = document.getElementById("at-year-tbody");
+    const sub = document.getElementById("at-year-sub");
+    if (!tbody) return;
+    const rows = (data && data.byYear) || [];
+    if (sub) {
+      const total = (data && data.totalApplicantsWithFilings) || 0;
+      const asOf = (data && data.asOf) || "";
+      sub.textContent = `YEAR THE APPLICATION WAS FILED · ${total.toLocaleString()} APPLICANT${total === 1 ? "" : "S"} IN SELECTION · CURRENT YEAR IS YTD AS OF ${asOf}`;
+    }
+    if (!rows.length) {
+      tbody.innerHTML = `<tr><td colspan="6" class="muted" style="padding:18px;text-align:center">No filings detected.</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = rows.map((r) => {
+      const yearLabel = r.isPartial ? `${r.year} <span class="at-ytd-badge">YTD</span>` : String(r.year);
+      const prior = r.priorFilings == null ? "—" : r.priorFilings.toLocaleString();
+      const delta = fmtSignedInt(r.deltaAbs);
+      const pct = fmtSignedPct(r.deltaPct);
+      const deltaCls = growthClass(r.deltaAbs);
+      const pctCls = growthClass(r.deltaPct);
+      return `
+        <tr>
+          <td class="ext-year">${yearLabel}</td>
+          <td class="ext-num">${(r.filings || 0).toLocaleString()}</td>
+          <td class="ext-num ${r.priorFilings == null ? "ext-zero" : ""}">${prior}</td>
+          <td class="ext-num ${deltaCls}">${delta}</td>
+          <td class="ext-num ${pctCls}">${pct}</td>
+          <td class="at-col-note">${escapeHtml(r.compareLabel || "—")}</td>
+        </tr>
+      `;
+    }).join("");
+  }
+
+  function renderAtApplicantTable(data) {
+    const thead = document.getElementById("at-applicant-thead");
+    const tbody = document.getElementById("at-applicant-tbody");
+    const sub = document.getElementById("at-app-sub");
+    if (!thead || !tbody) return;
+    const apps = (data && data.byApplicant) || [];
+    const yearsShown = (data && data.yearsShown) || [];
+    const currentYear = data && data.currentYear;
+    if (sub) {
+      const total = (data && data.totalApplicantsWithFilings) || 0;
+      sub.textContent = `RANKED BY ${currentYear || "MOST RECENT YEAR"} FILINGS · SHOWING TOP ${apps.length} OF ${total.toLocaleString()} · YOY GROWTH ON THE RIGHT`;
+    }
+    if (!apps.length) {
+      thead.innerHTML = "";
+      tbody.innerHTML = `<tr><td class="muted" style="padding:18px;text-align:center">No applicants in the current selection.</td></tr>`;
+      return;
+    }
+    const yearHeaders = yearsShown.map((y) => {
+      const isCur = y === currentYear;
+      return `<th class="ext-col-num">${y}${isCur ? ' <span class="at-ytd-badge">YTD</span>' : ""}</th>`;
+    }).join("");
+    thead.innerHTML = `
+      <tr>
+        <th class="at-col-applicant">Applicant</th>
+        <th class="ext-col-num">Total</th>
+        ${yearHeaders}
+        <th class="ext-col-num">Δ</th>
+        <th class="ext-col-num">Δ %</th>
+      </tr>
+    `;
+    tbody.innerHTML = apps.map((a) => {
+      const cells = (a.perYear || []).map((p) => {
+        const v = p.filings || 0;
+        const cls = v ? "ext-num" : "ext-num ext-zero";
+        return `<td class="${cls}">${v ? v.toLocaleString() : "0"}</td>`;
+      }).join("");
+      const dCls = growthClass(a.deltaAbs);
+      const pCls = growthClass(a.deltaPct);
+      return `
+        <tr>
+          <td class="at-col-applicant" title="${escapeAttr(a.applicant)}">${escapeHtml(a.applicant)}</td>
+          <td class="ext-num">${(a.total || 0).toLocaleString()}</td>
+          ${cells}
+          <td class="ext-num ${dCls}">${fmtSignedInt(a.deltaAbs)}</td>
+          <td class="ext-num ${pCls}">${fmtSignedPct(a.deltaPct)}</td>
+        </tr>
+      `;
+    }).join("");
   }
 
   // ---------------------------------------------------------------------

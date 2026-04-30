@@ -32,6 +32,7 @@ from harness_analytics.portfolio_aggregates import (
     COHORT_AXIS_TO_FIELD,
     STATUS_PILL,
     apply_recency_window,
+    compute_applicant_trends,
     compute_breakdowns,
     compute_charts,
     compute_cohort_trend,
@@ -741,6 +742,13 @@ def portfolio(
     charts["ctnfResponseSpeed"] = compute_ctnf_response_speed_to_noa(ctnf_events)
     extensions_by_year = compute_extensions_by_year(ext_grouped)
 
+    # Applicant Trends tab — per-year filing volume + YoY growth across the
+    # chip-filtered selection. Runs against ``all_rows`` (NOT the recency-
+    # windowed slice) because the tab's whole point is "show me the
+    # multi-year trajectory of these applicants" — windowing it to the AA
+    # tab's recency setting would make the YoY column self-referential.
+    applicant_trends = compute_applicant_trends(all_rows)
+
     breakdowns = compute_breakdowns(windowed_rows)
     cohort_trend = compute_cohort_trend(windowed_rows, axis)
     scope = compute_scope(windowed_rows)
@@ -802,10 +810,21 @@ def portfolio(
             # Data-coverage signals for the path-to-allowance card.
             "pathExcluded": breakdowns["pathExcluded"],
             "pathTotalAllowed": breakdowns["pathTotalAllowed"],
+            # Allowance distribution by total rejection count (CTNF + CTFR).
+            # Five buckets (0/1/2/3/4+) over the same allowance population
+            # used by FAA + Single-CTNF, so they're directly comparable.
+            "byRejectionCount": breakdowns["byRejectionCount"],
+            "rejectionCountExcluded": breakdowns["rejectionCountExcluded"],
+            "rejectionCountTotalAllowed": breakdowns["rejectionCountTotalAllowed"],
             # Extensions tab — per-year extension counts derived from
             # OA mail dates vs. applicant response dates. See
             # extension_analytics.compute_extensions_by_year for the rule.
             "extensionsByYear": extensions_by_year,
+            # Applicant Trends tab — per-year filing counts (portfolio
+            # totals) + a top-applicants matrix with YoY growth. The
+            # current calendar year row is YTD-vs-prior-YTD so the growth
+            # column doesn't flash a misleading drop in January.
+            "applicantTrends": applicant_trends,
             # #region agent log — DEBUG-MODE per-request diagnostics. Tells us
             # which cohort axis is in play (hyp C), whether `has_analytics_row`
             # came back from the view at all (hyp B/E), and the headline FAA

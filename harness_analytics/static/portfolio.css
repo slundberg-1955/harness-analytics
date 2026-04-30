@@ -1316,6 +1316,32 @@ tbody tr:focus-visible {
   margin-right: 6px;
   border-radius: 2px;
 }
+/* Horizontal stacked bar for "Allowances by Rejection Count". Each
+   segment's width is its share% so the five segments fill the bar. */
+.aa-rc-stack {
+  display: flex;
+  width: 100%;
+  height: 22px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--slate-100, #f1f5f9);
+  margin: 6px 0 14px;
+  border: 1px solid var(--slate-200, #e2e8f0);
+}
+.aa-rc-seg {
+  display: inline-block;
+  height: 100%;
+  transition: filter 120ms ease;
+}
+.aa-rc-seg:hover { filter: brightness(1.1); }
+.aa-rc-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  margin-right: 8px;
+  vertical-align: middle;
+}
 /* Footnote under a breakdown table — surfaces FAA exclusions or path
    exclusions so the user knows the numbers may be deflated. */
 .aa-bd-foot {
@@ -1445,3 +1471,53 @@ tbody tr:focus-visible {
   line-height: 1.7;
 }
 .ext-method strong { color: var(--slate-700); font-weight: 600; }
+
+/* =====================================================================
+ * Applicant Trends tab.
+ * Reuses the .ext-table look for rows + adds growth pills (up/down/flat)
+ * plus a YTD badge on the in-progress year. The per-year chart uses a
+ * hollow/dashed bar for the partial year so attorneys can tell at a
+ * glance which bar is still maturing.
+ * =================================================================== */
+
+.at-card { margin-bottom: 16px; }
+.at-chart { width: 100%; min-height: 240px; margin-bottom: 18px; }
+.at-chart svg { display: block; width: 100%; height: 240px; }
+
+.at-table td.at-col-note,
+.at-table th.at-col-note {
+  text-align: left;
+  color: var(--slate-500);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.at-table td.at-col-applicant,
+.at-table th.at-col-applicant {
+  text-align: left;
+  font-family: var(--font-sans);
+  color: var(--slate-900);
+  font-size: 12px;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.at-app-table { table-layout: auto; }
+
+.at-ytd-badge {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--blue-50, #eff6ff);
+  color: var(--blue-700, #1d4ed8);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+}
+
+.at-delta-up   { color: var(--emerald-600, #059669); font-weight: 600; }
+.at-delta-down { color: var(--rose-600, #e11d48);    font-weight: 600; }
+.at-delta-flat { color: var(--slate-400);            font-weight: 500; }

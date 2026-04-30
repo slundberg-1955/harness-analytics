@@ -97,6 +97,7 @@
         <button type="button" class="tab" data-tab="charts" role="tab" aria-selected="false">Charts</button>
         <button type="button" class="tab" data-tab="allowance" role="tab" aria-selected="false">Allowance Analytics</button>
         <button type="button" class="tab" data-tab="extensions" role="tab" aria-selected="false">Extensions</button>
+        <button type="button" class="tab" data-tab="applicants" role="tab" aria-selected="false">Applicant Trends</button>
         <button type="button" class="tab" data-tab="matters" role="tab" aria-selected="false">Matters</button>
       </nav>
 
@@ -241,6 +242,20 @@
         <h2 class="aa-section-h2">Supplementary Metrics</h2>
         <div class="aa-secondary-grid" id="aa-secondary-grid"></div>
 
+        <!-- Allowances by total rejection count (CTNF + CTFR) -->
+        <h2 class="aa-section-h2">Allowances by Rejection Count</h2>
+        <div class="card aa-bd-card">
+          <div class="card-head">
+            <div>
+              <div class="card-title">Distribution of Allowances by Total Rejections (CTNF + CTFR)</div>
+              <div class="card-sub">share of allowed apps · same denominator as FAA / Single-CTNF</div>
+            </div>
+          </div>
+          <div class="card-body">
+            <div id="aa-by-rejection-count"></div>
+          </div>
+        </div>
+
         <!-- Two breakdown tables (Art Unit + Path-to-Allowance) -->
         <h2 class="aa-section-h2">Allowance Rate Breakdowns</h2>
         <div class="aa-breakdowns">
@@ -332,6 +347,67 @@
               examiner action or the first Notice of Allowance. Counts the
               full chip-filtered selection — not affected by the recency
               window on the Allowance Analytics tab.
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============== Applicant Trends tab ============== -->
+      <section class="tab-pane" data-tab="applicants" role="tabpanel" hidden>
+        <div class="card at-card">
+          <div class="card-head">
+            <div>
+              <div class="card-title">Filings by Year</div>
+              <div class="card-sub" id="at-year-sub">YEAR THE APPLICATION WAS FILED · CURRENT YEAR IS YTD</div>
+            </div>
+          </div>
+          <div class="card-body">
+            <div id="at-year-chart" class="at-chart" role="img" aria-label="Applicant filings by year"></div>
+            <div class="ext-table-wrap">
+              <table class="ext-table at-table" id="at-year-table">
+                <thead>
+                  <tr>
+                    <th class="ext-col-year">Year</th>
+                    <th class="ext-col-num">Filings</th>
+                    <th class="ext-col-num">Prior</th>
+                    <th class="ext-col-num">Δ</th>
+                    <th class="ext-col-num">Δ %</th>
+                    <th class="at-col-note">Compared To</th>
+                  </tr>
+                </thead>
+                <tbody id="at-year-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="card at-card">
+          <div class="card-head">
+            <div>
+              <div class="card-title">Top Applicants</div>
+              <div class="card-sub" id="at-app-sub">RANKED BY MOST RECENT YEAR · YOY GROWTH SHOWN ON THE RIGHT</div>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="ext-table-wrap">
+              <table class="ext-table at-table at-app-table" id="at-applicant-table">
+                <thead id="at-applicant-thead"></thead>
+                <tbody id="at-applicant-tbody"></tbody>
+              </table>
+            </div>
+            <div class="ext-method">
+              <strong>Methodology.</strong>
+              Filings bucket on the application's <code>filing_date</code>; rows
+              with no filing date are excluded. The portfolio totals include
+              every applicant in the current chip-filtered selection. The
+              top-applicants matrix ranks by most-recent-year filings (with
+              all-time total as a tiebreak) and caps at 20 rows. Growth (Δ %)
+              for past years compares full-year totals; for the current
+              calendar year it compares year-to-date filings to the same
+              date-of-year span in the prior year, so a high-volume applicant
+              isn't flagged as "down 95%" on January 5th. A dash (—) means
+              there is no prior baseline (first year in the window or the
+              prior year had zero filings for that applicant).
             </div>
           </div>
         </div>

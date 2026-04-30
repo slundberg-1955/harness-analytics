@@ -277,6 +277,79 @@ def compute_single_ctnf_allowance(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def compute_allowances_by_rejection_count(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Distribution of allowances by total rejection count (CTNF + CTFR).
+
+    Of all allowed apps (CHM_ALLOWED) with a verifiable analytics row,
+    bucket by ``nonfinal_oa_count + final_oa_count``:
+
+    * "zero"     — 0 rejections (mirrors FAA "no rejections")
+    * "one"      — 1 rejection (mirrors Single-CTNF, plus solo-CTFR edge case)
+    * "two"      — 2 rejections
+    * "three"    — 3 rejections
+    * "fourPlus" — 4 or more rejections
+
+    Counts ignore RCE: an app's rejection count is just the number of
+    examiner OAs that rejected it, regardless of whether the applicant
+    filed an RCE between them. The five buckets partition the allowance
+    population so shares sum to 100% (modulo ``excluded`` for missing
+    analytics rows).
+    """
+    bucket_keys = ("zero", "one", "two", "three", "fourPlus")
+    bucket_groups: dict[str, list[dict[str, Any]]] = {k: [] for k in bucket_keys}
+    excluded = 0
+    for r in rows:
+        if r.get("application_status_code") not in _CHM_ALLOWED_STATUS_CODES:
+            continue
+        if r.get("has_analytics_row") is False:
+            excluded += 1
+            continue
+        rejs = _get_int(r, "nonfinal_oa_count") + _get_int(r, "final_oa_count")
+        if rejs == 0:
+            bucket_groups["zero"].append(r)
+        elif rejs == 1:
+            bucket_groups["one"].append(r)
+        elif rejs == 2:
+            bucket_groups["two"].append(r)
+        elif rejs == 3:
+            bucket_groups["three"].append(r)
+        else:
+            bucket_groups["fourPlus"].append(r)
+    total = sum(len(b) for b in bucket_groups.values())
+    labels = (
+        ("zero",     "0 rejections"),
+        ("one",      "1 rejection"),
+        ("two",      "2 rejections"),
+        ("three",    "3 rejections"),
+        ("fourPlus", "4+ rejections"),
+    )
+    buckets: list[dict[str, Any]] = []
+    for key, label in labels:
+        bucket = bucket_groups[key]
+        count = len(bucket)
+        share = round(100.0 * count / total, 1) if total else 0.0
+        months = [
+            float(r["months_to_allowance"])
+            for r in bucket
+            if r.get("months_to_allowance") is not None
+        ]
+        med = round(median(months), 1) if months else None
+        buckets.append(
+            {
+                "key": key,
+                "label": label,
+                "count": count,
+                "sharePct": share,
+                "medianMonths": med,
+            }
+        )
+    return {
+        "buckets": buckets,
+        "totalAllowed": total,
+        "excluded": excluded,
+    }
+
+
 def compute_time_to_allowance(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Median / P25 / P75 months from filing to NOA mailed (spec §5.2)."""
     months: list[float] = []
@@ -670,6 +743,8 @@ def compute_breakdowns(rows: list[dict[str, Any]]) -> dict[str, Any]:
             }
         )
 
+    by_rejection_count = compute_allowances_by_rejection_count(rows)
+
     return {
         "byArtUnit": art_unit_rows,
         "byPathToAllowance": by_path,
@@ -677,6 +752,9 @@ def compute_breakdowns(rows: list[dict[str, Any]]) -> dict[str, Any]:
         # application_analytics row. UI surfaces this as a footnote.
         "pathExcluded": path_excluded,
         "pathTotalAllowed": len(allowed),
+        "byRejectionCount": by_rejection_count["buckets"],
+        "rejectionCountExcluded": by_rejection_count["excluded"],
+        "rejectionCountTotalAllowed": by_rejection_count["totalAllowed"],
     }
 
 
@@ -1157,4 +1235,221 @@ def compute_charts(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "daysToNoaByApp": compute_days_to_noa_by_app(rows),
         "statusMix": compute_status_mix(rows),
         "prosecutionSignals": compute_prosecution_signals(rows),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Applicant Trends tab — per-year filing volume + YoY growth.
+#
+# Two views ship in the response:
+#
+# * ``byYear``       — total filings per year across the chip-filtered
+#                      selection, with a year-over-year delta column. The
+#                      current calendar year is partial; we mark it
+#                      ``isPartial=True`` and compare its YTD count to the
+#                      same date-of-year span in the prior year so the
+#                      growth column doesn't read as a misleading drop
+#                      on January 5th.
+# * ``byApplicant``  — top N applicants by recent-window filing volume.
+#                      Each row exposes a per-year filing count for the
+#                      last few years plus the same prior-year (or
+#                      same-period prior-year for a partial current year)
+#                      delta. Lets counsel see at a glance which applicants
+#                      are accelerating or pulling back.
+#
+# Years bucket on ``filing_date``. Rows missing a filing_date are silently
+# dropped (a filing without a filing date can't be placed on the timeline).
+# ---------------------------------------------------------------------------
+
+
+def _day_of_year(d: date) -> int:
+    return d.timetuple().tm_yday
+
+
+def _yoy_delta(current: int, prior: int) -> tuple[Optional[int], Optional[float]]:
+    """Absolute and percent change from ``prior`` -> ``current``.
+
+    Returns ``(None, None)`` when there is no prior baseline (so the UI
+    renders ``—`` instead of fabricating a growth number from zero).
+    """
+    if prior <= 0:
+        # First-ever year of data, or a prior with literally zero filings.
+        # Either way there is no meaningful base — surface as "n/a" rather
+        # than ``+inf%`` or ``+100%`` which counsel would misread.
+        return (current - prior if prior else None, None)
+    delta_abs = current - prior
+    delta_pct = round(100.0 * delta_abs / prior, 1)
+    return (delta_abs, delta_pct)
+
+
+def compute_applicant_trends(
+    rows: list[dict[str, Any]],
+    *,
+    today: Optional[date] = None,
+    top_applicants: int = 20,
+    matrix_years: int = 5,
+) -> dict[str, Any]:
+    """Per-year filing counts + YoY growth, both portfolio-wide and per applicant.
+
+    ``today`` is injectable for testability; defaults to ``date.today()``.
+    The current year row is flagged ``isPartial`` and its growth column
+    compares its YTD count to the same date-of-year window in the prior
+    year — so on Jan 5 we don't show "filings down 99% YoY".
+
+    ``top_applicants`` caps the per-applicant breakdown so the response
+    payload stays small for portfolios with thousands of distinct
+    applicants. Ranking is by filings in the most recent year (with the
+    full-history total as a tiebreak), so the table answers "who's filing
+    the most right now?".
+    """
+    if today is None:
+        today = date.today()
+    cur_year = today.year
+    cur_doy = _day_of_year(today)
+
+    counts_by_year: dict[int, int] = {}
+    counts_by_year_ytd: dict[int, int] = {}
+
+    by_app_year: dict[str, dict[int, int]] = {}
+    by_app_year_ytd: dict[str, dict[int, int]] = {}
+
+    for r in rows:
+        fd = _coerce_date(r.get("filing_date"))
+        if fd is None:
+            continue
+        year = fd.year
+        counts_by_year[year] = counts_by_year.get(year, 0) + 1
+        if _day_of_year(fd) <= cur_doy:
+            counts_by_year_ytd[year] = counts_by_year_ytd.get(year, 0) + 1
+
+        applicant = (r.get("applicant_name") or "").strip()
+        if applicant:
+            ay = by_app_year.setdefault(applicant, {})
+            ay[year] = ay.get(year, 0) + 1
+            if _day_of_year(fd) <= cur_doy:
+                ayy = by_app_year_ytd.setdefault(applicant, {})
+                ayy[year] = ayy.get(year, 0) + 1
+
+    if not counts_by_year:
+        return {
+            "byYear": [],
+            "byApplicant": [],
+            "yearsShown": [],
+            "currentYear": cur_year,
+            "asOf": today.isoformat(),
+            "totalApplicantsWithFilings": 0,
+        }
+
+    y_min = min(counts_by_year)
+    # Always extend the row range up through the current calendar year so
+    # the in-progress YTD row is visible even if the most recent filing
+    # date in the dataset is in a prior year.
+    y_max = max(max(counts_by_year), cur_year)
+
+    by_year: list[dict[str, Any]] = []
+    for y in range(y_min, y_max + 1):
+        count = counts_by_year.get(y, 0)
+        is_partial = y == cur_year
+        prior_full = counts_by_year.get(y - 1, 0)
+        if is_partial:
+            # YTD compare: this year's count (which is by definition only
+            # the YTD slice — no future filings exist yet) vs the prior
+            # year's filings up to the same day-of-year.
+            prior_basis = counts_by_year_ytd.get(y - 1, 0)
+            delta_abs, delta_pct = _yoy_delta(count, prior_basis)
+            compare_label = "vs same period last year"
+        else:
+            prior_basis = prior_full if y > y_min else 0
+            if y == y_min:
+                # First year in the window has no prior — surface "—".
+                delta_abs, delta_pct = (None, None)
+            else:
+                delta_abs, delta_pct = _yoy_delta(count, prior_basis)
+            compare_label = "vs prior year"
+        by_year.append(
+            {
+                "year": y,
+                "filings": count,
+                "priorFilings": prior_basis if (y > y_min or is_partial) else None,
+                "deltaAbs": delta_abs,
+                "deltaPct": delta_pct,
+                "isPartial": is_partial,
+                "compareLabel": compare_label if (y > y_min or is_partial) else None,
+            }
+        )
+
+    # Per-applicant: choose the matrix year window. For a 1-2 year dataset
+    # we just show what's there; for longer histories we cap at
+    # ``matrix_years`` ending at the current year (so the partial-year
+    # column is always present when we have any current-year activity).
+    span = y_max - y_min + 1
+    if span <= matrix_years:
+        years_in_matrix = list(range(y_min, y_max + 1))
+    else:
+        years_in_matrix = list(range(y_max - matrix_years + 1, y_max + 1))
+
+    applicants: list[dict[str, Any]] = []
+    for app, year_counts in by_app_year.items():
+        total = sum(year_counts.values())
+        cur_count = year_counts.get(cur_year, 0)
+        prior_year_full = year_counts.get(cur_year - 1, 0)
+        if cur_count or cur_year in years_in_matrix:
+            # Apply the same YTD compare logic for the current year so a
+            # high-volume applicant doesn't appear to have crashed in
+            # January.
+            prior_basis = (
+                by_app_year_ytd.get(app, {}).get(cur_year - 1, 0)
+                if _day_of_year(today) < 366
+                else prior_year_full
+            )
+            delta_abs, delta_pct = _yoy_delta(cur_count, prior_basis)
+            is_partial = True
+            compare_label = "vs same period last year"
+        else:
+            prior_basis = prior_year_full
+            delta_abs, delta_pct = _yoy_delta(
+                year_counts.get(y_max, 0), year_counts.get(y_max - 1, 0)
+            )
+            is_partial = False
+            compare_label = "vs prior year"
+
+        applicants.append(
+            {
+                "applicant": app,
+                "total": total,
+                "perYear": [
+                    {"year": y, "filings": year_counts.get(y, 0)}
+                    for y in years_in_matrix
+                ],
+                "latestYear": cur_year if is_partial else y_max,
+                "latestFilings": cur_count if is_partial else year_counts.get(y_max, 0),
+                "priorFilings": prior_basis,
+                "deltaAbs": delta_abs,
+                "deltaPct": delta_pct,
+                "isPartial": is_partial,
+                "compareLabel": compare_label,
+            }
+        )
+
+    # Rank by latest-period activity — that's the column the eye lands on
+    # first. Tie-break by lifetime total (so a 50-app applicant doesn't get
+    # buried behind 12 single-filing applicants who all happened to file
+    # one app this year), then alphabetically for stable ordering across
+    # refreshes.
+    applicants.sort(
+        key=lambda r: (
+            -(r["latestFilings"] or 0),
+            -(r["total"] or 0),
+            r["applicant"].lower(),
+        )
+    )
+    top = applicants[: max(1, top_applicants)]
+
+    return {
+        "byYear": by_year,
+        "byApplicant": top,
+        "yearsShown": years_in_matrix,
+        "currentYear": cur_year,
+        "asOf": today.isoformat(),
+        "totalApplicantsWithFilings": len(applicants),
     }

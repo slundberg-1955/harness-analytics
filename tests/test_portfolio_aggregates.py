@@ -4,15 +4,19 @@ from __future__ import annotations
 
 from datetime import date
 
+import pytest
+
 from harness_analytics.portfolio_aggregates import (
     CTNF_RESPONSE_BUCKETS,
     STATUS_PILL,
     apply_recency_window,
+    compute_applicant_trends,
     compute_breakdowns,
     compute_charts,
     compute_cohort_trend,
     compute_ctnf_response_speed_to_noa,
     compute_family_yield,
+    compute_allowances_by_rejection_count,
     compute_first_action_allowance,
     compute_single_ctnf_allowance,
     compute_foreign_priority_share,
@@ -582,6 +586,59 @@ def test_compute_kpis_surfaces_single_ctnf() -> None:
     assert k["singleCtnfDenom"] == 2
 
 
+def test_allowances_by_rejection_count_basic() -> None:
+    """Five buckets (0/1/2/3/4+) over CHM_ALLOWED apps; shares sum to 100."""
+    rows = [
+        _row("A", status=150, nonfinal=0, final=0, rce=0),  # 0 rejections
+        _row("B", status=150, nonfinal=1, final=0, rce=0),  # 1 rejection
+        _row("C", status=150, nonfinal=1, final=1, rce=1),  # 2 rejections
+        _row("D", status=150, nonfinal=2, final=1, rce=1),  # 3 rejections
+        _row("E", status=150, nonfinal=3, final=2, rce=2),  # 5 rejections → 4+
+        _row("F", status=161),  # abandoned, not counted
+    ]
+    out = compute_allowances_by_rejection_count(rows)
+    assert out["totalAllowed"] == 5
+    by = {b["key"]: b for b in out["buckets"]}
+    assert by["zero"]["count"] == 1
+    assert by["one"]["count"] == 1
+    assert by["two"]["count"] == 1
+    assert by["three"]["count"] == 1
+    assert by["fourPlus"]["count"] == 1
+    assert sum(b["sharePct"] for b in out["buckets"]) == pytest.approx(100.0, abs=0.5)
+
+
+def test_allowances_by_rejection_count_excludes_missing_analytics() -> None:
+    """Apps with has_analytics_row=False land in `excluded`, not a bucket."""
+    rows = [
+        _row("A", status=150, nonfinal=0, final=0, rce=0),
+        _row("B", status=150, has_analytics_row=False),
+    ]
+    out = compute_allowances_by_rejection_count(rows)
+    assert out["totalAllowed"] == 1
+    assert out["excluded"] == 1
+
+
+def test_allowances_by_rejection_count_empty() -> None:
+    """No allowances → all-zero buckets and 0% shares (no division-by-zero)."""
+    out = compute_allowances_by_rejection_count([_row("A", status=161)])
+    assert out["totalAllowed"] == 0
+    assert all(b["count"] == 0 and b["sharePct"] == 0.0 for b in out["buckets"])
+
+
+def test_compute_breakdowns_surfaces_rejection_count() -> None:
+    """compute_breakdowns wires the rejection-count buckets into its output."""
+    rows = [
+        _row("A", status=150, nonfinal=0, final=0, rce=0, art_unit="1234"),
+        _row("B", status=150, nonfinal=1, final=0, rce=0, art_unit="1234"),
+    ]
+    out = compute_breakdowns(rows)
+    assert "byRejectionCount" in out
+    assert out["rejectionCountTotalAllowed"] == 2
+    by = {b["key"]: b for b in out["byRejectionCount"]}
+    assert by["zero"]["count"] == 1
+    assert by["one"]["count"] == 1
+
+
 def test_first_action_allowance_includes_in_flight_in_denom() -> None:
     """NOA-mailed (93) and Allowed for Issue (159) are in the denom and
     can be in the numerator if their prosecution was clean. They are
@@ -898,3 +955,128 @@ def test_kpis_secondary_metrics_surface_in_response() -> None:
         "pendency", "foreignPriority",
     ):
         assert key in k, f"missing KPI key {key}"
+
+
+# ---------------------------------------------------------------------------
+# compute_applicant_trends
+# ---------------------------------------------------------------------------
+
+
+def _filing_row(app_no: str, *, filing_date: date, applicant: str | None = None) -> dict:
+    """Minimal row factory for the Applicant Trends aggregate (which only
+    reads filing_date + applicant_name)."""
+    r = _row(app_no, filing_date=filing_date)
+    r["applicant_name"] = applicant
+    return r
+
+
+def test_applicant_trends_empty_returns_empty_payload() -> None:
+    out = compute_applicant_trends([], today=date(2026, 4, 30))
+    assert out["byYear"] == []
+    assert out["byApplicant"] == []
+    assert out["yearsShown"] == []
+    assert out["totalApplicantsWithFilings"] == 0
+    assert out["currentYear"] == 2026
+
+
+def test_applicant_trends_by_year_growth_full_year() -> None:
+    rows = (
+        [_filing_row(f"A-{i}", filing_date=date(2023, 5, 1)) for i in range(10)]
+        + [_filing_row(f"B-{i}", filing_date=date(2024, 5, 1)) for i in range(15)]
+    )
+    out = compute_applicant_trends(rows, today=date(2025, 1, 2))
+    by_year = {r["year"]: r for r in out["byYear"]}
+    assert by_year[2023]["filings"] == 10
+    assert by_year[2023]["deltaAbs"] is None, "first year has no prior baseline"
+    assert by_year[2023]["deltaPct"] is None
+    assert by_year[2024]["filings"] == 15
+    assert by_year[2024]["deltaAbs"] == 5
+    assert by_year[2024]["deltaPct"] == 50.0
+    assert by_year[2024]["compareLabel"] == "vs prior year"
+    assert by_year[2024]["isPartial"] is False
+
+
+def test_applicant_trends_current_year_uses_ytd_compare() -> None:
+    """Jan 5 2026: 2 YTD filings vs 1 prior YTD filing -> +100%, NOT +100%
+    against the full-year prior count which would over-count the baseline."""
+    rows = (
+        # Prior year: 1 early-Jan filing + 99 later filings = 100 full-year.
+        [_filing_row("PY-EARLY", filing_date=date(2025, 1, 3))]
+        + [_filing_row(f"PY-LATE-{i}", filing_date=date(2025, 6, 1)) for i in range(99)]
+        # Current year YTD: 2 filings before Jan 5.
+        + [_filing_row("CY-1", filing_date=date(2026, 1, 2)),
+           _filing_row("CY-2", filing_date=date(2026, 1, 4))]
+    )
+    out = compute_applicant_trends(rows, today=date(2026, 1, 5))
+    by_year = {r["year"]: r for r in out["byYear"]}
+    cur = by_year[2026]
+    assert cur["isPartial"] is True
+    assert cur["filings"] == 2
+    assert cur["priorFilings"] == 1, "prior YTD up to Jan 5, not full year"
+    assert cur["deltaAbs"] == 1
+    assert cur["deltaPct"] == 100.0
+    assert cur["compareLabel"] == "vs same period last year"
+
+
+def test_applicant_trends_current_year_appears_even_with_no_filings() -> None:
+    rows = [_filing_row("X", filing_date=date(2024, 6, 1))]
+    out = compute_applicant_trends(rows, today=date(2026, 4, 30))
+    years = [r["year"] for r in out["byYear"]]
+    assert 2026 in years
+    cur = next(r for r in out["byYear"] if r["year"] == 2026)
+    assert cur["filings"] == 0
+    assert cur["isPartial"] is True
+
+
+def test_applicant_trends_by_applicant_top_n_sorted_by_recent_year() -> None:
+    rows = (
+        [_filing_row(f"A-{i}", filing_date=date(2026, 1, 2), applicant="Acme Corp")
+         for i in range(5)]
+        + [_filing_row(f"A-PY-{i}", filing_date=date(2025, 1, 2), applicant="Acme Corp")
+           for i in range(2)]
+        + [_filing_row(f"B-{i}", filing_date=date(2026, 1, 2), applicant="Beta LLC")
+           for i in range(3)]
+        + [_filing_row(f"C-{i}", filing_date=date(2025, 6, 1), applicant="Gamma Ltd")
+           for i in range(20)]
+    )
+    out = compute_applicant_trends(rows, today=date(2026, 1, 5))
+    apps = out["byApplicant"]
+    assert [a["applicant"] for a in apps[:3]] == ["Acme Corp", "Beta LLC", "Gamma Ltd"]
+    acme = apps[0]
+    assert acme["latestYear"] == 2026
+    assert acme["latestFilings"] == 5
+    assert acme["isPartial"] is True
+    assert acme["priorFilings"] == 2, "prior YTD: both 2025 Acme filings were on Jan 2"
+    assert acme["deltaAbs"] == 3
+    assert acme["deltaPct"] == 150.0
+    gamma = next(a for a in apps if a["applicant"] == "Gamma Ltd")
+    assert gamma["latestFilings"] == 0, "no 2026 Gamma filings yet"
+    assert gamma["deltaAbs"] is None or gamma["deltaAbs"] == -0
+    assert gamma["deltaPct"] is None
+
+
+def test_applicant_trends_drops_rows_with_no_applicant_or_no_date() -> None:
+    rows = [
+        _filing_row("A", filing_date=date(2025, 6, 1), applicant="Acme"),
+        _filing_row("B", filing_date=date(2025, 6, 1), applicant=None),
+        _filing_row("C", filing_date=date(2025, 6, 1), applicant=""),
+        # No filing date -> dropped entirely.
+        {"application_number": "D", "applicant_name": "Acme", "filing_date": None},
+    ]
+    out = compute_applicant_trends(rows, today=date(2026, 4, 30))
+    by_year = {r["year"]: r for r in out["byYear"]}
+    assert by_year[2025]["filings"] == 3, "all three dated rows count toward portfolio totals"
+    apps = {a["applicant"]: a for a in out["byApplicant"]}
+    assert "Acme" in apps
+    assert "" not in apps
+    assert None not in apps
+
+
+def test_applicant_trends_top_applicants_caps_at_limit() -> None:
+    rows = [
+        _filing_row(f"A-{i}", filing_date=date(2025, 6, 1), applicant=f"Applicant {i:03d}")
+        for i in range(50)
+    ]
+    out = compute_applicant_trends(rows, today=date(2026, 4, 30), top_applicants=20)
+    assert len(out["byApplicant"]) == 20
+    assert out["totalApplicantsWithFilings"] == 50
