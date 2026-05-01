@@ -18,6 +18,7 @@ from harness_analytics.portfolio_aggregates import (
     compute_family_yield,
     compute_allowances_by_rejection_count,
     compute_first_action_allowance,
+    compute_rce_per_allowance_by_year,
     compute_single_ctnf_allowance,
     compute_foreign_priority_share,
     compute_kpis,
@@ -623,6 +624,40 @@ def test_allowances_by_rejection_count_empty() -> None:
     out = compute_allowances_by_rejection_count([_row("A", status=161)])
     assert out["totalAllowed"] == 0
     assert all(b["count"] == 0 and b["sharePct"] == 0.0 for b in out["buckets"])
+
+
+def test_rce_per_allowance_by_year_basic() -> None:
+    """Per-year average RCEs across all allowances on the chosen axis."""
+    rows = [
+        # 2023 NOA: 3 allowances total, 2 RCEs total -> avg 0.67, 33% w/ RCE
+        _row("A", status=150, rce=2, noa_mailed_date=date(2023, 1, 1)),
+        _row("B", status=150, rce=0, noa_mailed_date=date(2023, 6, 1)),
+        _row("C", status=93,  rce=0, noa_mailed_date=date(2023, 7, 1)),
+        # 2024 NOA: 2 allowances, 0 RCEs -> avg 0.0, 0% w/ RCE
+        _row("D", status=150, rce=0, noa_mailed_date=date(2024, 2, 1)),
+        _row("E", status=159, rce=0, noa_mailed_date=date(2024, 3, 1)),
+        # Abandoned -> excluded
+        _row("F", status=161, rce=1, noa_mailed_date=date(2023, 1, 1)),
+        # No NOA date -> excluded
+        _row("G", status=150, rce=5, noa_mailed_date=None),
+    ]
+    out = compute_rce_per_allowance_by_year(rows, cohort_axis="noa")
+    by_year = {r["year"]: r for r in out}
+    assert by_year[2023]["allowances"] == 3
+    assert by_year[2023]["totalRces"] == 2
+    assert by_year[2023]["avgRcePerAllowance"] == round(2 / 3, 2)
+    assert by_year[2023]["pctWithRce"] == round(100.0 / 3, 1)
+    assert by_year[2024]["allowances"] == 2
+    assert by_year[2024]["totalRces"] == 0
+    assert by_year[2024]["avgRcePerAllowance"] == 0.0
+    assert by_year[2024]["pctWithRce"] == 0.0
+
+
+def test_rce_per_allowance_by_year_empty() -> None:
+    """No allowances on the axis -> empty list, no division by zero."""
+    rows = [_row("A", status=161, noa_mailed_date=date(2023, 1, 1))]
+    out = compute_rce_per_allowance_by_year(rows, cohort_axis="noa")
+    assert out == []
 
 
 def test_compute_breakdowns_surfaces_rejection_count() -> None:

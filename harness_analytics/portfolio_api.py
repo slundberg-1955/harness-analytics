@@ -34,6 +34,7 @@ from harness_analytics.portfolio_aggregates import (
     apply_recency_window,
     compute_applicant_trends,
     compute_breakdowns,
+    compute_rce_per_allowance_by_year,
     compute_charts,
     compute_cohort_trend,
     compute_ctnf_response_speed_to_noa,
@@ -751,6 +752,7 @@ def portfolio(
 
     breakdowns = compute_breakdowns(windowed_rows)
     cohort_trend = compute_cohort_trend(windowed_rows, axis)
+    rce_per_allowance_by_year = compute_rce_per_allowance_by_year(windowed_rows, axis)
     scope = compute_scope(windowed_rows)
 
     # Two KPI sets: ``kpis`` covers the dashboard (Overview tab) and is
@@ -805,6 +807,10 @@ def portfolio(
             },
             "scope": scope,
             "cohortTrend": cohort_trend,
+            # Per-cohort-year average RCEs filed per allowance + the share
+            # of allowances that had ≥1 RCE in their file history. Drives
+            # the "RCEs per Allowance by Year" card on the Allowance tab.
+            "rcePerAllowanceByYear": rce_per_allowance_by_year,
             "byArtUnit": breakdowns["byArtUnit"],
             "byPathToAllowance": breakdowns["byPathToAllowance"],
             # Data-coverage signals for the path-to-allowance card.

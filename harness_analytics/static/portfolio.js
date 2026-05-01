@@ -493,6 +493,7 @@
     renderAaScopeLine();
     renderAaPrimary();
     renderAaTrendChart();
+    renderAaRcePerAllowance();
     renderAaSecondary();
     renderAaBreakdowns();
     // #region agent log — DEBUG-MODE diagnostic panel. Renders only when
@@ -789,6 +790,107 @@
         ${buildLine(bucketShare("fourPlus"), bucketColors.fourPlus)}
         ${xLabels}
       </svg>
+    `;
+  }
+
+  // RCEs per Allowance by Year: bar chart (avg RCEs/allowance) + table
+  // with year, allowances, total RCEs, avg RCEs/allowance, % w/ ≥1 RCE.
+  // Pure SVG so no charting dep is required.
+  function renderAaRcePerAllowance() {
+    const chartHost = document.getElementById("aa-rce-chart");
+    const tableHost = document.getElementById("aa-rce-table");
+    if (!chartHost || !tableHost) return;
+    const data = state.lastData || {};
+    const rows = data.rcePerAllowanceByYear || [];
+    if (!rows.length) {
+      chartHost.innerHTML = `<div class="empty-chart">No allowed apps in current scope.</div>`;
+      tableHost.innerHTML = "";
+      return;
+    }
+    const W = 920, H = 280, padL = 56, padR = 24, padT = 18, padB = 50;
+    const innerW = W - padL - padR, innerH = H - padT - padB;
+    const xs = rows.map((r) => r.year);
+    const xMin = Math.min(...xs), xMax = Math.max(...xs);
+    const xRange = Math.max(1, xMax - xMin);
+    // Round y-max up to a clean tick. avg RCEs/allowance is typically
+    // 0.0–1.5 across most portfolios; cap visualization at the actual
+    // max so the bars use the full vertical range.
+    const yMaxRaw = Math.max(0.5, ...rows.map((r) => r.avgRcePerAllowance || 0));
+    const yMax = Math.ceil(yMaxRaw * 4) / 4 || 1;  // round to next 0.25
+    const x = (year) => padL + ((year - xMin) / xRange) * innerW;
+    const y = (v) => padT + innerH - (Math.max(0, Math.min(yMax, v)) / yMax) * innerH;
+    // Bar width: 40% of slot between adjacent years (or fixed if 1 year).
+    const slot = rows.length > 1 ? innerW / Math.max(1, rows.length - 1) : innerW;
+    const barW = Math.max(8, Math.min(48, slot * 0.4));
+    const yTickValues = (() => {
+      const ticks = [0];
+      const step = yMax / 4;
+      for (let i = 1; i <= 4; i++) ticks.push(Number((step * i).toFixed(2)));
+      return ticks;
+    })();
+    const yTicks = yTickValues.map((v) =>
+      `<g><line x1="${padL}" y1="${y(v)}" x2="${W - padR}" y2="${y(v)}" stroke="#e2e8f0" stroke-width="1"/>` +
+      `<text x="${padL - 8}" y="${y(v) + 4}" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#64748b">${v.toFixed(2)}</text></g>`
+    ).join("");
+    const bars = rows.map((r) => {
+      const cx = x(r.year);
+      const top = y(r.avgRcePerAllowance);
+      const bottom = y(0);
+      const tip = `${r.year} · ${r.allowances.toLocaleString()} allowances · ${r.totalRces.toLocaleString()} RCEs · avg ${r.avgRcePerAllowance} · ${r.pctWithRce}% w/ ≥1 RCE`;
+      return `
+        <g>
+          <rect x="${cx - barW / 2}" y="${top}" width="${barW}" height="${Math.max(0, bottom - top)}" fill="#7c3aed" rx="2">
+            <title>${escapeHtml(tip)}</title>
+          </rect>
+          <text x="${cx}" y="${top - 4}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#0f172a">${r.avgRcePerAllowance}</text>
+        </g>
+      `;
+    }).join("");
+    const xLabels = rows.map((r) => {
+      const cx = x(r.year);
+      return `
+        <text x="${cx}" y="${H - padB + 18}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#64748b">${r.year}</text>
+        <text x="${cx}" y="${H - padB + 30}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="9" fill="#94a3b8">n=${r.allowances.toLocaleString()}</text>
+      `;
+    }).join("");
+    chartHost.innerHTML = `
+      <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+        ${yTicks}
+        ${bars}
+        ${xLabels}
+      </svg>
+    `;
+    const totalAllowances = rows.reduce((s, r) => s + r.allowances, 0);
+    const totalRces = rows.reduce((s, r) => s + r.totalRces, 0);
+    const overallAvg = totalAllowances > 0 ? (totalRces / totalAllowances).toFixed(2) : "—";
+    tableHost.innerHTML = `
+      <table class="aa-bd-table">
+        <thead><tr>
+          <th>Year</th>
+          <th class="aa-r">Allowances</th>
+          <th class="aa-r">Total RCEs</th>
+          <th class="aa-r">Avg RCEs / Allowance</th>
+          <th class="aa-r">% w/ ≥1 RCE</th>
+        </tr></thead>
+        <tbody>
+          ${rows.map((r) => `<tr>
+            <td>${r.year}</td>
+            <td class="aa-r">${r.allowances.toLocaleString()}</td>
+            <td class="aa-r">${r.totalRces.toLocaleString()}</td>
+            <td class="aa-r">${r.avgRcePerAllowance}</td>
+            <td class="aa-r">${r.pctWithRce}%</td>
+          </tr>`).join("")}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td><strong>Overall</strong></td>
+            <td class="aa-r"><strong>${totalAllowances.toLocaleString()}</strong></td>
+            <td class="aa-r"><strong>${totalRces.toLocaleString()}</strong></td>
+            <td class="aa-r"><strong>${overallAvg}</strong></td>
+            <td class="aa-r">—</td>
+          </tr>
+        </tfoot>
+      </table>
     `;
   }
 

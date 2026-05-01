@@ -211,6 +211,27 @@
           </div>
         </div>
 
+        <!-- RCEs per allowance, by cohort year. Bar chart + table that
+             answer "for each year, on average, how many RCEs did an
+             allowance go through?" Independent dimension from the action
+             count distribution above (which counts OAs, not RCEs). -->
+        <div class="card aa-rce-card">
+          <div class="card-head">
+            <div>
+              <div class="card-title">RCEs per Allowance by Year</div>
+              <div class="card-sub">avg RCEs filed across all allowances in each cohort year · per cohort axis above</div>
+            </div>
+            <div class="aa-trend-legend" aria-hidden="true">
+              <span class="aa-leg-item"><span class="aa-leg-swatch aa-leg-swatch-rcebar"></span>Avg RCEs / allowance</span>
+              <span class="aa-leg-item aa-leg-item-muted">% of allowances w/ ≥1 RCE</span>
+            </div>
+          </div>
+          <div class="card-body">
+            <div id="aa-rce-chart" class="aa-trend-chart" role="img" aria-label="Average RCEs per allowance by cohort year"></div>
+            <div id="aa-rce-table"></div>
+          </div>
+        </div>
+
         <!-- Secondary 6-up KPI grid -->
         <h2 class="aa-section-h2">Supplementary Metrics</h2>
         <div class="aa-secondary-grid" id="aa-secondary-grid"></div>

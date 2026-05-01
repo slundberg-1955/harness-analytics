@@ -566,6 +566,53 @@ def _trad_chm_faa_for_group(group: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def compute_rce_per_allowance_by_year(
+    rows: list[dict[str, Any]], cohort_axis: str = "noa"
+) -> list[dict[str, Any]]:
+    """Average RCEs filed per allowance, bucketed by cohort year.
+
+    For each year on the chosen cohort axis (NOA-mailed by default), takes
+    all allowed apps (status in CHM_ALLOWED) and reports:
+
+    * ``allowances`` — count of allowed apps in the year
+    * ``totalRces`` — sum of ``rce_count`` across those allowances
+    * ``avgRcePerAllowance`` — ``totalRces / allowances``
+    * ``pctWithRce`` — share of allowances with ≥ 1 RCE
+
+    Apps without an analytics row are still included (rce_count COALESCEs
+    to 0). The ratio is denominated against all allowances in the year so
+    a year that's entirely first-action allowances correctly reads 0.0
+    rather than ``None``.
+    """
+    field = COHORT_AXIS_TO_FIELD.get(cohort_axis, "noa_mailed_date")
+    by_year: dict[int, list[dict[str, Any]]] = {}
+    for r in rows:
+        if r.get("application_status_code") not in _CHM_ALLOWED_STATUS_CODES:
+            continue
+        d = _coerce_date(r.get(field))
+        if d is None:
+            continue
+        by_year.setdefault(d.year, []).append(r)
+    out: list[dict[str, Any]] = []
+    for year in sorted(by_year):
+        allowed = by_year[year]
+        n = len(allowed)
+        if n == 0:
+            continue
+        total_rces = sum(_get_int(r, "rce_count") for r in allowed)
+        with_rce = sum(1 for r in allowed if _get_int(r, "rce_count") >= 1)
+        out.append(
+            {
+                "year": year,
+                "allowances": n,
+                "totalRces": total_rces,
+                "avgRcePerAllowance": round(total_rces / n, 2),
+                "pctWithRce": round(100.0 * with_rce / n, 1),
+            }
+        )
+    return out
+
+
 def compute_cohort_trend(
     rows: list[dict[str, Any]], cohort_axis: str = "filing"
 ) -> list[dict[str, Any]]:
