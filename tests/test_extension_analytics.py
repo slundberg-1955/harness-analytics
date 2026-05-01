@@ -14,6 +14,7 @@ def _grouped(**kwargs):
             "ctrs": kwargs.get("ctrs", []),
             "noa": kwargs.get("noa", []),
             "response": kwargs.get("response", []),
+            "rem": kwargs.get("rem", []),
         }
     }
 
@@ -277,3 +278,86 @@ def test_duration_buckets_sum_to_total():
         type_total = row["ctnf"] + row["ctfr"] + row["restriction"]
         bucket_total = row["oneMonth"] + row["twoMonth"] + row["threeMonth"] + row["fourPlus"]
         assert type_total == bucket_total == row["total"]
+
+
+# ---------------------------------------------------------------------------
+# REM (Applicant Remarks) closes the CTRS response window. A REM mailed after
+# a CTRS — whether responding to that CTRS, a later CTNF, or a later CTFR —
+# caps the CTRS horizon so a far-later RESPONSE_NONFINAL doesn't get
+# attributed back to the restriction and inflate the 4+mo bucket.
+# ---------------------------------------------------------------------------
+
+
+def test_rem_caps_ctrs_window_so_far_later_merits_response_isnt_attributed():
+    """The user-facing motivation for the REM closer: a CTRS sits open
+    while a later CTNF + RESPONSE_NONFINAL play out far past the 2-month
+    SSP. Without the REM cap, the CTRS would credit the merits response
+    as its "response" and land in the 4+mo duration bucket; with the cap,
+    the CTRS attributes to the REM mailed shortly after the SSP and lands
+    in the 1-month bucket instead.
+    """
+    g = _grouped(
+        ctrs=[date(2024, 1, 1)],            # SSP deadline = Mar 1
+        rem=[date(2024, 3, 15)],            # 14d past SSP -> 1-month bucket
+        ctnf=[date(2024, 4, 1)],
+        # Real merits response 6+ months after the CTRS SSP. Without the
+        # REM cap, this date would be the CTRS "response" and the row
+        # would land in fourPlus.
+        response=[date(2024, 9, 1)],
+    )
+    out = compute_extensions_by_year(g)
+    totals = out["totals"]
+    assert totals["restriction"] == 1
+    assert totals["fourPlus"] == 0, totals
+    assert totals["oneMonth"] == 1, totals
+    assert _row(out["byYear"], 2024)["restriction"] == 1
+    assert _row(out["byYear"], 2024)["oneMonth"] == 1
+
+
+def test_rem_alone_serves_as_ctrs_response_when_no_classified_response():
+    """If prosecution_events doesn't classify a response (e.g., Election with
+    traverse fell through the cracks), but a REM is in the IFW, the REM
+    date alone produces a measurable CTRS lateness instead of silently
+    dropping the row.
+    """
+    g = _grouped(
+        ctrs=[date(2024, 1, 1)],
+        # Mar 15 = 14 days past the Mar 1 deadline -> rounds up to 1-month
+        # extension (USPTO sells extensions in whole-month blocks).
+        rem=[date(2024, 3, 15)],
+        response=[],
+    )
+    out = compute_extensions_by_year(g)
+    assert out["totals"]["restriction"] == 1
+    assert _row(out["byYear"], 2024)["oneMonth"] == 1
+
+
+def test_rem_does_not_close_ctnf_or_ctfr_window():
+    """REM only adjusts the CTRS horizon. CTNF/CTFR keep their original
+    horizon (next OA / first NOA), so a late merits response still lands
+    in the right bucket against the right OA.
+    """
+    g = _grouped(
+        ctnf=[date(2024, 1, 1)],
+        rem=[date(2024, 3, 15)],  # On-time CTNF response in REM form
+        response=[date(2024, 7, 1)],  # Real (late) RESPONSE_NONFINAL
+    )
+    out = compute_extensions_by_year(g)
+    # CTNF deadline = Apr 1; response = Jul 1 -> 3 months past -> threeMonth bucket.
+    assert out["totals"]["ctnf"] == 1, out["totals"]
+    assert out["totals"]["restriction"] == 0
+    assert _row(out["byYear"], 2024)["threeMonth"] == 1
+
+
+def test_rem_before_ctrs_does_not_close_window():
+    """A REM mailed before the CTRS (e.g., preliminary remarks at filing) is
+    ignored by the boundary check (`v <= t0` in _earliest_after).
+    """
+    g = _grouped(
+        ctrs=[date(2024, 6, 1)],
+        rem=[date(2024, 3, 1)],            # pre-CTRS, must be ignored
+        response=[date(2024, 9, 30)],      # ~4 months past Aug 1 deadline -> 2mo
+    )
+    out = compute_extensions_by_year(g)
+    assert out["totals"]["restriction"] == 1
+    assert _row(out["byYear"], 2024)["twoMonth"] == 1

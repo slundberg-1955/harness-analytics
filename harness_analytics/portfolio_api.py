@@ -515,10 +515,15 @@ def _iso(v: Any) -> Optional[str]:
 # N.APP          — notice of appeal; counted as an applicant "response" for
 #                  the user's "any response/RCE/Appeal" definition. RCE
 #                  + RESPONSE_NONFINAL/_FINAL come from prosecution_events.
+# REM            — applicant Remarks/Argument; closes a CTRS response
+#                  window and counts as a CTRS response candidate (any REM
+#                  filed during prosecution after a CTRS / CTNF / CTFR
+#                  caps the CTRS horizon, even when the REM was actually
+#                  responding to a later merits OA).
 #
 # The CTNF outcome chart only consumes the CTNF/CTFR/NOA subset, so the
-# extra CTRS / N.APP rows are ignored by ``extract_outcomes_from_grouped_events``.
-_EXTENSION_LADDER_DOC_CODES: tuple[str, ...] = ("CTNF", "CTFR", "CTRS", "NOA", "N.APP")
+# extra CTRS / N.APP / REM rows are ignored by ``extract_outcomes_from_grouped_events``.
+_EXTENSION_LADDER_DOC_CODES: tuple[str, ...] = ("CTNF", "CTFR", "CTRS", "NOA", "N.APP", "REM")
 
 
 def _fetch_extension_inputs(
@@ -541,7 +546,7 @@ def _fetch_extension_inputs(
         return {}
 
     grouped: dict[int, dict[str, list[Any]]] = {
-        aid: {"ctnf": [], "ctfr": [], "ctrs": [], "noa": [], "response": []}
+        aid: {"ctnf": [], "ctfr": [], "ctrs": [], "noa": [], "response": [], "rem": []}
         for aid in application_ids
     }
 
@@ -571,6 +576,8 @@ def _fetch_extension_inputs(
             bucket["noa"].append(mrd)
         elif key == "N.APP":
             bucket["response"].append(mrd)
+        elif key == "REM":
+            bucket["rem"].append(mrd)
 
     type_list = ", ".join(f"'{t}'" for t in sorted(RESPONSE_EVENT_TYPES))
     resp_rows = db.execute(
