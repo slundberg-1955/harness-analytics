@@ -490,22 +490,10 @@
   // hardcoded to NOA mailed date and the window is all-time.
   // ---------------------------------------------------------------------
   function renderAllowanceTab() {
-    // #region agent log — debug missing RCE-per-Allowance card (H-A/H-B/H-D/H-E)
-    try {
-      const d = state.lastData || {};
-      fetch('http://127.0.0.1:7443/ingest/a1b223fd-7763-423c-98cd-cac39c61132b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'309d5c'},body:JSON.stringify({sessionId:'309d5c',runId:'rce-card-missing',hypothesisId:'A,B,D,E',location:'portfolio.js:renderAllowanceTab',message:'enter renderAllowanceTab',data:{hostChartPresent:!!document.getElementById('aa-rce-chart'),hostTablePresent:!!document.getElementById('aa-rce-table'),dataHasField:Object.prototype.hasOwnProperty.call(d,'rcePerAllowanceByYear'),dataFieldType:typeof d.rcePerAllowanceByYear,dataFieldLength:Array.isArray(d.rcePerAllowanceByYear)?d.rcePerAllowanceByYear.length:null,dataFieldFirst:Array.isArray(d.rcePerAllowanceByYear)&&d.rcePerAllowanceByYear[0]||null,buildMarker:'2026-04-30-rce-debug',scriptUrl:document.currentScript&&document.currentScript.src||'unknown'},timestamp:Date.now()})}).catch(()=>{});
-    } catch (e) {}
-    // #endregion
     renderAaScopeLine();
     renderAaPrimary();
     renderAaTrendChart();
-    // #region agent log — wrap the RCE renderer to catch exceptions (H-B)
-    try { renderAaRcePerAllowance(); }
-    catch (e) {
-      fetch('http://127.0.0.1:7443/ingest/a1b223fd-7763-423c-98cd-cac39c61132b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'309d5c'},body:JSON.stringify({sessionId:'309d5c',runId:'rce-card-missing',hypothesisId:'B',location:'portfolio.js:renderAaRcePerAllowance',message:'EXCEPTION in renderAaRcePerAllowance',data:{name:e&&e.name,msg:String(e&&e.message),stack:String(e&&e.stack||'').slice(0,800)},timestamp:Date.now()})}).catch(()=>{});
-      throw e;
-    }
-    // #endregion
+    renderAaRcePerAllowance();
     renderAaSecondary();
     renderAaBreakdowns();
     // #region agent log — DEBUG-MODE diagnostic panel. Renders only when
@@ -811,16 +799,10 @@
   function renderAaRcePerAllowance() {
     const chartHost = document.getElementById("aa-rce-chart");
     const tableHost = document.getElementById("aa-rce-table");
-    // #region agent log — branch tracing for missing-RCE-card debug (H-C/H-E)
-    fetch('http://127.0.0.1:7443/ingest/a1b223fd-7763-423c-98cd-cac39c61132b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'309d5c'},body:JSON.stringify({sessionId:'309d5c',runId:'rce-card-missing',hypothesisId:'C,E',location:'portfolio.js:renderAaRcePerAllowance',message:'enter renderAaRcePerAllowance',data:{chartHostPresent:!!chartHost,tableHostPresent:!!tableHost,rowsLength:Array.isArray((state.lastData||{}).rcePerAllowanceByYear)?(state.lastData||{}).rcePerAllowanceByYear.length:-1,branchEarlyReturn:(!chartHost||!tableHost)},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     if (!chartHost || !tableHost) return;
     const data = state.lastData || {};
     const rows = data.rcePerAllowanceByYear || [];
     if (!rows.length) {
-      // #region agent log — hit empty branch (H-C/H-D)
-      fetch('http://127.0.0.1:7443/ingest/a1b223fd-7763-423c-98cd-cac39c61132b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'309d5c'},body:JSON.stringify({sessionId:'309d5c',runId:'rce-card-missing',hypothesisId:'C,D',location:'portfolio.js:renderAaRcePerAllowance',message:'EMPTY branch — no rcePerAllowanceByYear data',data:{rowsRaw:data.rcePerAllowanceByYear,hasField:'rcePerAllowanceByYear' in data,topLevelKeys:Object.keys(data).filter(k=>k.toLowerCase().includes('rce')||k.toLowerCase().includes('allow')).slice(0,12)},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       chartHost.innerHTML = `<div class="empty-chart">No allowed apps in current scope.</div>`;
       tableHost.innerHTML = "";
       return;
