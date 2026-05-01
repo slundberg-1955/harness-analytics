@@ -658,6 +658,57 @@ def compute_interviews_per_allowance_by_year(
     return out
 
 
+def compute_interviews_per_non_first_action_allowance_by_year(
+    rows: list[dict[str, Any]], cohort_axis: str = "noa"
+) -> list[dict[str, Any]]:
+    """Avg interviews per allowance, EXCLUDING first-action allowances.
+
+    Same per-year shape as ``compute_interviews_per_allowance_by_year``,
+    but apps that were allowed first-action (``nonfinal_oa_count == 0
+    AND final_oa_count == 0``) are dropped from BOTH the numerator and
+    the denominator. Useful for understanding interview behavior on the
+    apps that actually went through prosecution rather than averaging
+    in a slug of zeros from clean first-action allowances.
+    """
+    field = COHORT_AXIS_TO_FIELD.get(cohort_axis, "noa_mailed_date")
+    by_year: dict[int, list[dict[str, Any]]] = {}
+    for r in rows:
+        if r.get("application_status_code") not in _CHM_ALLOWED_STATUS_CODES:
+            continue
+        # Strict first-action allowance: examiner's first action was the
+        # NOA — zero non-final OAs and zero final rejections. Mirrors the
+        # headline "Allowed w/ No Actions" definition exactly.
+        if (
+            _get_int(r, "nonfinal_oa_count") == 0
+            and _get_int(r, "final_oa_count") == 0
+        ):
+            continue
+        d = _coerce_date(r.get(field))
+        if d is None:
+            continue
+        by_year.setdefault(d.year, []).append(r)
+    out: list[dict[str, Any]] = []
+    for year in sorted(by_year):
+        allowed = by_year[year]
+        n = len(allowed)
+        if n == 0:
+            continue
+        total_interviews = sum(_get_int(r, "interview_count") for r in allowed)
+        with_interview = sum(
+            1 for r in allowed if _get_int(r, "interview_count") >= 1
+        )
+        out.append(
+            {
+                "year": year,
+                "allowances": n,
+                "totalInterviews": total_interviews,
+                "avgInterviewsPerAllowance": round(total_interviews / n, 2),
+                "pctWithInterview": round(100.0 * with_interview / n, 1),
+            }
+        )
+    return out
+
+
 def compute_cohort_trend(
     rows: list[dict[str, Any]], cohort_axis: str = "filing"
 ) -> list[dict[str, Any]]:

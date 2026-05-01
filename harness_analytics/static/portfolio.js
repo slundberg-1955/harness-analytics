@@ -495,6 +495,7 @@
     renderAaTrendChart();
     renderAaRcePerAllowance();
     renderAaInterviewsPerAllowance();
+    renderAaInterviewsPerNonFaAllowance();
     renderAaSecondary();
     renderAaBreakdowns();
     // #region agent log — DEBUG-MODE diagnostic panel. Renders only when
@@ -929,6 +930,25 @@
       countKey: "totalInterviews",
       pctKey: "pctWithInterview",
       color: "#0ea5e9",
+      eventLabel: "interview",
+      eventLabelPlural: "Interviews",
+    });
+  }
+
+  // Same chart shape, but the backend has already excluded first-action
+  // allowances (nonfinal=0 AND final=0) from both numerator and
+  // denominator — isolates interview behavior on apps that actually
+  // went through prosecution.
+  function renderAaInterviewsPerNonFaAllowance() {
+    const data = state.lastData || {};
+    renderAaPerAllowanceCard({
+      chartHostId: "aa-intv2-chart",
+      tableHostId: "aa-intv2-table",
+      rows: data.interviewsPerNonFaAllowanceByYear || [],
+      valueKey: "avgInterviewsPerAllowance",
+      countKey: "totalInterviews",
+      pctKey: "pctWithInterview",
+      color: "#0284c7",
       eventLabel: "interview",
       eventLabelPlural: "Interviews",
     });

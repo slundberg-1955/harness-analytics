@@ -35,6 +35,7 @@ from harness_analytics.portfolio_aggregates import (
     compute_applicant_trends,
     compute_breakdowns,
     compute_interviews_per_allowance_by_year,
+    compute_interviews_per_non_first_action_allowance_by_year,
     compute_rce_per_allowance_by_year,
     compute_charts,
     compute_cohort_trend,
@@ -757,6 +758,9 @@ def portfolio(
     interviews_per_allowance_by_year = compute_interviews_per_allowance_by_year(
         windowed_rows, axis
     )
+    interviews_per_non_fa_allowance_by_year = (
+        compute_interviews_per_non_first_action_allowance_by_year(windowed_rows, axis)
+    )
     scope = compute_scope(windowed_rows)
 
     # Two KPI sets: ``kpis`` covers the dashboard (Overview tab) and is
@@ -819,6 +823,11 @@ def portfolio(
             # interviews. Drives the companion "Interviews per Allowance
             # by Year" card.
             "interviewsPerAllowanceByYear": interviews_per_allowance_by_year,
+            # Same shape, but with first-action allowances (nonfinal=0
+            # AND final=0) dropped from both numerator and denominator.
+            # Drives the "Interviews per Non-First-Action Allowance by
+            # Year" companion card.
+            "interviewsPerNonFaAllowanceByYear": interviews_per_non_fa_allowance_by_year,
             "byArtUnit": breakdowns["byArtUnit"],
             "byPathToAllowance": breakdowns["byPathToAllowance"],
             # Data-coverage signals for the path-to-allowance card.
