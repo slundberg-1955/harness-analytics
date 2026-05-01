@@ -494,6 +494,7 @@
     renderAaPrimary();
     renderAaTrendChart();
     renderAaRcePerAllowance();
+    renderAaInterviewsPerAllowance();
     renderAaSecondary();
     renderAaBreakdowns();
     // #region agent log — DEBUG-MODE diagnostic panel. Renders only when
@@ -793,15 +794,27 @@
     `;
   }
 
-  // RCEs per Allowance by Year: bar chart (avg RCEs/allowance) + table
-  // with year, allowances, total RCEs, avg RCEs/allowance, % w/ ≥1 RCE.
+  // Generic per-cohort-year bar chart + summary table renderer used by
+  // both "RCEs per Allowance" and "Interviews per Allowance" cards.
   // Pure SVG so no charting dep is required.
-  function renderAaRcePerAllowance() {
-    const chartHost = document.getElementById("aa-rce-chart");
-    const tableHost = document.getElementById("aa-rce-table");
+  //
+  // ``cfg`` shape:
+  //   chartHostId, tableHostId — DOM hooks for chart and table.
+  //   rows                     — array of per-year rows from the API.
+  //   valueKey                 — name of the per-row average field
+  //                              (e.g. "avgRcePerAllowance").
+  //   countKey                 — name of the per-row total field
+  //                              (e.g. "totalRces").
+  //   pctKey                   — name of the per-row "% w/ ≥1" field.
+  //   color                    — bar fill color.
+  //   eventLabel               — singular noun for the event ("RCE",
+  //                              "interview"); used in tooltips / table.
+  //   eventLabelPlural         — plural form for the table column.
+  function renderAaPerAllowanceCard(cfg) {
+    const chartHost = document.getElementById(cfg.chartHostId);
+    const tableHost = document.getElementById(cfg.tableHostId);
     if (!chartHost || !tableHost) return;
-    const data = state.lastData || {};
-    const rows = data.rcePerAllowanceByYear || [];
+    const rows = cfg.rows || [];
     if (!rows.length) {
       chartHost.innerHTML = `<div class="empty-chart">No allowed apps in current scope.</div>`;
       tableHost.innerHTML = "";
@@ -812,14 +825,10 @@
     const xs = rows.map((r) => r.year);
     const xMin = Math.min(...xs), xMax = Math.max(...xs);
     const xRange = Math.max(1, xMax - xMin);
-    // Round y-max up to a clean tick. avg RCEs/allowance is typically
-    // 0.0–1.5 across most portfolios; cap visualization at the actual
-    // max so the bars use the full vertical range.
-    const yMaxRaw = Math.max(0.5, ...rows.map((r) => r.avgRcePerAllowance || 0));
-    const yMax = Math.ceil(yMaxRaw * 4) / 4 || 1;  // round to next 0.25
+    const yMaxRaw = Math.max(0.5, ...rows.map((r) => r[cfg.valueKey] || 0));
+    const yMax = Math.ceil(yMaxRaw * 4) / 4 || 1;
     const x = (year) => padL + ((year - xMin) / xRange) * innerW;
     const y = (v) => padT + innerH - (Math.max(0, Math.min(yMax, v)) / yMax) * innerH;
-    // Bar width: 40% of slot between adjacent years (or fixed if 1 year).
     const slot = rows.length > 1 ? innerW / Math.max(1, rows.length - 1) : innerW;
     const barW = Math.max(8, Math.min(48, slot * 0.4));
     const yTickValues = (() => {
@@ -834,15 +843,16 @@
     ).join("");
     const bars = rows.map((r) => {
       const cx = x(r.year);
-      const top = y(r.avgRcePerAllowance);
+      const value = r[cfg.valueKey];
+      const top = y(value);
       const bottom = y(0);
-      const tip = `${r.year} · ${r.allowances.toLocaleString()} allowances · ${r.totalRces.toLocaleString()} RCEs · avg ${r.avgRcePerAllowance} · ${r.pctWithRce}% w/ ≥1 RCE`;
+      const tip = `${r.year} · ${r.allowances.toLocaleString()} allowances · ${r[cfg.countKey].toLocaleString()} ${cfg.eventLabelPlural} · avg ${value} · ${r[cfg.pctKey]}% w/ ≥1 ${cfg.eventLabel}`;
       return `
         <g>
-          <rect x="${cx - barW / 2}" y="${top}" width="${barW}" height="${Math.max(0, bottom - top)}" fill="#7c3aed" rx="2">
+          <rect x="${cx - barW / 2}" y="${top}" width="${barW}" height="${Math.max(0, bottom - top)}" fill="${cfg.color}" rx="2">
             <title>${escapeHtml(tip)}</title>
           </rect>
-          <text x="${cx}" y="${top - 4}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#0f172a">${r.avgRcePerAllowance}</text>
+          <text x="${cx}" y="${top - 4}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#0f172a">${value}</text>
         </g>
       `;
     }).join("");
@@ -861,37 +871,67 @@
       </svg>
     `;
     const totalAllowances = rows.reduce((s, r) => s + r.allowances, 0);
-    const totalRces = rows.reduce((s, r) => s + r.totalRces, 0);
-    const overallAvg = totalAllowances > 0 ? (totalRces / totalAllowances).toFixed(2) : "—";
+    const totalEvents = rows.reduce((s, r) => s + r[cfg.countKey], 0);
+    const overallAvg = totalAllowances > 0 ? (totalEvents / totalAllowances).toFixed(2) : "—";
     tableHost.innerHTML = `
       <table class="aa-bd-table">
         <thead><tr>
           <th>Year</th>
           <th class="aa-r">Allowances</th>
-          <th class="aa-r">Total RCEs</th>
-          <th class="aa-r">Avg RCEs / Allowance</th>
-          <th class="aa-r">% w/ ≥1 RCE</th>
+          <th class="aa-r">Total ${escapeHtml(cfg.eventLabelPlural)}</th>
+          <th class="aa-r">Avg ${escapeHtml(cfg.eventLabelPlural)} / Allowance</th>
+          <th class="aa-r">% w/ ≥1 ${escapeHtml(cfg.eventLabel)}</th>
         </tr></thead>
         <tbody>
           ${rows.map((r) => `<tr>
             <td>${r.year}</td>
             <td class="aa-r">${r.allowances.toLocaleString()}</td>
-            <td class="aa-r">${r.totalRces.toLocaleString()}</td>
-            <td class="aa-r">${r.avgRcePerAllowance}</td>
-            <td class="aa-r">${r.pctWithRce}%</td>
+            <td class="aa-r">${r[cfg.countKey].toLocaleString()}</td>
+            <td class="aa-r">${r[cfg.valueKey]}</td>
+            <td class="aa-r">${r[cfg.pctKey]}%</td>
           </tr>`).join("")}
         </tbody>
         <tfoot>
           <tr>
             <td><strong>Overall</strong></td>
             <td class="aa-r"><strong>${totalAllowances.toLocaleString()}</strong></td>
-            <td class="aa-r"><strong>${totalRces.toLocaleString()}</strong></td>
+            <td class="aa-r"><strong>${totalEvents.toLocaleString()}</strong></td>
             <td class="aa-r"><strong>${overallAvg}</strong></td>
             <td class="aa-r">—</td>
           </tr>
         </tfoot>
       </table>
     `;
+  }
+
+  function renderAaRcePerAllowance() {
+    const data = state.lastData || {};
+    renderAaPerAllowanceCard({
+      chartHostId: "aa-rce-chart",
+      tableHostId: "aa-rce-table",
+      rows: data.rcePerAllowanceByYear || [],
+      valueKey: "avgRcePerAllowance",
+      countKey: "totalRces",
+      pctKey: "pctWithRce",
+      color: "#7c3aed",
+      eventLabel: "RCE",
+      eventLabelPlural: "RCEs",
+    });
+  }
+
+  function renderAaInterviewsPerAllowance() {
+    const data = state.lastData || {};
+    renderAaPerAllowanceCard({
+      chartHostId: "aa-intv-chart",
+      tableHostId: "aa-intv-table",
+      rows: data.interviewsPerAllowanceByYear || [],
+      valueKey: "avgInterviewsPerAllowance",
+      countKey: "totalInterviews",
+      pctKey: "pctWithInterview",
+      color: "#0ea5e9",
+      eventLabel: "interview",
+      eventLabelPlural: "Interviews",
+    });
   }
 
   function renderAaSecondary() {

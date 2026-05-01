@@ -613,6 +613,51 @@ def compute_rce_per_allowance_by_year(
     return out
 
 
+def compute_interviews_per_allowance_by_year(
+    rows: list[dict[str, Any]], cohort_axis: str = "noa"
+) -> list[dict[str, Any]]:
+    """Average examiner interviews per allowance, bucketed by cohort year.
+
+    Mirror of ``compute_rce_per_allowance_by_year`` but for examiner
+    interviews. For each year on the chosen cohort axis (NOA-mailed by
+    default), takes all allowed apps (status in CHM_ALLOWED) and reports:
+
+    * ``allowances`` — count of allowed apps in the year
+    * ``totalInterviews`` — sum of ``interview_count`` across those allowances
+    * ``avgInterviewsPerAllowance`` — ``totalInterviews / allowances``
+    * ``pctWithInterview`` — share of allowances with ≥ 1 examiner interview
+    """
+    field = COHORT_AXIS_TO_FIELD.get(cohort_axis, "noa_mailed_date")
+    by_year: dict[int, list[dict[str, Any]]] = {}
+    for r in rows:
+        if r.get("application_status_code") not in _CHM_ALLOWED_STATUS_CODES:
+            continue
+        d = _coerce_date(r.get(field))
+        if d is None:
+            continue
+        by_year.setdefault(d.year, []).append(r)
+    out: list[dict[str, Any]] = []
+    for year in sorted(by_year):
+        allowed = by_year[year]
+        n = len(allowed)
+        if n == 0:
+            continue
+        total_interviews = sum(_get_int(r, "interview_count") for r in allowed)
+        with_interview = sum(
+            1 for r in allowed if _get_int(r, "interview_count") >= 1
+        )
+        out.append(
+            {
+                "year": year,
+                "allowances": n,
+                "totalInterviews": total_interviews,
+                "avgInterviewsPerAllowance": round(total_interviews / n, 2),
+                "pctWithInterview": round(100.0 * with_interview / n, 1),
+            }
+        )
+    return out
+
+
 def compute_cohort_trend(
     rows: list[dict[str, Any]], cohort_axis: str = "filing"
 ) -> list[dict[str, Any]]:

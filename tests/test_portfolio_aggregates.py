@@ -18,6 +18,7 @@ from harness_analytics.portfolio_aggregates import (
     compute_family_yield,
     compute_allowances_by_rejection_count,
     compute_first_action_allowance,
+    compute_interviews_per_allowance_by_year,
     compute_rce_per_allowance_by_year,
     compute_single_ctnf_allowance,
     compute_foreign_priority_share,
@@ -651,6 +652,39 @@ def test_rce_per_allowance_by_year_basic() -> None:
     assert by_year[2024]["totalRces"] == 0
     assert by_year[2024]["avgRcePerAllowance"] == 0.0
     assert by_year[2024]["pctWithRce"] == 0.0
+
+
+def test_interviews_per_allowance_by_year_basic() -> None:
+    """Per-year average interviews across all allowances on the chosen axis."""
+    rows = [
+        # 2023 NOA: 3 allowances, 4 interviews total -> avg 1.33, 67% w/ interview
+        _row("A", status=150, interviews=2, noa_mailed_date=date(2023, 1, 1)),
+        _row("B", status=150, interviews=2, noa_mailed_date=date(2023, 6, 1)),
+        _row("C", status=93,  interviews=0, noa_mailed_date=date(2023, 7, 1)),
+        # 2024 NOA: 1 allowance, 0 interviews
+        _row("D", status=150, interviews=0, noa_mailed_date=date(2024, 2, 1)),
+        # Abandoned -> excluded
+        _row("E", status=161, interviews=5, noa_mailed_date=date(2023, 1, 1)),
+        # No NOA date -> excluded
+        _row("F", status=150, interviews=3, noa_mailed_date=None),
+    ]
+    out = compute_interviews_per_allowance_by_year(rows, cohort_axis="noa")
+    by_year = {r["year"]: r for r in out}
+    assert by_year[2023]["allowances"] == 3
+    assert by_year[2023]["totalInterviews"] == 4
+    assert by_year[2023]["avgInterviewsPerAllowance"] == round(4 / 3, 2)
+    assert by_year[2023]["pctWithInterview"] == round(200.0 / 3, 1)
+    assert by_year[2024]["allowances"] == 1
+    assert by_year[2024]["totalInterviews"] == 0
+    assert by_year[2024]["avgInterviewsPerAllowance"] == 0.0
+    assert by_year[2024]["pctWithInterview"] == 0.0
+
+
+def test_interviews_per_allowance_by_year_empty() -> None:
+    """No allowances on the axis -> empty list."""
+    rows = [_row("A", status=161, noa_mailed_date=date(2023, 1, 1))]
+    out = compute_interviews_per_allowance_by_year(rows, cohort_axis="noa")
+    assert out == []
 
 
 def test_rce_per_allowance_by_year_empty() -> None:
