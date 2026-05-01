@@ -896,37 +896,6 @@
         `;
       }
     }
-    const pathHost = document.getElementById("aa-by-path");
-    if (pathHost) {
-      const rows = data.byPathToAllowance || [];
-      const pathExcluded = data.pathExcluded || 0;
-      const pathTotalAllowed = data.pathTotalAllowed || 0;
-      if (!rows.length || !rows.some((r) => r.count > 0)) {
-        pathHost.innerHTML = `<div class="empty-chart">No allowed apps in window.</div>`;
-      } else {
-        pathHost.innerHTML = `
-          <table class="aa-bd-table">
-            <thead><tr><th>Path</th><th class="aa-r">Count</th><th class="aa-r">Share</th><th class="aa-r">Mo. Median</th></tr></thead>
-            <tbody>
-              ${rows.map((r) => {
-                const barWidth = r.sharePct != null ? Math.max(0, Math.min(80, r.sharePct * 0.8)) : 0;
-                return `<tr>
-                  <td>${escapeHtml(r.path)}</td>
-                  <td class="aa-r">${r.count.toLocaleString()}</td>
-                  <td class="aa-r"><span class="aa-bd-bar" style="width:${barWidth}px"></span>${r.sharePct}%</td>
-                  <td class="aa-r">${r.medianMonths != null ? r.medianMonths : "—"}</td>
-                </tr>`;
-              }).join("")}
-            </tbody>
-          </table>
-          ${
-            pathExcluded > 0
-              ? `<div class="aa-bd-foot">⚠ ${pathExcluded.toLocaleString()} of ${pathTotalAllowed.toLocaleString()} allowed app${pathTotalAllowed === 1 ? "" : "s"} not classified — no <code>application_analytics</code> row, so we can't tell which path they took. Shares above are denominated against the classifiable subset.</div>`
-              : ""
-          }
-        `;
-      }
-    }
   }
 
   // ---------------------------------------------------------------------
