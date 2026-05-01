@@ -28,7 +28,10 @@ def _row(rows, year):
 def test_empty_input_returns_empty():
     out = compute_extensions_by_year({})
     assert out["byYear"] == []
-    assert out["totals"] == {"ctnf": 0, "ctfr": 0, "restriction": 0, "total": 0}
+    assert out["totals"] == {
+        "ctnf": 0, "ctfr": 0, "restriction": 0, "total": 0,
+        "oneMonth": 0, "twoMonth": 0, "threeMonth": 0, "fourPlus": 0,
+    }
     assert out["appsContributing"] == 0
 
 
@@ -196,3 +199,81 @@ def test_apps_contributing_counts_unique_apps():
     out = compute_extensions_by_year(g)
     assert out["appsContributing"] == 2
     assert out["totals"]["total"] == 2
+
+
+def test_duration_bucket_one_month_just_past_deadline():
+    """Response 1 day past the 3-month CTNF deadline -> 1-month bucket."""
+    g = _grouped(
+        ctnf=[date(2024, 1, 1)],
+        response=[date(2024, 4, 2)],
+    )
+    out = compute_extensions_by_year(g)
+    row = _row(out["byYear"], 2024)
+    assert row["oneMonth"] == 1
+    assert row["twoMonth"] == 0
+    assert row["threeMonth"] == 0
+    assert row["fourPlus"] == 0
+    assert out["totals"]["oneMonth"] == 1
+
+
+def test_duration_bucket_two_months():
+    """Response ~1 month + 1 day past the deadline -> 2-month bucket."""
+    g = _grouped(
+        ctnf=[date(2024, 1, 1)],
+        response=[date(2024, 5, 2)],
+    )
+    out = compute_extensions_by_year(g)
+    row = _row(out["byYear"], 2024)
+    assert row["twoMonth"] == 1
+    assert row["oneMonth"] == 0
+    assert out["totals"]["twoMonth"] == 1
+
+
+def test_duration_bucket_three_months():
+    g = _grouped(
+        ctnf=[date(2024, 1, 1)],
+        response=[date(2024, 6, 2)],
+    )
+    out = compute_extensions_by_year(g)
+    row = _row(out["byYear"], 2024)
+    assert row["threeMonth"] == 1
+    assert out["totals"]["threeMonth"] == 1
+
+
+def test_duration_bucket_four_plus():
+    """Response 4+ months past deadline -> fourPlus catch-all bucket."""
+    g = _grouped(
+        ctnf=[date(2024, 1, 1)],
+        response=[date(2024, 8, 15)],
+    )
+    out = compute_extensions_by_year(g)
+    row = _row(out["byYear"], 2024)
+    assert row["fourPlus"] == 1
+    assert row["threeMonth"] == 0
+    assert out["totals"]["fourPlus"] == 1
+
+
+def test_duration_bucket_ctrs_uses_2_month_deadline():
+    """CTRS deadline is 2 months, so a 3-month response is 1-month past."""
+    g = _grouped(
+        ctrs=[date(2024, 1, 1)],
+        response=[date(2024, 4, 2)],
+    )
+    out = compute_extensions_by_year(g)
+    row = _row(out["byYear"], 2024)
+    assert row["restriction"] == 1
+    assert row["twoMonth"] == 1, "Apr 2 is just past Mar 1 (2-mo deadline) by 1 month + 1 day -> 2-month bucket"
+
+
+def test_duration_buckets_sum_to_total():
+    """Per-row bucket sums equal the type-bucket sums (= total)."""
+    g = _grouped(
+        ctnf=[date(2024, 1, 1)],
+        ctfr=[date(2024, 9, 1)],  # follow-up after CTNF response (close enough not to be invalid)
+        response=[date(2024, 4, 15), date(2025, 2, 1)],
+    )
+    out = compute_extensions_by_year(g)
+    for row in out["byYear"]:
+        type_total = row["ctnf"] + row["ctfr"] + row["restriction"]
+        bucket_total = row["oneMonth"] + row["twoMonth"] + row["threeMonth"] + row["fourPlus"]
+        assert type_total == bucket_total == row["total"]

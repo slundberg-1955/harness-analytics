@@ -1015,6 +1015,7 @@
     const data = state.lastData && state.lastData.extensionsByYear;
     renderExtensionsChart(data);
     renderExtensionsTable(data);
+    renderExtensionsDurationTable(data);
   }
 
   function renderExtensionsChart(data) {
@@ -1073,7 +1074,12 @@
       if (ctnf) tipParts.push(`CTNF ${ctnf}`);
       if (ctfr) tipParts.push(`CTFR ${ctfr}`);
       if (ctrs) tipParts.push(`Restriction ${ctrs}`);
-      const tip = `${r.year}${tipParts.length ? " · " + tipParts.join(" · ") : ""} · Total ${r.total}`;
+      const durParts = [];
+      if (r.oneMonth)   durParts.push(`1mo ${r.oneMonth}`);
+      if (r.twoMonth)   durParts.push(`2mo ${r.twoMonth}`);
+      if (r.threeMonth) durParts.push(`3mo ${r.threeMonth}`);
+      if (r.fourPlus)   durParts.push(`4+mo ${r.fourPlus}`);
+      const tip = `${r.year}${tipParts.length ? " · " + tipParts.join(" · ") : ""} · Total ${r.total}${durParts.length ? "\nLength: " + durParts.join(", ") : ""}`;
       const totalLabel = r.total > 0
         ? `<text x="${cx}" y="${yScale(r.total) - 6}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#475569">${r.total}</text>`
         : "";
@@ -1129,6 +1135,45 @@
         <td class="ext-num">${(totals.ctnf || 0).toLocaleString()}</td>
         <td class="ext-num">${(totals.ctfr || 0).toLocaleString()}</td>
         <td class="ext-num">${(totals.restriction || 0).toLocaleString()}</td>
+        <td class="ext-num">${(totals.total || 0).toLocaleString()}</td>
+      </tr>
+    `;
+  }
+
+  // Per-year breakdown by extension length (1 / 2 / 3 / 4+ month buckets).
+  // Same per-year rows as the main extensions table — different columns.
+  function renderExtensionsDurationTable(data) {
+    const tbody = document.getElementById("ext-dur-tbody");
+    const tfoot = document.getElementById("ext-dur-tfoot");
+    if (!tbody || !tfoot) return;
+    const rows = (data && data.byYear) || [];
+    const totals = (data && data.totals) || {};
+    if (!rows.length) {
+      tbody.innerHTML = `<tr><td colspan="6" class="muted" style="padding:18px;text-align:center">No extensions detected.</td></tr>`;
+      tfoot.innerHTML = "";
+      return;
+    }
+    function cell(value) {
+      const cls = value ? "ext-num" : "ext-num ext-zero";
+      return `<td class="${cls}">${value ? value.toLocaleString() : "0"}</td>`;
+    }
+    tbody.innerHTML = rows.map((r) => `
+      <tr>
+        <td class="ext-year">${r.year}</td>
+        ${cell(r.oneMonth)}
+        ${cell(r.twoMonth)}
+        ${cell(r.threeMonth)}
+        ${cell(r.fourPlus)}
+        <td class="ext-num ext-col-total">${(r.total || 0).toLocaleString()}</td>
+      </tr>
+    `).join("");
+    tfoot.innerHTML = `
+      <tr>
+        <td>Total</td>
+        <td class="ext-num">${(totals.oneMonth || 0).toLocaleString()}</td>
+        <td class="ext-num">${(totals.twoMonth || 0).toLocaleString()}</td>
+        <td class="ext-num">${(totals.threeMonth || 0).toLocaleString()}</td>
+        <td class="ext-num">${(totals.fourPlus || 0).toLocaleString()}</td>
         <td class="ext-num">${(totals.total || 0).toLocaleString()}</td>
       </tr>
     `;

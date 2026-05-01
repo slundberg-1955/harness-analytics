@@ -79,14 +79,34 @@ def _first_response_in_window(
     return None
 
 
+def _months_past_deadline(t0: date, resp: date, deadline_months: int) -> int:
+    """How many additional 1-month USPTO extension blocks the response used.
+
+    Maps to the formal extension model: if a response is filed any time
+    after the statutory deadline, it bought at least one 1-month
+    extension (even if only a day late). One month past the deadline =
+    1-month extension, two months past = 2-month, etc. We round any
+    fractional days *up* to the next month boundary because USPTO sells
+    extensions in whole-month units.
+    """
+    deadline = t0 + relativedelta(months=deadline_months)
+    if resp <= deadline:
+        return 0
+    delta = relativedelta(resp, deadline)
+    months = delta.years * 12 + delta.months
+    if delta.days > 0 or delta.hours > 0 or delta.minutes > 0:
+        months += 1
+    return max(1, months)
+
+
 def _extension_for_oa(
     oa_dates: list[date],
     boundary_dates: list[date],
     first_noa: Optional[date],
     responses: list[date],
     deadline_months: int,
-) -> list[date]:
-    """Return the response dates that qualify as extensions for these OAs.
+) -> list[tuple[date, int]]:
+    """Return ``(response_date, months_past_deadline)`` pairs for late OAs.
 
     ``boundary_dates`` is the set of "next examiner action" dates that
     close the response window (typically the same set as ``oa_dates`` for
@@ -95,7 +115,7 @@ def _extension_for_oa(
     ``extension_metrics`` so the two analytics agree on which response
     counts.
     """
-    out: list[date] = []
+    out: list[tuple[date, int]] = []
     for t0 in oa_dates:
         next_boundary = _earliest_after(boundary_dates, t0)
         horizon = _horizon(next_boundary, first_noa)
@@ -104,12 +124,37 @@ def _extension_for_oa(
             continue
         deadline = t0 + relativedelta(months=deadline_months)
         if resp > deadline:
-            out.append(resp)
+            out.append((resp, _months_past_deadline(t0, resp, deadline_months)))
     return out
 
 
 def _empty_year_row(year: int) -> dict[str, int]:
-    return {"year": year, "ctnf": 0, "ctfr": 0, "restriction": 0, "total": 0}
+    return {
+        "year": year,
+        "ctnf": 0,
+        "ctfr": 0,
+        "restriction": 0,
+        "total": 0,
+        # Duration buckets — number of additional 1-month extension blocks
+        # the response consumed. ``fourPlus`` aggregates anything ≥ 4
+        # months past the statutory deadline (rare in practice; USPTO
+        # caps formal extensions at 5 months, but our heuristic catches
+        # any abandonment-revival or other late-filed response).
+        "oneMonth": 0,
+        "twoMonth": 0,
+        "threeMonth": 0,
+        "fourPlus": 0,
+    }
+
+
+def _bucket_key(months: int) -> str:
+    if months <= 1:
+        return "oneMonth"
+    if months == 2:
+        return "twoMonth"
+    if months == 3:
+        return "threeMonth"
+    return "fourPlus"
 
 
 def compute_extensions_by_year(
@@ -172,18 +217,21 @@ def compute_extensions_by_year(
         if late_ctnf or late_ctfr or late_ctrs:
             apps_contributing.add(app_id)
 
-        for resp in late_ctnf:
+        for resp, months in late_ctnf:
             row = by_year.setdefault(resp.year, _empty_year_row(resp.year))
             row["ctnf"] += 1
             row["total"] += 1
-        for resp in late_ctfr:
+            row[_bucket_key(months)] += 1
+        for resp, months in late_ctfr:
             row = by_year.setdefault(resp.year, _empty_year_row(resp.year))
             row["ctfr"] += 1
             row["total"] += 1
-        for resp in late_ctrs:
+            row[_bucket_key(months)] += 1
+        for resp, months in late_ctrs:
             row = by_year.setdefault(resp.year, _empty_year_row(resp.year))
             row["restriction"] += 1
             row["total"] += 1
+            row[_bucket_key(months)] += 1
 
     if by_year:
         y_min = min(by_year)
@@ -197,6 +245,10 @@ def compute_extensions_by_year(
         "ctfr": sum(r["ctfr"] for r in rows),
         "restriction": sum(r["restriction"] for r in rows),
         "total": sum(r["total"] for r in rows),
+        "oneMonth": sum(r["oneMonth"] for r in rows),
+        "twoMonth": sum(r["twoMonth"] for r in rows),
+        "threeMonth": sum(r["threeMonth"] for r in rows),
+        "fourPlus": sum(r["fourPlus"] for r in rows),
     }
     return {
         "byYear": rows,

@@ -1504,6 +1504,25 @@ tbody tr:focus-visible {
 }
 .ext-method strong { color: var(--slate-700); font-weight: 600; }
 
+/* Sub-section heading for the "By Extension Length" table that lives
+   below the main type-breakdown table. Same family as section h2s but
+   smaller — it's a child of the existing card. */
+.ext-subhead {
+  margin: 28px 0 6px;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--slate-900);
+  letter-spacing: -0.01em;
+}
+.ext-subnote {
+  margin: 0 0 14px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--slate-500);
+  line-height: 1.6;
+}
+
 /* =====================================================================
  * Applicant Trends tab.
  * Reuses the .ext-table look for rows + adds growth pills (up/down/flat)
