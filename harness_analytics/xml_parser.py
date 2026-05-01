@@ -314,6 +314,112 @@ def earliest_priority_date_from_xml(xml_text: str | None):
     return earliest_priority_date_from_root(root)
 
 
+# Application-type classifier. Buckets each application into one of seven
+# kinds so the Applicant Trends "Filings by Type" chart can stack bars by
+# discrete bucket. Provisional and design are derivable from the
+# application-number series alone (USPTO assigns 60/61/62/63 to provisionals
+# and 29 to designs); CON / CIP / DIV require inspecting the row's own
+# ParentContinuity entry's ContinuityDescription. Reissue / reexam series
+# (35/90/95/96) are surfaced as "other" so they don't masquerade as
+# regular non-provisional utility filings.
+_PROVISIONAL_PREFIXES: tuple[str, ...] = ("60/", "61/", "62/", "63/")
+_DESIGN_PREFIXES: tuple[str, ...] = ("29/",)
+_OTHER_PREFIXES: tuple[str, ...] = ("35/", "90/", "95/", "96/")
+
+
+def _strip_app_no(app_no: str | None) -> str:
+    return (app_no or "").strip()
+
+
+def _has_prefix(app_no: str, prefixes: tuple[str, ...]) -> bool:
+    if not app_no:
+        return False
+    for p in prefixes:
+        if app_no.startswith(p):
+            return True
+        # Tolerate a missing slash (some sources strip it): "60" + 8 digits.
+        bare = p.rstrip("/")
+        if app_no.startswith(bare) and len(app_no) > len(bare) and app_no[len(bare)].isdigit():
+            return True
+    return False
+
+
+def _continuation_kind_from_root(application_number: str | None, root: Any) -> Optional[str]:
+    """Return ``"con"`` / ``"cip"`` / ``"div"`` based on this row's own
+    ParentContinuity entry. Returns ``None`` when no qualifying parent entry
+    exists for this application (so caller falls back to ``regular``).
+    """
+    if root is None:
+        return None
+    child_key = normalize_application_number_key(application_number) if application_number else ""
+    if not child_key:
+        return None
+    for el in root.xpath(".//Continuity/ParentContinuityList/ParentContinuity"):
+        child = extract_text(el, "ChildApplicationNumber/text()")
+        parent = extract_text(el, "ParentApplicationNumber/text()")
+        if not child or not parent:
+            continue
+        if normalize_application_number_key(child) != child_key:
+            continue
+        if not is_non_pct_parent_application_number(parent):
+            continue
+        desc = (extract_text(el, "ContinuityDescription/text()") or "").strip().lower()
+        if desc in {"continuation in part", "continuation-in-part", "continuation in-part"}:
+            return "cip"
+        if desc in {"division", "divisional"}:
+            return "div"
+        if desc == "continuation":
+            return "con"
+    return None
+
+
+def classify_application_type(application_number: str | None, root: Any) -> str:
+    """Bucket an application into one of:
+    ``provisional`` | ``regular`` | ``con`` | ``div`` | ``cip`` | ``design`` | ``other``.
+
+    Order matters: app-number-series checks come first because a design
+    continuation still wants to read as ``design`` (the chart is about
+    application-type taxonomy, not prosecution lineage).
+    """
+    app_no = _strip_app_no(application_number)
+    if _has_prefix(app_no, _PROVISIONAL_PREFIXES):
+        return "provisional"
+    if _has_prefix(app_no, _DESIGN_PREFIXES):
+        return "design"
+    if _has_prefix(app_no, _OTHER_PREFIXES):
+        return "other"
+    cont = _continuation_kind_from_root(application_number, root)
+    if cont is not None:
+        return cont
+    return "regular"
+
+
+def classify_application_type_from_xml(application_number: str | None, xml_text: str | None) -> str:
+    """Best-effort classifier when only stored XML is available.
+
+    Falls back to app-number-only inference when XML is missing or
+    malformed; that path still gets provisional/design/other right and
+    classifies anything else as ``regular`` (potentially under-counting
+    CON/CIP/DIV when the XML can't be parsed — flagged as a known
+    limitation in the methodology footer).
+    """
+    app_no = _strip_app_no(application_number)
+    if _has_prefix(app_no, _PROVISIONAL_PREFIXES):
+        return "provisional"
+    if _has_prefix(app_no, _DESIGN_PREFIXES):
+        return "design"
+    if _has_prefix(app_no, _OTHER_PREFIXES):
+        return "other"
+    if not xml_text or not xml_text.strip():
+        return "regular"
+    try:
+        root = etree.fromstring(xml_text.encode("utf-8"))
+    except etree.XMLSyntaxError:
+        return "regular"
+    cont = _continuation_kind_from_root(application_number, root)
+    return cont if cont is not None else "regular"
+
+
 def parse_biblio_xml(xml_text: str) -> dict[str, Any]:
     """
     Parse a Patent Center Biblio XML string.
@@ -415,6 +521,7 @@ def parse_biblio_xml(xml_text: str) -> dict[str, Any]:
     noa_mailed_date = noa_mailed_date_from_root(root)
     family_root_app_no = family_root_app_no_from_root(root, app_num)
     has_foreign_priority = has_foreign_priority_from_root(root)
+    application_type = classify_application_type(app_num, root)
 
     return {
         "application_number": app_num,
@@ -456,4 +563,5 @@ def parse_biblio_xml(xml_text: str) -> dict[str, Any]:
         "noa_mailed_date": noa_mailed_date,
         "family_root_app_no": family_root_app_no,
         "has_foreign_priority": has_foreign_priority,
+        "application_type": application_type,
     }

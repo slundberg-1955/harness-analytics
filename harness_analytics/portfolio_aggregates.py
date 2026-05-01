@@ -1606,3 +1606,197 @@ def compute_applicant_trends(
         "asOf": today.isoformat(),
         "totalApplicantsWithFilings": len(applicants),
     }
+
+
+# ---------------------------------------------------------------------------
+# Filings by Type / Foreign Priority — stacked-by-year breakdowns for the
+# Applicant Trends tab.
+#
+# Both aggregators share the year-range logic from compute_applicant_trends:
+# bucket on ``filing_date``, drop rows missing a filing date, always extend
+# the year range up through the current calendar year so the in-progress
+# YTD bar is visible. Per-year payloads are precomputed totals so the
+# renderer can stack segments without rerunning the math client-side.
+# ---------------------------------------------------------------------------
+
+
+# Display order for the type stack — provisional first (foundation filings
+# usually pre-date the matching utility), regular next (the bulk of most
+# portfolios), then the three continuation buckets in CHM order, then design
+# and finally other so reissue/reexam don't visually compete with the main
+# story.
+TYPE_ORDER: tuple[str, ...] = (
+    "provisional",
+    "regular",
+    "con",
+    "div",
+    "cip",
+    "design",
+    "other",
+)
+
+
+def _coerce_app_type(v: Any) -> str:
+    """Normalize an ``application_type`` cell into one of the known buckets.
+
+    Unknown / null / empty values fall through to ``regular`` so ranks-1 -
+    rank-N stacks always sum to the per-year total. Mirrors the conservative
+    behavior of ``classify_application_type_from_xml`` when XML is missing.
+    """
+    if v is None:
+        return "regular"
+    s = str(v).strip().lower()
+    if not s:
+        return "regular"
+    if s in TYPE_ORDER:
+        return s
+    return "regular"
+
+
+def compute_filings_by_type(
+    rows: list[dict[str, Any]],
+    *,
+    today: Optional[date] = None,
+) -> dict[str, Any]:
+    """Per-year filing counts split by application-type bucket.
+
+    Buckets: ``provisional`` / ``regular`` / ``con`` / ``div`` / ``cip`` /
+    ``design`` / ``other``. Rows missing an ``application_type`` value
+    (e.g. mid-backfill) are bucketed as ``regular`` rather than dropped so
+    the per-year totals match the existing Filings-by-Year chart byte-for-
+    byte. Type buckets that are zero across the whole window are pruned
+    from ``typesShown`` so the legend stays clean.
+    """
+    if today is None:
+        today = date.today()
+    cur_year = today.year
+
+    counts_by_year: dict[int, dict[str, int]] = {}
+    totals: dict[str, int] = {k: 0 for k in TYPE_ORDER}
+
+    for r in rows:
+        fd = _coerce_date(r.get("filing_date"))
+        if fd is None:
+            continue
+        kind = _coerce_app_type(r.get("application_type"))
+        year_bucket = counts_by_year.setdefault(fd.year, {k: 0 for k in TYPE_ORDER})
+        year_bucket[kind] += 1
+        totals[kind] += 1
+
+    if not counts_by_year:
+        return {
+            "byYear": [],
+            "totals": totals,
+            "typesShown": [],
+            "currentYear": cur_year,
+            "asOf": today.isoformat(),
+            "totalFilings": 0,
+        }
+
+    y_min = min(counts_by_year)
+    y_max = max(max(counts_by_year), cur_year)
+
+    # Drop empty type buckets from the legend list. Preserve TYPE_ORDER so
+    # the renderer's color mapping stays stable across selections.
+    types_shown = [k for k in TYPE_ORDER if totals[k] > 0]
+
+    by_year: list[dict[str, Any]] = []
+    for y in range(y_min, y_max + 1):
+        bucket = counts_by_year.get(y) or {k: 0 for k in TYPE_ORDER}
+        total_y = sum(bucket.values())
+        by_year.append(
+            {
+                "year": y,
+                "filings": total_y,
+                "byType": dict(bucket),
+                "isPartial": y == cur_year,
+            }
+        )
+
+    return {
+        "byYear": by_year,
+        "totals": totals,
+        "typesShown": types_shown,
+        "currentYear": cur_year,
+        "asOf": today.isoformat(),
+        "totalFilings": sum(totals.values()),
+    }
+
+
+def compute_foreign_priority_by_year(
+    rows: list[dict[str, Any]],
+    *,
+    today: Optional[date] = None,
+) -> dict[str, Any]:
+    """Per-year filing counts split by foreign-priority claim.
+
+    Treats ``has_foreign_priority IS NULL`` as ``False`` so the metric stays
+    well-defined while the XML backfill is in flight — same convention as
+    ``compute_foreign_priority_share``. Both segments sum to the per-year
+    Filings-by-Year total so this chart and the headline chart agree.
+    """
+    if today is None:
+        today = date.today()
+    cur_year = today.year
+
+    by_year_with: dict[int, int] = {}
+    by_year_without: dict[int, int] = {}
+    total_with = 0
+    total_without = 0
+
+    for r in rows:
+        fd = _coerce_date(r.get("filing_date"))
+        if fd is None:
+            continue
+        if r.get("has_foreign_priority"):
+            by_year_with[fd.year] = by_year_with.get(fd.year, 0) + 1
+            total_with += 1
+        else:
+            by_year_without[fd.year] = by_year_without.get(fd.year, 0) + 1
+            total_without += 1
+
+    years_seen = set(by_year_with) | set(by_year_without)
+    if not years_seen:
+        return {
+            "byYear": [],
+            "totals": {
+                "withForeign": 0,
+                "withoutForeign": 0,
+                "withForeignPct": None,
+            },
+            "currentYear": cur_year,
+            "asOf": today.isoformat(),
+            "totalFilings": 0,
+        }
+
+    y_min = min(years_seen)
+    y_max = max(max(years_seen), cur_year)
+
+    by_year: list[dict[str, Any]] = []
+    for y in range(y_min, y_max + 1):
+        w = by_year_with.get(y, 0)
+        wo = by_year_without.get(y, 0)
+        by_year.append(
+            {
+                "year": y,
+                "filings": w + wo,
+                "withForeign": w,
+                "withoutForeign": wo,
+                "isPartial": y == cur_year,
+            }
+        )
+
+    grand_total = total_with + total_without
+    pct = round(100.0 * total_with / grand_total, 1) if grand_total else None
+
+    return {
+        "byYear": by_year,
+        "totals": {
+            "withForeign": total_with,
+            "withoutForeign": total_without,
+            "withForeignPct": pct,
+        },
+        "currentYear": cur_year,
+        "asOf": today.isoformat(),
+        "totalFilings": grand_total,
+    }

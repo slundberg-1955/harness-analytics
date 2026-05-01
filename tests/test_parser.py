@@ -7,6 +7,7 @@ import pytest
 from harness_analytics.xml_parser import (
     abandonment_date_from_xml,
     child_of_prior_us_parent_from_xml,
+    classify_application_type_from_xml,
     continuity_child_of_prior_us_parent,
     earliest_priority_date_from_xml,
     family_root_app_no_from_xml,
@@ -452,3 +453,92 @@ def test_has_foreign_priority_false_for_us_only_application() -> None:
     assert data["has_foreign_priority"] is False
     assert has_foreign_priority_from_xml("") is False
     assert has_foreign_priority_from_xml(None) is False
+
+
+# ---------------------------------------------------------------------------
+# Application-type classifier (Filings by Type chart).
+# ---------------------------------------------------------------------------
+
+
+def _continuity_xml(child_app_no: str, parent_app_no: str, description: str) -> str:
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<PatentCenterApplication>
+  <ApplicationBibliographicData><ApplicationNumber>{child_app_no}</ApplicationNumber></ApplicationBibliographicData>
+  <Continuity>
+    <ParentContinuityList>
+      <ParentContinuity>
+        <ChildApplicationNumber>{child_app_no}</ChildApplicationNumber>
+        <ParentApplicationNumber>{parent_app_no}</ParentApplicationNumber>
+        <ContinuityDescription>{description}</ContinuityDescription>
+      </ParentContinuity>
+    </ParentContinuityList>
+  </Continuity>
+  <FileContentHistories/>
+  <ImageFileWrapperList/>
+</PatentCenterApplication>"""
+
+
+@pytest.mark.parametrize(
+    "app_no,expected",
+    [
+        ("60/123,456", "provisional"),
+        ("61/987654", "provisional"),
+        ("62/555555", "provisional"),
+        ("63/111111", "provisional"),
+        ("29/123456", "design"),
+        ("35/123456", "other"),
+        ("90/000001", "other"),
+        ("95/000001", "other"),
+        ("96/000001", "other"),
+        # Bare-form (no slash) variants the field sometimes carries.
+        ("60123456",  "provisional"),
+        ("29111111",  "design"),
+        # Utility series with no continuity entry -> regular.
+        ("17000302",  "regular"),
+    ],
+)
+def test_classify_application_type_by_app_number_prefix(app_no: str, expected: str) -> None:
+    # Use empty XML so only the app-number-prefix branch runs.
+    assert classify_application_type_from_xml(app_no, "") == expected
+
+
+@pytest.mark.parametrize(
+    "description,expected",
+    [
+        ("Continuation", "con"),
+        ("Continuation in Part", "cip"),
+        ("Continuation-in-Part", "cip"),
+        ("Division", "div"),
+        ("Divisional", "div"),
+    ],
+)
+def test_classify_application_type_uses_continuity_description(description: str, expected: str) -> None:
+    """Utility-series app with a ParentContinuity entry that names this app
+    as the child should be classified by the entry's
+    ContinuityDescription, mirroring the Python aggregator's behavior.
+    """
+    xml = _continuity_xml("17552591", "16111222", description)
+    assert classify_application_type_from_xml("17552591", xml) == expected
+
+
+def test_classify_application_type_falls_back_to_regular_for_pct_only_parent() -> None:
+    """A PCT parent doesn't carry a CHM-qualifying ContinuityDescription
+    (we treat PCT national-stage as a separate priority axis), so the row
+    falls through to ``regular``.
+    """
+    xml = _continuity_xml("17552591", "PCT/US2020/012345", "Continuation")
+    assert classify_application_type_from_xml("17552591", xml) == "regular"
+
+
+def test_classify_application_type_handles_missing_or_invalid_xml() -> None:
+    # No XML, utility number -> regular.
+    assert classify_application_type_from_xml("17552591", None) == "regular"
+    assert classify_application_type_from_xml("17552591", "") == "regular"
+    # Invalid XML, design number -> design (prefix wins).
+    assert classify_application_type_from_xml("29123456", "<not xml") == "design"
+
+
+def test_parse_biblio_xml_surfaces_application_type() -> None:
+    xml = _continuity_xml("17999111", "16000222", "Divisional")
+    data = parse_biblio_xml(xml)
+    assert data["application_type"] == "div"

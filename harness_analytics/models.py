@@ -63,6 +63,7 @@ class Application(Base):
     noa_mailed_date: Mapped[Optional[date]] = mapped_column(Date)
     family_root_app_no: Mapped[Optional[str]] = mapped_column(Text)
     has_foreign_priority: Mapped[Optional[bool]] = mapped_column(Boolean)
+    application_type: Mapped[Optional[str]] = mapped_column(Text)
     tenant_id: Mapped[str] = mapped_column(Text, nullable=False, default="global")
     imported_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

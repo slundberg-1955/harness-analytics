@@ -34,6 +34,8 @@ from harness_analytics.portfolio_aggregates import (
     apply_recency_window,
     compute_applicant_trends,
     compute_breakdowns,
+    compute_filings_by_type,
+    compute_foreign_priority_by_year,
     compute_interviews_per_allowance_by_year,
     compute_interviews_per_non_first_action_allowance_by_year,
     compute_rce_per_allowance_by_year,
@@ -124,6 +126,10 @@ _ROW_COLUMNS: list[str] = [
     "final_rejection_count",
     "family_root_app_no",
     "has_foreign_priority",
+    # Application-type bucket for the Applicant Trends "Filings by Type"
+    # stacked-bar chart. Populated at ingest from XML + app-no prefix and
+    # backfilled for legacy rows (see schema_migrations).
+    "application_type",
     # Data-quality flag: drives FAA exclusion (see view comment + spec §9
     # empty-window rule applied per-row). Null aa joins -> excluded from the
     # FAA numerator so missing analytics rows don't masquerade as
@@ -480,6 +486,7 @@ def _row_to_json(row: dict[str, Any]) -> dict[str, Any]:
         "finalRejectionCount": row.get("final_rejection_count") or 0,
         "familyRootAppNo": row.get("family_root_app_no"),
         "hasForeignPriority": bool(row.get("has_foreign_priority")) if row.get("has_foreign_priority") is not None else None,
+        "applicationType": row.get("application_type"),
         "hasAnalyticsRow": bool(row.get("has_analytics_row")) if row.get("has_analytics_row") is not None else None,
         # M7: timeline summary projected straight from the view.
         "nextDeadlineDate": _iso(row.get("next_deadline_date")),
@@ -751,6 +758,12 @@ def portfolio(
     # multi-year trajectory of these applicants" — windowing it to the AA
     # tab's recency setting would make the YoY column self-referential.
     applicant_trends = compute_applicant_trends(all_rows)
+    # Filings-by-Type and Foreign-Priority breakdowns share the Applicant
+    # Trends tab's year axis so they get the same all_rows scope (NOT the
+    # recency-windowed slice) — the tab's whole point is multi-year
+    # trajectory.
+    filings_by_type = compute_filings_by_type(all_rows)
+    filings_by_foreign_priority = compute_foreign_priority_by_year(all_rows)
 
     breakdowns = compute_breakdowns(windowed_rows)
     cohort_trend = compute_cohort_trend(windowed_rows, axis)
@@ -848,6 +861,16 @@ def portfolio(
             # current calendar year row is YTD-vs-prior-YTD so the growth
             # column doesn't flash a misleading drop in January.
             "applicantTrends": applicant_trends,
+            # Filings stacked by application-type bucket (provisional / regular
+            # / con / div / cip / design / other) per filing year. Same
+            # year-axis logic as applicantTrends.byYear so the two charts
+            # line up vertically on the Applicant Trends tab.
+            "filingsByType": filings_by_type,
+            # Filings stacked by foreign-priority claim per filing year.
+            # NULL has_foreign_priority is bucketed as "withoutForeign" to
+            # match the existing compute_foreign_priority_share semantics
+            # while the XML backfill is in flight.
+            "filingsByForeignPriority": filings_by_foreign_priority,
             # #region agent log — DEBUG-MODE per-request diagnostics. Tells us
             # which cohort axis is in play (hyp C), whether `has_analytics_row`
             # came back from the view at all (hyp B/E), and the headline FAA

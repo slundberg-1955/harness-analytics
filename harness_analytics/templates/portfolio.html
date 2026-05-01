@@ -408,6 +408,53 @@
         <div class="card at-card">
           <div class="card-head">
             <div>
+              <div class="card-title">Filings by Type</div>
+              <div class="card-sub" id="at-type-sub">PROVISIONAL · REGULAR · CON · DIV · CIP · DESIGN · OTHER</div>
+            </div>
+          </div>
+          <div class="card-body">
+            <div id="at-type-legend" class="at-legend" aria-hidden="true"></div>
+            <div id="at-type-chart" class="at-chart" role="img" aria-label="Filings by application type per year"></div>
+            <div class="ext-method">
+              <strong>Methodology.</strong>
+              Each application is bucketed by its USPTO application-number
+              series (provisional <code>60–63/</code>, design <code>29/</code>,
+              reissue/reexam <code>35/90/95/96/</code> bucketed as
+              <em>other</em>) and, for non-prefix series, by the row's own
+              <code>ContinuityDescription</code> in the bibliographic XML
+              (Continuation, Continuation-in-Part, or Divisional). Rows whose
+              type is still being backfilled are bucketed as
+              <em>regular</em> so per-year totals stay byte-identical to the
+              chart above.
+            </div>
+          </div>
+        </div>
+
+        <div class="card at-card">
+          <div class="card-head">
+            <div>
+              <div class="card-title">Foreign Priority</div>
+              <div class="card-sub" id="at-fp-sub">CASES CLAIMING NON-US PRIORITY VS. NO FOREIGN PRIORITY</div>
+            </div>
+          </div>
+          <div class="card-body">
+            <div id="at-fp-legend" class="at-legend" aria-hidden="true"></div>
+            <div id="at-fp-chart" class="at-chart" role="img" aria-label="Filings by foreign-priority claim per year"></div>
+            <div class="ext-method">
+              <strong>Methodology.</strong>
+              "Foreign priority" is true when the bibliographic XML lists any
+              <code>ForeignPriority</code> entry, or when a parent application
+              in the continuity chain is a PCT national-stage filing. Rows
+              where the flag is still null (mid-backfill) count as
+              <em>no foreign priority</em> so the per-year totals match the
+              Filings by Year chart above.
+            </div>
+          </div>
+        </div>
+
+        <div class="card at-card">
+          <div class="card-head">
+            <div>
               <div class="card-title">Top Applicants</div>
               <div class="card-sub" id="at-app-sub">RANKED BY MOST RECENT YEAR · YOY GROWTH SHOWN ON THE RIGHT</div>
             </div>

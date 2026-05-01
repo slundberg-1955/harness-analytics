@@ -9,6 +9,7 @@ import pytest
 from harness_analytics.portfolio_aggregates import (
     CTNF_RESPONSE_BUCKETS,
     STATUS_PILL,
+    TYPE_ORDER,
     apply_recency_window,
     compute_applicant_trends,
     compute_breakdowns,
@@ -16,6 +17,8 @@ from harness_analytics.portfolio_aggregates import (
     compute_cohort_trend,
     compute_ctnf_response_speed_to_noa,
     compute_family_yield,
+    compute_filings_by_type,
+    compute_foreign_priority_by_year,
     compute_allowances_by_rejection_count,
     compute_first_action_allowance,
     compute_interviews_per_allowance_by_year,
@@ -60,6 +63,7 @@ def _row(
     has_foreign_priority: bool | None = False,
     art_unit: str | None = None,
     has_analytics_row: bool = True,
+    application_type: str | None = None,
 ) -> dict:
     return {
         "application_number": app_no,
@@ -90,6 +94,10 @@ def _row(
         # exactly like before (rce/final-rejection ints are trusted). New
         # tests pass has_analytics_row=False to exercise the exclusion path.
         "has_analytics_row": has_analytics_row,
+        # Filings-by-Type bucket. Default None so the aggregator's
+        # NULL->regular fallback exercises the "mid-backfill" path in
+        # legacy tests.
+        "application_type": application_type,
     }
 
 
@@ -1184,3 +1192,137 @@ def test_applicant_trends_top_applicants_caps_at_limit() -> None:
     out = compute_applicant_trends(rows, today=date(2026, 4, 30), top_applicants=20)
     assert len(out["byApplicant"]) == 20
     assert out["totalApplicantsWithFilings"] == 50
+
+
+# ---------------------------------------------------------------------------
+# Filings by Type / Foreign Priority — stacked-by-year aggregators.
+# ---------------------------------------------------------------------------
+
+
+def test_filings_by_type_buckets_by_year_and_handles_partial_year() -> None:
+    """All seven type buckets land on the right year + the current calendar
+    year is flagged isPartial. Per-year totals must equal the sum of the
+    type segments so the chart matches the headline Filings-by-Year bar.
+    """
+    rows = [
+        _row("PROV-1", filing_date=date(2024, 3, 1), application_type="provisional"),
+        _row("REG-1",  filing_date=date(2024, 4, 1), application_type="regular"),
+        _row("REG-2",  filing_date=date(2024, 5, 1), application_type="regular"),
+        _row("CON-1",  filing_date=date(2024, 6, 1), application_type="con"),
+        _row("DIV-1",  filing_date=date(2024, 7, 1), application_type="div"),
+        _row("CIP-1",  filing_date=date(2024, 8, 1), application_type="cip"),
+        _row("DES-1",  filing_date=date(2024, 9, 1), application_type="design"),
+        _row("OTH-1",  filing_date=date(2024, 10, 1), application_type="other"),
+        # Current-year (partial) rows.
+        _row("CY-REG", filing_date=date(2026, 1, 5), application_type="regular"),
+        _row("CY-PROV", filing_date=date(2026, 2, 5), application_type="provisional"),
+    ]
+    out = compute_filings_by_type(rows, today=date(2026, 4, 30))
+    by_year = {r["year"]: r for r in out["byYear"]}
+
+    assert by_year[2024]["filings"] == 8
+    assert by_year[2024]["isPartial"] is False
+    assert by_year[2024]["byType"]["provisional"] == 1
+    assert by_year[2024]["byType"]["regular"] == 2
+    assert by_year[2024]["byType"]["con"] == 1
+    assert by_year[2024]["byType"]["div"] == 1
+    assert by_year[2024]["byType"]["cip"] == 1
+    assert by_year[2024]["byType"]["design"] == 1
+    assert by_year[2024]["byType"]["other"] == 1
+    # Per-year segment sum equals filings (the chart's invariant).
+    assert sum(by_year[2024]["byType"].values()) == by_year[2024]["filings"]
+
+    assert by_year[2026]["isPartial"] is True
+    assert by_year[2026]["filings"] == 2
+    assert by_year[2026]["byType"]["regular"] == 1
+    assert by_year[2026]["byType"]["provisional"] == 1
+
+    # Year-range fills the gap between min and current year.
+    assert {r["year"] for r in out["byYear"]} == {2024, 2025, 2026}
+    assert by_year[2025]["filings"] == 0
+    assert sum(by_year[2025]["byType"].values()) == 0
+
+    # All seven types appeared somewhere -> all in typesShown, in TYPE_ORDER.
+    assert out["typesShown"] == list(TYPE_ORDER)
+    assert out["totals"]["regular"] == 3
+    assert out["totalFilings"] == 10
+
+
+def test_filings_by_type_null_application_type_falls_back_to_regular() -> None:
+    """Null application_type is bucketed as 'regular' so per-year totals match
+    the headline Filings-by-Year chart byte-for-byte while the backfill is
+    in flight (mirrors classify_application_type_from_xml's fallback).
+    """
+    rows = [
+        _row("X1", filing_date=date(2025, 3, 1), application_type=None),
+        _row("X2", filing_date=date(2025, 4, 1), application_type=""),
+        _row("X3", filing_date=date(2025, 5, 1), application_type="regular"),
+    ]
+    out = compute_filings_by_type(rows, today=date(2026, 1, 1))
+    by_year = {r["year"]: r for r in out["byYear"]}
+    assert by_year[2025]["filings"] == 3
+    assert by_year[2025]["byType"]["regular"] == 3
+    # No other bucket was populated -> typesShown should be just regular.
+    assert out["typesShown"] == ["regular"]
+
+
+def test_filings_by_type_skips_rows_missing_filing_date() -> None:
+    rows = [
+        _row("DATED",   filing_date=date(2025, 3, 1), application_type="regular"),
+        _row("NO-DATE", filing_date=None,             application_type="regular"),
+    ]
+    out = compute_filings_by_type(rows, today=date(2026, 4, 30))
+    by_year = {r["year"]: r for r in out["byYear"]}
+    assert by_year[2025]["filings"] == 1
+    assert out["totalFilings"] == 1
+
+
+def test_filings_by_type_empty_returns_empty_payload() -> None:
+    out = compute_filings_by_type([], today=date(2026, 4, 30))
+    assert out["byYear"] == []
+    assert out["typesShown"] == []
+    assert out["totalFilings"] == 0
+    assert out["currentYear"] == 2026
+
+
+def test_filings_by_foreign_priority_by_year_handles_null_as_no_foreign() -> None:
+    """has_foreign_priority IS NULL is bucketed as withoutForeign — same
+    convention as compute_foreign_priority_share — so per-year totals match
+    the headline Filings-by-Year chart and the share metric.
+    """
+    rows = [
+        _row("F1", filing_date=date(2024, 6, 1), has_foreign_priority=True),
+        _row("F2", filing_date=date(2024, 7, 1), has_foreign_priority=True),
+        _row("D1", filing_date=date(2024, 8, 1), has_foreign_priority=False),
+        _row("N1", filing_date=date(2024, 9, 1), has_foreign_priority=None),
+        _row("CY", filing_date=date(2026, 2, 1), has_foreign_priority=True),
+    ]
+    out = compute_foreign_priority_by_year(rows, today=date(2026, 4, 30))
+    by_year = {r["year"]: r for r in out["byYear"]}
+
+    assert by_year[2024]["filings"] == 4
+    assert by_year[2024]["withForeign"] == 2
+    assert by_year[2024]["withoutForeign"] == 2
+    assert by_year[2024]["isPartial"] is False
+    # Per-year invariant: segments sum to filings.
+    assert by_year[2024]["withForeign"] + by_year[2024]["withoutForeign"] == by_year[2024]["filings"]
+
+    assert by_year[2026]["isPartial"] is True
+    assert by_year[2026]["withForeign"] == 1
+    assert by_year[2026]["withoutForeign"] == 0
+
+    # Cross-check against the existing share metric to confirm semantics
+    # match (4/5 = 60%).
+    share = compute_foreign_priority_share(rows)
+    assert share["pct"] == 60.0
+    assert out["totals"]["withForeign"] == 3
+    assert out["totals"]["withoutForeign"] == 2
+    assert out["totals"]["withForeignPct"] == 60.0
+
+
+def test_filings_by_foreign_priority_empty_returns_empty_payload() -> None:
+    out = compute_foreign_priority_by_year([], today=date(2026, 4, 30))
+    assert out["byYear"] == []
+    assert out["totalFilings"] == 0
+    assert out["totals"]["withForeignPct"] is None
+    assert out["currentYear"] == 2026

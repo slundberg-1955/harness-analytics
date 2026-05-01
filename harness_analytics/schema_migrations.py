@@ -170,7 +170,12 @@ SELECT
     -- still count toward the FAA denominator (closed = patented + abandoned)
     -- because application_status_code lives on `applications` and is
     -- populated independent of the analytics job.
-    (aa.application_id IS NOT NULL) AS has_analytics_row
+    (aa.application_id IS NOT NULL) AS has_analytics_row,
+    -- Filings-by-Type chart bucket: provisional / regular / con / div / cip /
+    -- design / other. Populated at ingest by parse_biblio_xml's classifier
+    -- and backfilled from xml_raw + application_number prefix for legacy
+    -- rows. Appended at the tail to satisfy CREATE OR REPLACE VIEW rules.
+    a.application_type
 FROM applications a
 LEFT JOIN application_analytics aa ON aa.application_id = a.id
 """
@@ -989,6 +994,145 @@ def _backfill_allowance_metrics_once(engine) -> None:
     logger.info("allowance_metrics backfill thread started (daemon)")
 
 
+# Filings-by-Type backfill: bucket each row into one of
+# ``provisional`` / ``regular`` / ``con`` / ``div`` / ``cip`` / ``design`` /
+# ``other`` using application-number prefix (for provisional/design/reissue)
+# plus an xpath probe of the row's own ``ParentContinuity`` entry's
+# ``ContinuityDescription`` for CON/CIP/DIV. Mirrors the Python classifier
+# in ``xml_parser.classify_application_type`` so SQL-backfilled rows match
+# Python-ingested rows. Per-row EXCEPTION isolation keeps a single bad XML
+# from aborting the run; the fallback writes ``regular`` for non-prefix
+# rows when the XML can't be parsed (same conservative behavior as
+# ``classify_application_type_from_xml``).
+_APPLICATION_TYPE_BACKFILL_FLAG = "schema.applicationTypeBackfilled"
+_APPLICATION_TYPE_BACKFILL_SQL = """
+DO $$
+DECLARE
+  r RECORD;
+  v_doc xml;
+  v_kind TEXT;
+  v_desc TEXT;
+  v_done INTEGER := 0;
+BEGIN
+  FOR r IN
+    SELECT id, application_number, xml_raw
+      FROM applications
+     WHERE application_type IS NULL
+  LOOP
+    BEGIN
+      v_kind := NULL;
+
+      -- App-number prefix wins (matches xml_parser._has_prefix order).
+      IF r.application_number ~ '^6[0-3]/' OR r.application_number ~ '^6[0-3][0-9]' THEN
+        v_kind := 'provisional';
+      ELSIF r.application_number ~ '^29/' OR r.application_number ~ '^29[0-9]' THEN
+        v_kind := 'design';
+      ELSIF r.application_number ~ '^(35|90|95|96)/' OR r.application_number ~ '^(35|90|95|96)[0-9]' THEN
+        v_kind := 'other';
+      END IF;
+
+      IF v_kind IS NULL AND r.xml_raw IS NOT NULL AND r.xml_raw <> '' THEN
+        v_doc := xmlparse(content r.xml_raw);
+        SELECT lower(BTRIM(t::text)) INTO v_desc
+          FROM unnest(
+            xpath(
+              '//Continuity/ParentContinuityList/ParentContinuity[
+                 ChildApplicationNumber/text()=$child
+                 and not(starts-with(ParentApplicationNumber/text(), ''PCT''))
+               ]/ContinuityDescription/text()',
+              v_doc,
+              ARRAY[ARRAY['child', r.application_number]]
+            )
+          ) AS t
+         LIMIT 1;
+        IF v_desc IN ('continuation in part', 'continuation-in-part', 'continuation in-part') THEN
+          v_kind := 'cip';
+        ELSIF v_desc IN ('division', 'divisional') THEN
+          v_kind := 'div';
+        ELSIF v_desc = 'continuation' THEN
+          v_kind := 'con';
+        END IF;
+      END IF;
+
+      IF v_kind IS NULL THEN
+        v_kind := 'regular';
+      END IF;
+
+      UPDATE applications SET application_type = v_kind WHERE id = r.id;
+      v_done := v_done + 1;
+    EXCEPTION WHEN OTHERS THEN
+      BEGIN
+        UPDATE applications SET application_type = 'regular' WHERE id = r.id;
+      EXCEPTION WHEN OTHERS THEN
+        NULL;
+      END;
+    END;
+  END LOOP;
+  RAISE NOTICE 'application_type backfill: % rows updated', v_done;
+END $$;
+"""
+
+
+def _set_application_type_backfill_flag(engine) -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO app_settings (key, value, updated_at) "
+                "VALUES (:k, '1', now()) "
+                "ON CONFLICT (key) DO UPDATE SET value = '1', updated_at = now()"
+            ),
+            {"k": _APPLICATION_TYPE_BACKFILL_FLAG},
+        )
+
+
+def _run_application_type_backfill_worker(database_url: str) -> None:
+    engine = create_engine(database_url, pool_pre_ping=True)
+    try:
+        logger.info("Backfilling application_type from xml_raw + app-no prefix (background)…")
+        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            conn.execute(text(_APPLICATION_TYPE_BACKFILL_SQL))
+        _set_application_type_backfill_flag(engine)
+        logger.info("application_type backfill complete")
+    except Exception:
+        logger.exception("application_type backfill failed; will retry on next startup")
+    finally:
+        engine.dispose()
+
+
+def _backfill_application_type_once(engine) -> None:
+    insp = inspect(engine)
+    if not insp.has_table("applications") or not insp.has_table("app_settings"):
+        return
+    cols = {c["name"] for c in insp.get_columns("applications")}
+    if "application_type" not in cols:
+        return
+    with engine.connect() as conn:
+        already = conn.execute(
+            text("SELECT value FROM app_settings WHERE key = :k"),
+            {"k": _APPLICATION_TYPE_BACKFILL_FLAG},
+        ).first()
+        if already and (already[0] or "").strip() in ("1", "true", "yes"):
+            return
+        pending = conn.execute(
+            text("SELECT 1 FROM applications WHERE application_type IS NULL LIMIT 1")
+        ).first()
+    if pending is None:
+        _set_application_type_backfill_flag(engine)
+        return
+
+    database_url = get_database_url()
+    if not database_url:
+        return
+    t = threading.Thread(
+        target=_run_application_type_backfill_worker,
+        args=(database_url,),
+        name="application-type-backfill",
+        daemon=True,
+    )
+    t.start()
+    logger.info("application_type backfill thread started (daemon)")
+
+
 def _ensure_patent_applications_view(engine) -> None:
     insp = inspect(engine)
     if not insp.has_table("applications") or not insp.has_table("application_analytics"):
@@ -1080,6 +1224,12 @@ def ensure_schema_migrations() -> None:
             "tenant_id",
             "TEXT NOT NULL DEFAULT 'global'",
         )
+        _add_column_if_missing(
+            engine,
+            "applications",
+            "application_type",
+            "TEXT",
+        )
         _ensure_auth_tables(engine)
         _ensure_timeline_tables(engine)
         for legacy in (
@@ -1116,6 +1266,7 @@ def ensure_schema_migrations() -> None:
         _backfill_has_child_continuation_once(engine)
         _backfill_earliest_priority_date_once(engine)
         _backfill_allowance_metrics_once(engine)
+        _backfill_application_type_once(engine)
     finally:
         engine.dispose()
 

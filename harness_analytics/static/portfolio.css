@@ -1537,6 +1537,31 @@ tbody tr:focus-visible {
 .at-chart { width: 100%; min-height: 240px; margin-bottom: 18px; }
 .at-chart svg { display: block; width: 100%; height: 240px; }
 
+.at-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 0 0 10px 0;
+  padding: 0 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--slate-700, #334155);
+}
+.at-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.at-legend-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  vertical-align: middle;
+}
+.at-legend-label { color: var(--slate-600, #475569); }
+
 .at-table td.at-col-note,
 .at-table th.at-col-note {
   text-align: left;

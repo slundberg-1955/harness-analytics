@@ -1254,6 +1254,8 @@
     renderAtYearChart(data);
     renderAtYearTable(data);
     renderAtApplicantTable(data);
+    renderAtTypeChart(state.lastData && state.lastData.filingsByType);
+    renderAtForeignPriorityChart(state.lastData && state.lastData.filingsByForeignPriority);
   }
 
   function fmtSignedInt(n) {
@@ -1411,6 +1413,154 @@
         </tr>
       `;
     }).join("");
+  }
+
+  // ---------------------------------------------------------------------
+  // Applicant Trends — Filings by Type (stacked) + Foreign Priority
+  // ---------------------------------------------------------------------
+
+  // Display labels + segment colors for the type stack. Colors mirror the
+  // status-pill palette so the visual language stays consistent across the
+  // app. Order matches portfolio_aggregates.TYPE_ORDER so the renderer's
+  // segment assignment is stable across selections.
+  const AT_TYPE_META = {
+    provisional: { label: "Provisional", color: "#8b5cf6" }, // violet
+    regular:     { label: "Regular",     color: "#2563eb" }, // blue
+    con:         { label: "CON",         color: "#10b981" }, // emerald
+    div:         { label: "DIV",         color: "#f59e0b" }, // amber
+    cip:         { label: "CIP",         color: "#f43f5e" }, // rose
+    design:      { label: "Design",      color: "#0ea5e9" }, // sky
+    other:       { label: "Other",       color: "#94a3b8" }, // slate
+  };
+
+  const AT_FP_META = {
+    withForeign:    { label: "Foreign priority",    color: "#2563eb" },
+    withoutForeign: { label: "No foreign priority", color: "#cbd5e1" },
+  };
+
+  function renderAtLegend(hostId, keys, meta) {
+    const host = document.getElementById(hostId);
+    if (!host) return;
+    if (!keys || !keys.length) { host.innerHTML = ""; return; }
+    host.innerHTML = keys.map((k) => {
+      const m = meta[k];
+      if (!m) return "";
+      return `<span class="at-legend-item">`
+        + `<span class="at-legend-swatch" style="background:${m.color}"></span>`
+        + `<span class="at-legend-label">${escapeHtml(m.label)}</span>`
+        + `</span>`;
+    }).join("");
+  }
+
+  // Shared stacked-bar renderer used by both the Type and Foreign-Priority
+  // charts. ``segmentsFor(row)`` returns an ordered list of
+  // ``{key, label, value, color}`` objects; the renderer stacks them
+  // bottom-up and dashes the partial (current) year so YTD reads as
+  // in-progress without forcing the eye to the legend.
+  function renderAtStackedBarChart(host, rows, segmentsFor, opts) {
+    if (!host) return;
+    if (!rows || !rows.length) {
+      host.innerHTML = `<div class="ext-empty">No filings detected in the current selection.</div>`;
+      return;
+    }
+    const W = 920, H = 240, padL = 56, padR = 24, padT = 18, padB = 40;
+    const innerW = W - padL - padR, innerH = H - padT - padB;
+    const maxV = Math.max(1, ...rows.map((r) => r.filings || 0));
+    const niceMax = (() => {
+      const candidates = [5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000];
+      for (const c of candidates) { if (c >= maxV) return c; }
+      return Math.ceil(maxV / 1000) * 1000;
+    })();
+    const yScale = (v) => padT + innerH - (v / niceMax) * innerH;
+    const bandW = innerW / rows.length;
+    const barW = Math.max(8, Math.min(48, bandW * 0.65));
+
+    const yTicks = [0, 0.25, 0.5, 0.75, 1.0].map((p) => {
+      const v = Math.round(niceMax * p);
+      const y = yScale(v);
+      return `<g><line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="#e2e8f0" stroke-width="1"/>`
+        + `<text x="${padL - 8}" y="${y + 4}" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#64748b">${v.toLocaleString()}</text></g>`;
+    }).join("");
+
+    const bars = rows.map((r, i) => {
+      const cx = padL + bandW * (i + 0.5);
+      const xLeft = cx - barW / 2;
+      const total = r.filings || 0;
+      const segments = segmentsFor(r) || [];
+      let cursor = 0;
+      const segSvg = segments.map((seg) => {
+        const v = seg.value || 0;
+        if (v <= 0) return "";
+        const yTop = yScale(cursor + v);
+        const h = Math.max(1, yScale(cursor) - yTop);
+        cursor += v;
+        const pct = total ? Math.round((100.0 * v / total)) : 0;
+        const tip = `${seg.label}: ${v.toLocaleString()} (${pct}%) of ${total.toLocaleString()} in ${r.year}${r.isPartial ? " YTD" : ""}`;
+        const dashAttr = r.isPartial ? ' stroke-dasharray="3 3" stroke="#1e293b" stroke-width="1"' : "";
+        return `<g><title>${escapeHtml(tip)}</title>`
+          + `<rect x="${xLeft}" y="${yTop}" width="${barW}" height="${h}" fill="${seg.color}"${dashAttr}/></g>`;
+      }).join("");
+      const label = total > 0
+        ? `<text x="${cx}" y="${yScale(total) - 6}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#475569">${total.toLocaleString()}</text>`
+        : "";
+      return `<g>${segSvg}${label}</g>`;
+    }).join("");
+
+    const xLabels = rows.map((r, i) => {
+      const cx = padL + bandW * (i + 0.5);
+      const suffix = r.isPartial ? " YTD" : "";
+      return `<text x="${cx}" y="${H - padB + 18}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#64748b">${r.year}${suffix}</text>`;
+    }).join("");
+
+    host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${yTicks}${bars}${xLabels}</svg>`;
+  }
+
+  function renderAtTypeChart(data) {
+    const host = document.getElementById("at-type-chart");
+    if (!host) return;
+    const rows = (data && data.byYear) || [];
+    const typesShown = (data && data.typesShown) || [];
+    const sub = document.getElementById("at-type-sub");
+    if (sub) {
+      const total = (data && data.totalFilings) || 0;
+      const asOf = (data && data.asOf) || "";
+      const labels = typesShown.length
+        ? typesShown.map((k) => (AT_TYPE_META[k] && AT_TYPE_META[k].label) || k.toUpperCase()).join(" · ")
+        : "PROVISIONAL · REGULAR · CON · DIV · CIP · DESIGN · OTHER";
+      sub.textContent = `${labels} · ${total.toLocaleString()} FILING${total === 1 ? "" : "S"}${asOf ? " · AS OF " + asOf : ""}`;
+    }
+    renderAtLegend("at-type-legend", typesShown, AT_TYPE_META);
+    renderAtStackedBarChart(host, rows, (r) => {
+      return typesShown.map((k) => {
+        const meta = AT_TYPE_META[k] || { label: k, color: "#94a3b8" };
+        return {
+          key: k,
+          label: meta.label,
+          value: (r.byType && r.byType[k]) || 0,
+          color: meta.color,
+        };
+      });
+    });
+  }
+
+  function renderAtForeignPriorityChart(data) {
+    const host = document.getElementById("at-fp-chart");
+    if (!host) return;
+    const rows = (data && data.byYear) || [];
+    const sub = document.getElementById("at-fp-sub");
+    if (sub) {
+      const totals = (data && data.totals) || {};
+      const w = totals.withForeign || 0;
+      const wo = totals.withoutForeign || 0;
+      const pct = totals.withForeignPct;
+      const pctText = pct == null ? "—" : `${pct}%`;
+      sub.textContent = `${w.toLocaleString()} WITH FOREIGN PRIORITY · ${wo.toLocaleString()} WITHOUT · ${pctText} CLAIM FOREIGN PRIORITY`;
+    }
+    renderAtLegend("at-fp-legend", ["withForeign", "withoutForeign"], AT_FP_META);
+    renderAtStackedBarChart(host, rows, (r) => [
+      { key: "withForeign",    label: AT_FP_META.withForeign.label,    value: r.withForeign || 0,    color: AT_FP_META.withForeign.color },
+      { key: "withoutForeign", label: AT_FP_META.withoutForeign.label, value: r.withoutForeign || 0, color: AT_FP_META.withoutForeign.color },
+    ]);
   }
 
   // ---------------------------------------------------------------------
