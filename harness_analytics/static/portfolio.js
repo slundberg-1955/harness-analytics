@@ -114,8 +114,11 @@
     // Allowance tab; they're applied to ``refresh()`` so the API can
     // compute the cohort-windowed KPIs / cohort trend / breakdowns.
     tab: "overview",
-    aaCohortAxis: "filing",
-    aaRecency: "5y",
+    // Allowance Analytics cohort axis is hardcoded to NOA mailed date
+    // (the year the allowance issued) and the recency window is all-time;
+    // the per-tab filter sub-bar was removed per user request.
+    aaCohortAxis: "noa",
+    aaRecency: "all",
     aaCustomStart: "",
     aaCustomEnd: "",
   };
@@ -191,7 +194,6 @@
     hydrateSearchFromUrl();
     renderQuickPresets();
     renderTabs();
-    renderAaSubBar();
     bindGlobalHandlers();
     refresh();
   }
@@ -268,56 +270,11 @@
       refresh();
     });
 
-    // Allowance Analytics sub-bar: cohort axis (segs) + recency window
-    // (pills) auto-apply on click — the previous "stage and click Apply"
-    // model surprised users (the highlight changed but the numbers didn't).
-    // Custom date pair is the one place we still require a manual Apply
-    // because typing into a date input fires multiple change events.
-    function applyAaParams() {
-      setParam("cohortAxis", state.aaCohortAxis === "filing" ? null : state.aaCohortAxis);
-      setParam("recency", state.aaRecency === "5y" ? null : state.aaRecency);
-      setParam("customStart", state.aaRecency === "custom" ? state.aaCustomStart || null : null);
-      setParam("customEnd", state.aaRecency === "custom" ? state.aaCustomEnd || null : null);
-      refresh();
-    }
-    document.getElementById("aa-axis-segs").addEventListener("click", (e) => {
-      const btn = e.target.closest(".seg");
-      if (!btn) return;
-      const axis = btn.getAttribute("data-axis");
-      if (!axis || axis === state.aaCohortAxis) return;
-      state.aaCohortAxis = axis;
-      renderAaSubBar();
-      applyAaParams();
-    });
-    document.getElementById("aa-recency-pills").addEventListener("click", (e) => {
-      const btn = e.target.closest(".aa-pill");
-      if (!btn) return;
-      const r = btn.getAttribute("data-recency");
-      if (!r || r === state.aaRecency) return;
-      const wasCustom = state.aaRecency === "custom";
-      state.aaRecency = r;
-      renderAaSubBar();
-      // "custom" reveals the date pair but does not refetch yet — wait for
-      // the user to fill the inputs and click Apply. Switching AWAY from
-      // custom (e.g. back to 5y) refetches immediately so the displayed
-      // window matches the highlighted pill.
-      if (r !== "custom") applyAaParams();
-      else if (wasCustom) applyAaParams();
-    });
-    document.getElementById("aa-custom-start").addEventListener("change", (e) => {
-      state.aaCustomStart = e.target.value || "";
-    });
-    document.getElementById("aa-custom-end").addEventListener("change", (e) => {
-      state.aaCustomEnd = e.target.value || "";
-    });
-    document.getElementById("aa-apply-btn").addEventListener("click", applyAaParams);
-
     window.addEventListener("popstate", () => {
       hydrateSearchFromUrl();
       renderFilterChips();
       renderQuickPresets();
       renderTabs();
-      renderAaSubBar();
       refresh();
     });
 
@@ -528,10 +485,11 @@
   }
 
   // ---------------------------------------------------------------------
-  // Allowance Analytics tab — sub-bar + content rendering
+  // Allowance Analytics tab — content rendering. The per-tab filter
+  // sub-bar (cohort axis + recency window) was removed; cohort axis is
+  // hardcoded to NOA mailed date and the window is all-time.
   // ---------------------------------------------------------------------
   function renderAllowanceTab() {
-    renderAaSubBar();
     renderAaScopeLine();
     renderAaPrimary();
     renderAaTrendChart();
@@ -636,25 +594,6 @@
     if (closeBtn) closeBtn.addEventListener("click", () => host.remove());
   }
   // #endregion
-
-  function renderAaSubBar() {
-    document.querySelectorAll("#aa-axis-segs .seg").forEach((b) => {
-      const on = b.getAttribute("data-axis") === state.aaCohortAxis;
-      b.classList.toggle("active", on);
-      b.setAttribute("aria-pressed", on ? "true" : "false");
-    });
-    document.querySelectorAll("#aa-recency-pills .aa-pill").forEach((b) => {
-      const on = b.getAttribute("data-recency") === state.aaRecency;
-      b.classList.toggle("active", on);
-      b.setAttribute("aria-pressed", on ? "true" : "false");
-    });
-    const customRow = document.getElementById("aa-custom-range");
-    if (customRow) customRow.hidden = state.aaRecency !== "custom";
-    const cs = document.getElementById("aa-custom-start");
-    const ce = document.getElementById("aa-custom-end");
-    if (cs && cs.value !== state.aaCustomStart) cs.value = state.aaCustomStart || "";
-    if (ce && ce.value !== state.aaCustomEnd) ce.value = state.aaCustomEnd || "";
-  }
 
   function renderAaScopeLine() {
     const el = document.getElementById("aa-scope-line");

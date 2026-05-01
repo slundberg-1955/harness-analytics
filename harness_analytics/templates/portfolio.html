@@ -172,39 +172,10 @@
 
       <!-- ============== Allowance Analytics tab (NEW, spec v2) ============== -->
       <section class="tab-pane" data-tab="allowance" role="tabpanel" hidden>
-        <!-- Analytics-specific filter bar (cohort axis + recency window).
-             Only scopes the cards on this tab; the global filter bar above
-             continues to scope every tab. -->
-        <div class="aa-filter-bar">
-          <div class="aa-filter-group">
-            <span class="aa-filter-label">Cohort Axis</span>
-            <div class="seg-row" id="aa-axis-segs" role="group" aria-label="Cohort axis">
-              <button type="button" class="seg active" data-axis="filing"   aria-pressed="true">Filing Date</button>
-              <button type="button" class="seg"        data-axis="disposal" aria-pressed="false">Disposal Date</button>
-              <button type="button" class="seg"        data-axis="noa"      aria-pressed="false">NOA Date</button>
-            </div>
-          </div>
-          <div class="aa-filter-group">
-            <span class="aa-filter-label">Recency Window</span>
-            <div class="pill-row" id="aa-recency-pills" role="group" aria-label="Recency window">
-              <button type="button" class="aa-pill"        data-recency="3y"     aria-pressed="false">Last 3 yrs</button>
-              <button type="button" class="aa-pill active" data-recency="5y"     aria-pressed="true">Last 5 yrs</button>
-              <button type="button" class="aa-pill"        data-recency="10y"    aria-pressed="false">Last 10 yrs</button>
-              <button type="button" class="aa-pill"        data-recency="all"    aria-pressed="false">All time</button>
-              <button type="button" class="aa-pill"        data-recency="custom" aria-pressed="false">Custom…</button>
-            </div>
-          </div>
-          <div class="aa-filter-group" id="aa-custom-range" hidden>
-            <span class="aa-filter-label">Custom Range</span>
-            <div class="aa-date-pair">
-              <input type="date" id="aa-custom-start" class="aa-date-input">
-              <span class="aa-date-arrow" aria-hidden="true">→</span>
-              <input type="date" id="aa-custom-end" class="aa-date-input">
-            </div>
-          </div>
-          <button type="button" class="btn aa-apply-btn" id="aa-apply-btn" title="Recompute with the typed custom date range. Cohort-axis and recency-window pills auto-apply on click.">Apply Custom Range</button>
-        </div>
-
+        <!-- Cohort axis is hardcoded to NOA mail-date (the year an
+             allowance issued). All other knobs were removed per user
+             request — the global filter bar above is the single source
+             of scoping. -->
         <div class="aa-scope-line" id="aa-scope-line" aria-live="polite"></div>
 
         <!-- Primary 5-up KPI strip: Allowed after 0 / 1 / 2 / 3 / 4+ actions -->
