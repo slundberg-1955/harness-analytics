@@ -1457,15 +1457,39 @@ tbody tr:focus-visible {
   color: var(--slate-500);
 }
 
-/* Drill-down click affordance for the four YTD-projection charts.
-   Applied per-leaf via JS so unrelated SVG groups don't pick up the
-   cursor or hover effect. */
-.drillable-bar {
-  cursor: pointer;
-  transition: filter 0.1s ease;
+/* Per-card Year / Quarter / Month grain toggle for the four
+   YTD-projection charts. Sits on the right of the card-head; one
+   toggle per chart (independent state across charts). */
+.card-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
-.drillable-bar:hover {
-  filter: brightness(1.08);
+.grain-toggle {
+  display: inline-flex;
+  border: 1px solid var(--slate-200);
+  border-radius: 6px;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.grain-toggle button {
+  background: transparent;
+  border: 0;
+  padding: 4px 10px;
+  color: var(--slate-600);
+  cursor: pointer;
+  border-right: 1px solid var(--slate-200);
+  font-family: inherit;
+  font-size: inherit;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.grain-toggle button:last-child { border-right: 0; }
+.grain-toggle button:hover:not(.active) { background: var(--slate-50); }
+.grain-toggle button.active {
+  background: var(--blue-600, #2563eb);
+  color: #fff;
 }
 
 .ext-table-wrap {

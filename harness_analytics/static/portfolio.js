@@ -121,15 +121,16 @@
     aaRecency: "all",
     aaCustomStart: "",
     aaCustomEnd: "",
-    // Per-chart year-drill state for the four YTD-projection charts.
-    // Shape: { [chartKey]: { [year]: { level: 'quarter', expandedQuarters: { [q]: true } } } }
-    // Missing entry == year-level (default). Click handlers mutate this in
-    // place and re-render only the affected chart.
-    drillState: {
-      filingsByYear: {},
-      filingsByType: {},
-      filingsByForeignPriority: {},
-      extensionsByYear: {},
+    // Per-chart time-grain selector for the four YTD-projection charts.
+    // One of "year" / "quarter" / "month". The grain toggle in each card-
+    // head mutates this in place and re-renders only the affected chart;
+    // each chart keeps its own grain so toggling Filings by Year doesn't
+    // disturb Extensions.
+    viewGrain: {
+      filingsByYear: "year",
+      filingsByType: "year",
+      filingsByForeignPriority: "year",
+      extensionsByYear: "year",
     },
   };
 
@@ -1094,18 +1095,17 @@
     const yearRows = (data && data.byYear) || [];
     if (!yearRows.length) {
       host.innerHTML = `<div class="ext-empty">No extensions of time detected in the current selection.</div>`;
-      host.onclick = null;
       return;
     }
     const W = 920, H = 296, padL = 56, padR = 24, padT = 18, padB = 56;
     const innerW = W - padL - padR, innerH = H - padT - padB;
     const today = new Date();
-    const drill = state.drillState.extensionsByYear;
-    const leaves = expandRowsForDrill(
+    const grain = state.viewGrain.extensionsByYear;
+    const leaves = expandRowsForGrain(
       yearRows,
       (data && data.byQuarter) || [],
       (data && data.byMonth) || [],
-      drill,
+      grain,
     );
     const enriched = leaves.map((lf) => {
       const total = (lf.row && lf.row.total) || 0;
@@ -1192,12 +1192,7 @@
       const totalLabel = total > 0 && labelFont
         ? `<text x="${cx}" y="${labelY}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="${labelFont}" fill="#475569">${labelText}</text>`
         : "";
-      const action = leaf.kind === "year"
-        ? "drillYear"
-        : leaf.kind === "quarter" ? "drillQuarter" : "collapseMonth";
-      const qAttr = leaf.parentQuarter ? ` data-drill-quarter="${leaf.parentQuarter}"` : "";
-      return `<g class="drillable-bar" data-drill-action="${action}" data-drill-year="${leaf.parentYear}"${qAttr}>`
-        + `<title>${escapeHtml(tip)}</title>${segs.join("")}${totalLabel}</g>`;
+      return `<g><title>${escapeHtml(tip)}</title>${segs.join("")}${totalLabel}</g>`;
     }).join("");
 
     const subLabels = layout
@@ -1209,25 +1204,15 @@
       if (!yearGroups.has(item.leaf.parentYear)) yearGroups.set(item.leaf.parentYear, item);
     }
     const yearLabels = Array.from(yearGroups.entries()).map(([yr, item]) => {
-      const expanded = !!drill[yr];
       const cx = item.groupX + item.groupW / 2;
-      const labelY = H - padB + (expanded ? 30 : 18);
-      const isCurrentYearUnexpanded = !expanded && item.leaf.kind === "year" && item.leaf.isPartial;
-      const suffix = isCurrentYearUnexpanded ? " YTD" : "";
-      const collapseAttrs = expanded
-        ? ` data-drill-action="collapseYear" data-drill-year="${yr}" style="cursor:pointer"`
-        : "";
-      const arrow = expanded ? ' <tspan font-size="9" fill="#94a3b8">collapse</tspan>' : "";
-      return `<g${collapseAttrs}>`
-        + (expanded
-          ? `<rect x="${item.groupX}" y="${labelY - 12}" width="${item.groupW}" height="20" fill="transparent"/>`
-          : "")
-        + `<text x="${cx}" y="${labelY}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#64748b">${yr}${suffix}${arrow}</text>`
-        + `</g>`;
+      const labelY = H - padB + (grain === "year" ? 18 : 30);
+      const isCurrentYearAtYearGrain = grain === "year" && item.leaf.kind === "year" && item.leaf.isPartial;
+      const suffix = isCurrentYearAtYearGrain ? " YTD" : "";
+      return `<text x="${cx}" y="${labelY}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#64748b">${yr}${suffix}</text>`;
     }).join("");
 
     host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${yTicks}${bars}${subLabels}${yearLabels}</svg>`;
-    wireDrillClicks(host, "extensionsByYear", () => {
+    wireGrainToggle(host.closest(".card"), "extensionsByYear", () => {
       renderExtensionsChart(state.lastData && state.lastData.extensionsByYear);
     });
   }
@@ -1375,117 +1360,81 @@
     );
   }
 
-  // ---- Drill-down helpers ------------------------------------------------
+  // ---- Grain-toggle helpers ----------------------------------------------
   //
-  // ``expandRowsForDrill`` flattens (yearRows, quarterRows, monthRows) into
-  // a single ordered "leaves" array based on the per-chart drill state.
-  // Each leaf carries enough context (kind, parentYear, parentQuarter,
-  // periodStart/End, payload) for the renderer to draw it without
-  // re-deriving anything. ``drillBandLayout`` then takes the leaves + the
-  // chart's plot rect and assigns each leaf an x-position / width inside
-  // its parent year's band so expanded years stay aligned with collapsed
-  // ones.
-  //
-  // Year-group widths are uniform regardless of how many sub-bars they
-  // contain — that keeps 2024's slot the same width whether it's drilled
-  // or not, which is what makes the drill feel like a true zoom-in.
+  // ``expandRowsForGrain`` flattens (yearRows, quarterRows, monthRows) into
+  // a single ordered "leaves" array at the chart's currently-selected
+  // grain. Each leaf carries enough context (kind, parentYear,
+  // parentQuarter, periodStart/End, payload) for the renderer to draw it
+  // without re-deriving anything. ``drillBandLayout`` then takes the
+  // leaves + the chart's plot rect and assigns each leaf an x-position /
+  // width grouped by parent year so year boundaries stay visually clear.
 
   const _MONTH_LABELS = ["J", "F", "M", "A", "M", "J", "J", "A", "S", "O", "N", "D"];
 
-  function expandRowsForDrill(yearRows, quarterRows, monthRows, drillState) {
-    const qByKey = Object.create(null);
-    for (const q of quarterRows || []) qByKey[`${q.year}-${q.quarter}`] = q;
-    const mByKey = Object.create(null);
-    for (const m of monthRows || []) mByKey[`${m.year}-${m.month}`] = m;
+  function expandRowsForGrain(yearRows, quarterRows, monthRows, grain) {
     const leaves = [];
-    for (const yr of yearRows || []) {
-      const ds = (drillState || {})[yr.year];
-      const expanded = ds && ds.level === "quarter";
-      if (!expanded) {
+    if (grain === "month") {
+      for (const m of monthRows || []) {
         leaves.push({
-          kind: "year",
-          parentYear: yr.year,
-          row: yr,
-          periodStart: new Date(yr.year, 0, 1),
-          periodEnd: new Date(yr.year + 1, 0, 1),
-          isPartial: yr.isPartial === true,
+          kind: "month",
+          parentYear: m.year,
+          parentQuarter: Math.floor((m.month - 1) / 3) + 1,
+          row: m,
+          periodStart: new Date(m.year, m.month - 1, 1),
+          periodEnd: new Date(m.year, m.month, 1),
+          isPartial: m.isPartial === true,
+          labelShort: _MONTH_LABELS[m.month - 1],
         });
-        continue;
       }
-      const expandedQs = (ds && ds.expandedQuarters) || {};
-      for (let q = 1; q <= 4; q++) {
-        const qRow = qByKey[`${yr.year}-${q}`] || { year: yr.year, quarter: q, filings: 0, isPartial: false };
-        const qStart = new Date(yr.year, (q - 1) * 3, 1);
-        const qEnd = new Date(yr.year, q * 3, 1);
-        if (expandedQs[q]) {
-          for (let m = (q - 1) * 3 + 1; m <= q * 3; m++) {
-            const mRow = mByKey[`${yr.year}-${m}`] || { year: yr.year, month: m, filings: 0, isPartial: false };
-            leaves.push({
-              kind: "month",
-              parentYear: yr.year,
-              parentQuarter: q,
-              row: mRow,
-              periodStart: new Date(yr.year, m - 1, 1),
-              periodEnd: new Date(yr.year, m, 1),
-              isPartial: mRow.isPartial === true,
-              labelShort: _MONTH_LABELS[m - 1],
-            });
-          }
-        } else {
-          leaves.push({
-            kind: "quarter",
-            parentYear: yr.year,
-            parentQuarter: q,
-            row: qRow,
-            periodStart: qStart,
-            periodEnd: qEnd,
-            isPartial: qRow.isPartial === true,
-            labelShort: `Q${q}`,
-          });
-        }
+      return leaves;
+    }
+    if (grain === "quarter") {
+      for (const q of quarterRows || []) {
+        leaves.push({
+          kind: "quarter",
+          parentYear: q.year,
+          parentQuarter: q.quarter,
+          row: q,
+          periodStart: new Date(q.year, (q.quarter - 1) * 3, 1),
+          periodEnd: new Date(q.year, q.quarter * 3, 1),
+          isPartial: q.isPartial === true,
+          labelShort: `Q${q.quarter}`,
+        });
       }
+      return leaves;
+    }
+    for (const y of yearRows || []) {
+      leaves.push({
+        kind: "year",
+        parentYear: y.year,
+        row: y,
+        periodStart: new Date(y.year, 0, 1),
+        periodEnd: new Date(y.year + 1, 0, 1),
+        isPartial: y.isPartial === true,
+      });
     }
     return leaves;
   }
 
-  // Click semantics: year -> drill to quarters; quarter -> drill that
-  // quarter to months; month -> collapse the quarter back to quarter
-  // level; clicking the year axis label of an expanded year collapses it
-  // back to year. A no-op fallthrough is harmless if the user clicks twice
-  // in flight while a re-render is pending.
-  function drillCycle(chartKey, action, year, quarter) {
-    const drill = state.drillState[chartKey] || (state.drillState[chartKey] = {});
-    if (action === "drillYear") {
-      drill[year] = { level: "quarter", expandedQuarters: {} };
-    } else if (action === "drillQuarter") {
-      const ys = drill[year] || { level: "quarter", expandedQuarters: {} };
-      ys.level = "quarter";
-      ys.expandedQuarters = ys.expandedQuarters || {};
-      ys.expandedQuarters[quarter] = true;
-      drill[year] = ys;
-    } else if (action === "collapseMonth") {
-      const ys = drill[year];
-      if (ys && ys.expandedQuarters) {
-        delete ys.expandedQuarters[quarter];
-      }
-    } else if (action === "collapseYear") {
-      delete drill[year];
+  // Wire the per-card grain toggle. Reflects current state.viewGrain on
+  // mount (so re-renders keep the active button in sync) and mutates +
+  // re-renders on click. Scoped to a single card so chart-key state is
+  // independent across the four affected charts.
+  function wireGrainToggle(cardEl, chartKey, rerender) {
+    if (!cardEl) return;
+    const toggle = cardEl.querySelector(".grain-toggle");
+    if (!toggle) return;
+    const current = state.viewGrain[chartKey] || "year";
+    for (const btn of toggle.querySelectorAll("button[data-grain]")) {
+      btn.classList.toggle("active", btn.dataset.grain === current);
     }
-  }
-
-  // Wire up a single delegated click handler per chart host. The renderer
-  // tags each interactive element with data-* attrs so this stays
-  // chart-agnostic.
-  function wireDrillClicks(host, chartKey, rerender) {
-    if (!host) return;
-    host.onclick = (e) => {
-      const t = e.target.closest("[data-drill-action]");
-      if (!t) return;
-      const action = t.dataset.drillAction;
-      const year = parseInt(t.dataset.drillYear, 10);
-      const quarter = t.dataset.drillQuarter ? parseInt(t.dataset.drillQuarter, 10) : null;
-      if (!Number.isFinite(year)) return;
-      drillCycle(chartKey, action, year, quarter);
+    toggle.onclick = (e) => {
+      const btn = e.target.closest("button[data-grain]");
+      if (!btn || !toggle.contains(btn)) return;
+      const grain = btn.dataset.grain;
+      if (!grain || grain === state.viewGrain[chartKey]) return;
+      state.viewGrain[chartKey] = grain;
       rerender();
     };
   }
@@ -1543,18 +1492,17 @@
     const yearRows = (data && data.byYear) || [];
     if (!yearRows.length) {
       host.innerHTML = `<div class="ext-empty">No filings detected in the current selection.</div>`;
-      host.onclick = null;
       return;
     }
     const W = 920, H = 250, padL = 56, padR = 24, padT = 18, padB = 50;
     const innerW = W - padL - padR, innerH = H - padT - padB;
     const today = new Date();
-    const drill = state.drillState.filingsByYear;
-    const leaves = expandRowsForDrill(
+    const grain = state.viewGrain.filingsByYear;
+    const leaves = expandRowsForGrain(
       yearRows,
       (data && data.byQuarter) || [],
       (data && data.byMonth) || [],
-      drill,
+      grain,
     );
     const enriched = leaves.map((lf) => {
       const actual = (lf.row && lf.row.filings) || 0;
@@ -1613,11 +1561,7 @@
       const label = v > 0 && labelFont
         ? `<text x="${cx}" y="${labelY}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="${labelFont}" fill="#475569">${labelText}</text>`
         : "";
-      const action = leaf.kind === "year"
-        ? "drillYear"
-        : leaf.kind === "quarter" ? "drillQuarter" : "collapseMonth";
-      const qAttr = leaf.parentQuarter ? ` data-drill-quarter="${leaf.parentQuarter}"` : "";
-      return `<g class="drillable-bar" data-drill-action="${action}" data-drill-year="${leaf.parentYear}"${qAttr}>`
+      return `<g>`
         + `<title>${escapeHtml(tip)}</title>`
         + `<rect x="${x}" y="${yTop}" width="${w}" height="${h}" fill="${fill}" stroke="${stroke}" stroke-width="1.5"${dashAttr}/>`
         + projOverlay
@@ -1625,9 +1569,9 @@
         + `</g>`;
     }).join("");
 
-    // One sub-label (Q1..Q4 or J/F/M/...) under each sub-bar, plus one
-    // year label per year-group anchored under its band. The year label
-    // doubles as a "click to collapse" target when its year is expanded.
+    // One sub-label (Q1..Q4 or J/F/M/...) under each sub-bar when grain
+    // != year, plus one year label per year-group anchored under its
+    // band. Year labels are static (toggle drives grain, not clicks).
     const subLabels = layout
       .filter(({ leaf }) => leaf.kind !== "year")
       .map(({ leaf, cx }) => `<text x="${cx}" y="${H - padB + 14}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="9" fill="#94a3b8">${leaf.labelShort}</text>`)
@@ -1637,28 +1581,17 @@
       if (!yearGroups.has(item.leaf.parentYear)) yearGroups.set(item.leaf.parentYear, item);
     }
     const yearLabels = Array.from(yearGroups.entries()).map(([yr, item]) => {
-      const expanded = !!drill[yr];
       const cx = item.groupX + item.groupW / 2;
-      const labelY = H - padB + (expanded ? 30 : 18);
-      const yearTextY = labelY;
-      // Show " YTD" only on the unexpanded current-year leaf so the suffix
-      // doesn't lie when the user is looking at quarter-level Q2 detail.
-      const isCurrentYearUnexpanded = !expanded && item.leaf.kind === "year" && item.leaf.isPartial;
-      const suffix = isCurrentYearUnexpanded ? " YTD" : "";
-      const collapseAttrs = expanded
-        ? ` data-drill-action="collapseYear" data-drill-year="${yr}" style="cursor:pointer"`
-        : "";
-      const arrow = expanded ? ' <tspan font-size="9" fill="#94a3b8">collapse</tspan>' : "";
-      return `<g${collapseAttrs}>`
-        + (expanded
-          ? `<rect x="${item.groupX}" y="${labelY - 12}" width="${item.groupW}" height="20" fill="transparent"/>`
-          : "")
-        + `<text x="${cx}" y="${yearTextY}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#64748b">${yr}${suffix}${arrow}</text>`
-        + `</g>`;
+      const labelY = H - padB + (grain === "year" ? 18 : 30);
+      // Show " YTD" only when the year is rendered as a single bar
+      // (grain=year) so the suffix doesn't lie at quarter / month grain.
+      const isCurrentYearAtYearGrain = grain === "year" && item.leaf.kind === "year" && item.leaf.isPartial;
+      const suffix = isCurrentYearAtYearGrain ? " YTD" : "";
+      return `<text x="${cx}" y="${labelY}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#64748b">${yr}${suffix}</text>`;
     }).join("");
 
     host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${yTicks}${bars}${subLabels}${yearLabels}</svg>`;
-    wireDrillClicks(host, "filingsByYear", () => {
+    wireGrainToggle(host.closest(".card"), "filingsByYear", () => {
       renderAtYearChart(state.lastData && state.lastData.applicantTrends);
     });
   }
@@ -1789,26 +1722,26 @@
   // ``{key, label, value, color}`` objects; the renderer stacks them
   // bottom-up and dashes the partial period bar so YTD/PTD/MTD reads as
   // in-progress without forcing the eye to the legend. ``data`` carries
-  // the full backend payload so the renderer can drill into byQuarter /
-  // byMonth on click; ``chartKey`` selects the drill-state slot and
-  // ``rerender`` is the entry point used after a click mutates state.
+  // the full backend payload so the renderer can pivot to byQuarter /
+  // byMonth at the user's selected grain; ``chartKey`` selects the
+  // viewGrain slot and ``rerender`` is the entry point used after the
+  // grain toggle mutates state.
   function renderAtStackedBarChart(host, data, segmentsFor, chartKey, rerender) {
     if (!host) return;
     const yearRows = (data && data.byYear) || [];
     if (!yearRows.length) {
       host.innerHTML = `<div class="ext-empty">No filings detected in the current selection.</div>`;
-      host.onclick = null;
       return;
     }
     const W = 920, H = 250, padL = 56, padR = 24, padT = 18, padB = 50;
     const innerW = W - padL - padR, innerH = H - padT - padB;
     const today = new Date();
-    const drill = state.drillState[chartKey];
-    const leaves = expandRowsForDrill(
+    const grain = state.viewGrain[chartKey] || "year";
+    const leaves = expandRowsForGrain(
       yearRows,
       (data && data.byQuarter) || [],
       (data && data.byMonth) || [],
-      drill,
+      grain,
     );
     const enriched = leaves.map((lf) => {
       const total = (lf.row && lf.row.filings) || 0;
@@ -1884,11 +1817,7 @@
       const label = total > 0 && labelFont
         ? `<text x="${cx}" y="${labelTop}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="${labelFont}" fill="#475569">${labelText}</text>`
         : "";
-      const action = leaf.kind === "year"
-        ? "drillYear"
-        : leaf.kind === "quarter" ? "drillQuarter" : "collapseMonth";
-      const qAttr = leaf.parentQuarter ? ` data-drill-quarter="${leaf.parentQuarter}"` : "";
-      return `<g class="drillable-bar" data-drill-action="${action}" data-drill-year="${leaf.parentYear}"${qAttr}>${segSvg}${label}</g>`;
+      return `<g>${segSvg}${label}</g>`;
     }).join("");
 
     const subLabels = layout
@@ -1900,25 +1829,15 @@
       if (!yearGroups.has(item.leaf.parentYear)) yearGroups.set(item.leaf.parentYear, item);
     }
     const yearLabels = Array.from(yearGroups.entries()).map(([yr, item]) => {
-      const expanded = !!drill[yr];
       const cx = item.groupX + item.groupW / 2;
-      const labelY = H - padB + (expanded ? 30 : 18);
-      const isCurrentYearUnexpanded = !expanded && item.leaf.kind === "year" && item.leaf.isPartial;
-      const suffix = isCurrentYearUnexpanded ? " YTD" : "";
-      const collapseAttrs = expanded
-        ? ` data-drill-action="collapseYear" data-drill-year="${yr}" style="cursor:pointer"`
-        : "";
-      const arrow = expanded ? ' <tspan font-size="9" fill="#94a3b8">collapse</tspan>' : "";
-      return `<g${collapseAttrs}>`
-        + (expanded
-          ? `<rect x="${item.groupX}" y="${labelY - 12}" width="${item.groupW}" height="20" fill="transparent"/>`
-          : "")
-        + `<text x="${cx}" y="${labelY}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#64748b">${yr}${suffix}${arrow}</text>`
-        + `</g>`;
+      const labelY = H - padB + (grain === "year" ? 18 : 30);
+      const isCurrentYearAtYearGrain = grain === "year" && item.leaf.kind === "year" && item.leaf.isPartial;
+      const suffix = isCurrentYearAtYearGrain ? " YTD" : "";
+      return `<text x="${cx}" y="${labelY}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#64748b">${yr}${suffix}</text>`;
     }).join("");
 
     host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${yTicks}${bars}${subLabels}${yearLabels}</svg>`;
-    wireDrillClicks(host, chartKey, rerender);
+    wireGrainToggle(host.closest(".card"), chartKey, rerender);
   }
 
   function renderAtTypeChart(data) {

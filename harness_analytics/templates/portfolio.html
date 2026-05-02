@@ -314,10 +314,17 @@
               <div class="card-title">Extensions of Time by Year</div>
               <div class="card-sub" id="ext-sub">YEAR THE LATE RESPONSE WAS FILED · CTNF/CTFR &gt; 3 MONTHS · RESTRICTION &gt; 2 MONTHS</div>
             </div>
-            <div class="ext-legend" aria-hidden="true">
-              <span class="ext-leg-item"><span class="ext-leg-swatch ext-leg-swatch-ctnf"></span>CTNF</span>
-              <span class="ext-leg-item"><span class="ext-leg-swatch ext-leg-swatch-ctfr"></span>CTFR</span>
-              <span class="ext-leg-item"><span class="ext-leg-swatch ext-leg-swatch-ctrs"></span>Restriction</span>
+            <div class="card-head-actions">
+              <div class="ext-legend" aria-hidden="true">
+                <span class="ext-leg-item"><span class="ext-leg-swatch ext-leg-swatch-ctnf"></span>CTNF</span>
+                <span class="ext-leg-item"><span class="ext-leg-swatch ext-leg-swatch-ctfr"></span>CTFR</span>
+                <span class="ext-leg-item"><span class="ext-leg-swatch ext-leg-swatch-ctrs"></span>Restriction</span>
+              </div>
+              <div class="grain-toggle" role="group" aria-label="Time grain">
+                <button type="button" data-grain="year" class="active">Year</button>
+                <button type="button" data-grain="quarter">Quarter</button>
+                <button type="button" data-grain="month">Month</button>
+              </div>
             </div>
           </div>
           <div class="card-body">
@@ -383,9 +390,9 @@
               YTD; the lighter dashed extension above the bar is a linear
               projection (actual ÷ fraction of year elapsed) of the
               full-year total, distributed across CTNF/CTFR/Restriction
-              segments in the same proportions as the YTD actuals.
-              Click a year bar to drill into quarters; click a quarter to
-              drill into months. Click an expanded year's label to collapse.
+              segments in the same proportions as the YTD actuals. Use the
+              Year/Quarter/Month toggle above the chart to change the time
+              grain; the projection overlay adapts to the active grain.
             </div>
           </div>
         </div>
@@ -398,6 +405,11 @@
             <div>
               <div class="card-title">Filings by Year</div>
               <div class="card-sub" id="at-year-sub">YEAR THE APPLICATION WAS FILED · CURRENT YEAR IS YTD</div>
+            </div>
+            <div class="grain-toggle" role="group" aria-label="Time grain">
+              <button type="button" data-grain="year" class="active">Year</button>
+              <button type="button" data-grain="quarter">Quarter</button>
+              <button type="button" data-grain="month">Month</button>
             </div>
           </div>
           <div class="card-body">
@@ -423,9 +435,9 @@
               extension above the YTD bar is a linear projection of the
               full-year total (actual ÷ fraction of year elapsed); it's
               hidden in the first ~18 days of January when the day-of-year
-              denominator is too small to be meaningful.
-              Click a year bar to drill into quarters; click a quarter to
-              drill into months. Click an expanded year's label to collapse.
+              denominator is too small to be meaningful. Use the
+              Year/Quarter/Month toggle above the chart to change the time
+              grain; the projection overlay adapts to the active grain.
             </div>
           </div>
         </div>
@@ -435,6 +447,11 @@
             <div>
               <div class="card-title">Filings by Type</div>
               <div class="card-sub" id="at-type-sub">PROVISIONAL · REGULAR · CON · DIV · CIP · DESIGN · OTHER</div>
+            </div>
+            <div class="grain-toggle" role="group" aria-label="Time grain">
+              <button type="button" data-grain="year" class="active">Year</button>
+              <button type="button" data-grain="quarter">Quarter</button>
+              <button type="button" data-grain="month">Month</button>
             </div>
           </div>
           <div class="card-body">
@@ -453,9 +470,9 @@
               chart above. The current calendar year is YTD; the lighter
               dashed extension above each segment is a linear projection
               of the full-year total, distributed across types in the
-              same proportions as the YTD actuals.
-              Click a year bar to drill into quarters; click a quarter to
-              drill into months. Click an expanded year's label to collapse.
+              same proportions as the YTD actuals. Use the
+              Year/Quarter/Month toggle above the chart to change the time
+              grain; the projection overlay adapts to the active grain.
             </div>
           </div>
         </div>
@@ -465,6 +482,11 @@
             <div>
               <div class="card-title">Foreign Priority</div>
               <div class="card-sub" id="at-fp-sub">CASES CLAIMING NON-US PRIORITY VS. NO FOREIGN PRIORITY</div>
+            </div>
+            <div class="grain-toggle" role="group" aria-label="Time grain">
+              <button type="button" data-grain="year" class="active">Year</button>
+              <button type="button" data-grain="quarter">Quarter</button>
+              <button type="button" data-grain="month">Month</button>
             </div>
           </div>
           <div class="card-body">
@@ -480,9 +502,9 @@
               Filings by Year chart above. The current calendar year is YTD;
               the lighter dashed extension above each segment is a linear
               projection (actual ÷ fraction of year elapsed) of the
-              full-year total.
-              Click a year bar to drill into quarters; click a quarter to
-              drill into months. Click an expanded year's label to collapse.
+              full-year total. Use the Year/Quarter/Month toggle above the
+              chart to change the time grain; the projection overlay
+              adapts to the active grain.
             </div>
           </div>
         </div>
