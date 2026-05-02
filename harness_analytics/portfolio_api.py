@@ -520,10 +520,27 @@ def _iso(v: Any) -> Optional[str]:
 #                  filed during prosecution after a CTRS / CTNF / CTFR
 #                  caps the CTRS horizon, even when the REM was actually
 #                  responding to a later merits OA).
+# ELC. / ELECTION — applicant Election filed in response to a Restriction
+#                  Requirement. classifier.EVENT_TYPE_MAP doesn't surface
+#                  Elections as RESPONSE_NONFINAL/FINAL/RCE, so without
+#                  pulling these IFW codes the extension calculator never
+#                  sees the actual CTRS response and would either credit a
+#                  far-later merits response back to the CTRS or drop the
+#                  row entirely. Treated like REM for the CTRS only.
 #
 # The CTNF outcome chart only consumes the CTNF/CTFR/NOA subset, so the
-# extra CTRS / N.APP / REM rows are ignored by ``extract_outcomes_from_grouped_events``.
-_EXTENSION_LADDER_DOC_CODES: tuple[str, ...] = ("CTNF", "CTFR", "CTRS", "NOA", "N.APP", "REM")
+# extra CTRS / N.APP / REM / ELC. / ELECTION rows are ignored by
+# ``extract_outcomes_from_grouped_events``.
+_EXTENSION_LADDER_DOC_CODES: tuple[str, ...] = (
+    "CTNF",
+    "CTFR",
+    "CTRS",
+    "NOA",
+    "N.APP",
+    "REM",
+    "ELC.",
+    "ELECTION",
+)
 
 
 def _fetch_extension_inputs(
@@ -535,18 +552,30 @@ def _fetch_extension_inputs(
     The shape matches ``ctnf_outcome.extract_outcomes_from_grouped_events``::
 
         {app_id: {"ctnf": [...], "ctfr": [...], "ctrs": [...],
-                  "noa":  [...], "response": [...]}}
+                  "noa":  [...], "response": [...],
+                  "rem":  [...], "elc": [...]}}
 
     ``response`` collects RESPONSE_NONFINAL / RESPONSE_FINAL / RCE
     transactions PLUS Notice-of-Appeal (``N.APP``) IFW mail dates so the
     extension calculator's "any response / RCE / Appeal" rule is honored
-    even though prosecution_events doesn't classify appeals.
+    even though prosecution_events doesn't classify appeals. ``rem`` and
+    ``elc`` carry IFW Remarks (``REM``) and Election (``ELC.`` /
+    ``ELECTION``) mail dates for the CTRS-only horizon tweak (see
+    ``extension_analytics.compute_extensions_by_year``).
     """
     if not application_ids:
         return {}
 
     grouped: dict[int, dict[str, list[Any]]] = {
-        aid: {"ctnf": [], "ctfr": [], "ctrs": [], "noa": [], "response": [], "rem": []}
+        aid: {
+            "ctnf": [],
+            "ctfr": [],
+            "ctrs": [],
+            "noa": [],
+            "response": [],
+            "rem": [],
+            "elc": [],
+        }
         for aid in application_ids
     }
 
@@ -578,6 +607,8 @@ def _fetch_extension_inputs(
             bucket["response"].append(mrd)
         elif key == "REM":
             bucket["rem"].append(mrd)
+        elif key in ("ELC.", "ELECTION"):
+            bucket["elc"].append(mrd)
 
     type_list = ", ".join(f"'{t}'" for t in sorted(RESPONSE_EVENT_TYPES))
     resp_rows = db.execute(

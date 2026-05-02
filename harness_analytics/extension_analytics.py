@@ -13,16 +13,19 @@ mail date and the earlier of (next OA on this app, first NOA on this
 app) — same horizon as ``extension_metrics`` / ``ctnf_outcome`` so the
 three analytics agree on what counts as "the response".
 
-CTRS-specific tweak: an applicant Remarks/Argument document (``REM`` IFW
-code) mailed strictly after a CTRS also closes the CTRS response window,
-in addition to the next CTRS / first NOA closers. This catches the
+CTRS-specific tweak: an applicant Election (IFW codes ``ELC.`` /
+``ELECTION``) or Remarks/Argument document (IFW ``REM``) mailed strictly
+after a CTRS also closes the CTRS response window, in addition to the
+next CTRS / first NOA closers. ``ELC.`` / ``ELECTION`` is the textbook
+applicant response to a Restriction Requirement; ``REM`` catches the
 common pattern where a Restriction Requirement is followed by an
-Election filed alongside a later CTNF/CTFR response — without this, the
-late merits-response gets credited back to the CTRS and inflates the
-4+month duration bucket. REM dates also serve as candidate responses
-for the CTRS so a REM filed directly against the restriction (with no
-classified RESPONSE_NONFINAL/FINAL/RCE in prosecution_events) still
-produces a measurable lateness.
+Election filed alongside a later CTNF/CTFR response. Without these
+closers, the late merits-response gets credited back to the CTRS and
+inflates the 4+month duration bucket. Election and REM dates also serve
+as candidate responses for the CTRS so an Election filed directly
+against the restriction (which is not classified as
+RESPONSE_NONFINAL/FINAL/RCE in prosecution_events) still produces a
+measurable lateness against the 2-month deadline.
 
 This is a rough proxy, not a determination of formal USPTO extensions.
 """
@@ -208,6 +211,7 @@ def compute_extensions_by_year(
         noa = _clean_dates(buckets.get("noa", []))
         responses = _clean_dates(buckets.get("response", []))
         rem = _clean_dates(buckets.get("rem", []))
+        elc = _clean_dates(buckets.get("elc", []))
         first_noa = noa[0] if noa else None
 
         # CTNF/CTFR share a single "next examiner action" horizon — a CTFR
@@ -222,18 +226,22 @@ def compute_extensions_by_year(
         late_ctfr = _extension_for_oa(
             ctfr, oa_boundaries, first_noa, responses, _CTNF_CTFR_DEADLINE_MONTHS
         )
-        # CTRS horizon adds REM (Applicant Remarks/Argument) mail dates as
-        # additional closers: any REM filed strictly after a CTRS — whether
-        # it was actually responding to the CTRS, a later CTNF, or a CTFR
-        # — caps the CTRS response window. Without this, a CTRS that's
-        # only ever followed by an Election + later CTNF/CTFR/RESPONSE_NONFINAL
-        # would credit the late merits-response back to the CTRS and inflate
-        # the 4+mo bucket. REM also lands in the CTRS response candidate
-        # list so a REM filed in direct response to the CTRS still produces
-        # a measurable lateness against the 2-month deadline (instead of
-        # silently dropping when no RESPONSE_NONFINAL classification exists).
-        ctrs_boundaries = sorted(ctrs + rem)
-        ctrs_responses = sorted(set(responses + rem))
+        # CTRS horizon adds Election (ELC. / ELECTION) and REM (Applicant
+        # Remarks/Argument) mail dates as additional closers. Election is
+        # the textbook applicant response to a Restriction Requirement —
+        # prosecution_events doesn't classify Elections as
+        # RESPONSE_NONFINAL/FINAL/RCE, so without this the calculator would
+        # never see the actual response. REM catches the related pattern
+        # where the Election is filed alongside a later CTNF/CTFR REM
+        # response. Either one filed strictly after a CTRS caps the CTRS
+        # response window so a far-later merits response can't be credited
+        # back to the restriction. Both also land in the CTRS response
+        # candidate list so an Election or REM filed in direct response to
+        # the CTRS still produces a measurable lateness against the 2-month
+        # deadline (instead of silently dropping when no
+        # RESPONSE_NONFINAL classification exists).
+        ctrs_boundaries = sorted(ctrs + rem + elc)
+        ctrs_responses = sorted(set(responses + rem + elc))
         late_ctrs = _extension_for_oa(
             ctrs, ctrs_boundaries, first_noa, ctrs_responses, _CTRS_DEADLINE_MONTHS
         )

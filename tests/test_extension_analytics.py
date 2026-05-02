@@ -15,6 +15,7 @@ def _grouped(**kwargs):
             "noa": kwargs.get("noa", []),
             "response": kwargs.get("response", []),
             "rem": kwargs.get("rem", []),
+            "elc": kwargs.get("elc", []),
         }
     }
 
@@ -361,3 +362,109 @@ def test_rem_before_ctrs_does_not_close_window():
     out = compute_extensions_by_year(g)
     assert out["totals"]["restriction"] == 1
     assert _row(out["byYear"], 2024)["twoMonth"] == 1
+
+
+# ---------------------------------------------------------------------------
+# ELC. / ELECTION (Election filed in response to a Restriction Requirement)
+# closes the CTRS response window the same way REM does. Election is the
+# textbook applicant response to a restriction; classifier.EVENT_TYPE_MAP
+# does not surface it as RESPONSE_NONFINAL/FINAL/RCE, so the calculator
+# would otherwise miss the actual response entirely.
+# ---------------------------------------------------------------------------
+
+
+def test_elc_alone_serves_as_ctrs_response_when_no_classified_response():
+    """An on-time-ish Election alone (no RESPONSE_NONFINAL/FINAL/RCE,
+    no REM) must still produce a measurable lateness against the CTRS
+    2-month deadline so we don't silently drop the row.
+    """
+    g = _grouped(
+        ctrs=[date(2024, 1, 1)],
+        # Mar 15 = 14 days past the Mar 1 deadline -> rounds up to 1-month.
+        elc=[date(2024, 3, 15)],
+    )
+    out = compute_extensions_by_year(g)
+    assert out["totals"]["restriction"] == 1
+    assert _row(out["byYear"], 2024)["oneMonth"] == 1
+
+
+def test_elc_caps_ctrs_window_so_far_later_merits_response_isnt_attributed():
+    """Mirrors the REM test: a CTRS sits open while a later CTNF +
+    RESPONSE_NONFINAL play out far past the 2-month SSP. With an Election
+    on file shortly after the SSP, the CTRS attributes to the Election and
+    lands in the 1-month bucket instead of fourPlus.
+    """
+    g = _grouped(
+        ctrs=[date(2024, 1, 1)],
+        elc=[date(2024, 3, 15)],            # 14d past SSP -> 1-month bucket
+        ctnf=[date(2024, 4, 1)],
+        response=[date(2024, 9, 1)],        # late merits response, NOT the CTRS response
+    )
+    out = compute_extensions_by_year(g)
+    totals = out["totals"]
+    assert totals["restriction"] == 1
+    assert totals["fourPlus"] == 0, totals
+    assert totals["oneMonth"] == 1, totals
+    assert _row(out["byYear"], 2024)["restriction"] == 1
+    assert _row(out["byYear"], 2024)["oneMonth"] == 1
+
+
+def test_on_time_elc_does_not_count_as_extension():
+    """An Election filed at-or-before the 2-month CTRS deadline is not an
+    extension, even though it does close the response window.
+    """
+    g = _grouped(
+        ctrs=[date(2024, 1, 1)],
+        elc=[date(2024, 2, 28)],            # within 2 months
+    )
+    out = compute_extensions_by_year(g)
+    assert out["totals"]["restriction"] == 0
+    assert out["byYear"] == []
+
+
+def test_elc_does_not_close_ctnf_or_ctfr_window():
+    """ELC. only adjusts the CTRS horizon. CTNF/CTFR keep their original
+    horizon (next OA / first NOA), so a late merits response still lands
+    in the right bucket against the right OA.
+    """
+    g = _grouped(
+        ctnf=[date(2024, 1, 1)],
+        elc=[date(2024, 3, 15)],            # would NOT close a CTNF window
+        response=[date(2024, 7, 1)],        # late RESPONSE_NONFINAL
+    )
+    out = compute_extensions_by_year(g)
+    # CTNF deadline = Apr 1; response = Jul 1 -> 3 months past -> threeMonth.
+    assert out["totals"]["ctnf"] == 1, out["totals"]
+    assert out["totals"]["restriction"] == 0
+    assert _row(out["byYear"], 2024)["threeMonth"] == 1
+
+
+def test_elc_before_ctrs_does_not_close_window():
+    """A pre-CTRS Election (rare but possible if the IFW carries an old
+    code) is ignored by the boundary check.
+    """
+    g = _grouped(
+        ctrs=[date(2024, 6, 1)],
+        elc=[date(2024, 3, 1)],             # pre-CTRS, must be ignored
+        response=[date(2024, 9, 30)],       # ~4 months past Aug 1 deadline -> 2mo
+    )
+    out = compute_extensions_by_year(g)
+    assert out["totals"]["restriction"] == 1
+    assert _row(out["byYear"], 2024)["twoMonth"] == 1
+
+
+def test_earlier_of_elc_or_rem_is_the_ctrs_response():
+    """If both an Election and a REM are on file after a CTRS, the earlier
+    one is the response (boundary closes at min, candidates union takes
+    the earliest). Verifies that adding ELC. doesn't accidentally let a
+    later REM beat an earlier ELC..
+    """
+    g = _grouped(
+        ctrs=[date(2024, 1, 1)],
+        elc=[date(2024, 3, 15)],            # 14d past Mar 1 -> 1-month
+        rem=[date(2024, 5, 1)],             # 2mo past Mar 1 -> would be 2-month
+    )
+    out = compute_extensions_by_year(g)
+    assert out["totals"]["restriction"] == 1
+    assert _row(out["byYear"], 2024)["oneMonth"] == 1
+    assert _row(out["byYear"], 2024)["twoMonth"] == 0
