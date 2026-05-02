@@ -1419,6 +1419,24 @@ def _day_of_year(d: date) -> int:
     return d.timetuple().tm_yday
 
 
+def _quarter_of(d: date) -> int:
+    """Calendar quarter (1..4) for the given date."""
+    return (d.month - 1) // 3 + 1
+
+
+def _enumerate_year_quarters(y_min: int, y_max: int) -> list[tuple[int, int]]:
+    """Dense (year, quarter) tuples spanning every quarter from y_min Q1
+    through y_max Q4 inclusive — used to zero-fill the byQuarter/byMonth
+    drill-down series so the chart's x-axis is contiguous regardless of
+    where filings actually fell.
+    """
+    return [(y, q) for y in range(y_min, y_max + 1) for q in range(1, 5)]
+
+
+def _enumerate_year_months(y_min: int, y_max: int) -> list[tuple[int, int]]:
+    return [(y, m) for y in range(y_min, y_max + 1) for m in range(1, 13)]
+
+
 def _yoy_delta(current: int, prior: int) -> tuple[Optional[int], Optional[float]]:
     """Absolute and percent change from ``prior`` -> ``current``.
 
@@ -1462,6 +1480,8 @@ def compute_applicant_trends(
 
     counts_by_year: dict[int, int] = {}
     counts_by_year_ytd: dict[int, int] = {}
+    counts_by_quarter: dict[tuple[int, int], int] = {}
+    counts_by_month: dict[tuple[int, int], int] = {}
 
     by_app_year: dict[str, dict[int, int]] = {}
     by_app_year_ytd: dict[str, dict[int, int]] = {}
@@ -1472,6 +1492,10 @@ def compute_applicant_trends(
             continue
         year = fd.year
         counts_by_year[year] = counts_by_year.get(year, 0) + 1
+        q_key = (year, _quarter_of(fd))
+        counts_by_quarter[q_key] = counts_by_quarter.get(q_key, 0) + 1
+        m_key = (year, fd.month)
+        counts_by_month[m_key] = counts_by_month.get(m_key, 0) + 1
         if _day_of_year(fd) <= cur_doy:
             counts_by_year_ytd[year] = counts_by_year_ytd.get(year, 0) + 1
 
@@ -1486,6 +1510,8 @@ def compute_applicant_trends(
     if not counts_by_year:
         return {
             "byYear": [],
+            "byQuarter": [],
+            "byMonth": [],
             "byApplicant": [],
             "yearsShown": [],
             "currentYear": cur_year,
@@ -1530,6 +1556,31 @@ def compute_applicant_trends(
                 "compareLabel": compare_label if (y > y_min or is_partial) else None,
             }
         )
+
+    # Drill-down series — same year span as ``byYear`` so the chart's
+    # x-axis stays contiguous when a year is expanded. Quarter / month
+    # rows are dense (every (y,q) and (y,m) appears, zero-filled) so
+    # gap periods don't collapse the bar layout.
+    cur_quarter = _quarter_of(today)
+    cur_month = today.month
+    by_quarter: list[dict[str, Any]] = [
+        {
+            "year": y,
+            "quarter": q,
+            "filings": counts_by_quarter.get((y, q), 0),
+            "isPartial": (y == cur_year and q == cur_quarter),
+        }
+        for y, q in _enumerate_year_quarters(y_min, y_max)
+    ]
+    by_month: list[dict[str, Any]] = [
+        {
+            "year": y,
+            "month": m,
+            "filings": counts_by_month.get((y, m), 0),
+            "isPartial": (y == cur_year and m == cur_month),
+        }
+        for y, m in _enumerate_year_months(y_min, y_max)
+    ]
 
     # Per-applicant: choose the matrix year window. For a 1-2 year dataset
     # we just show what's there; for longer histories we cap at
@@ -1600,6 +1651,8 @@ def compute_applicant_trends(
 
     return {
         "byYear": by_year,
+        "byQuarter": by_quarter,
+        "byMonth": by_month,
         "byApplicant": top,
         "yearsShown": years_in_matrix,
         "currentYear": cur_year,
@@ -1672,6 +1725,8 @@ def compute_filings_by_type(
     cur_year = today.year
 
     counts_by_year: dict[int, dict[str, int]] = {}
+    counts_by_quarter: dict[tuple[int, int], dict[str, int]] = {}
+    counts_by_month: dict[tuple[int, int], dict[str, int]] = {}
     totals: dict[str, int] = {k: 0 for k in TYPE_ORDER}
 
     for r in rows:
@@ -1681,11 +1736,21 @@ def compute_filings_by_type(
         kind = _coerce_app_type(r.get("application_type"))
         year_bucket = counts_by_year.setdefault(fd.year, {k: 0 for k in TYPE_ORDER})
         year_bucket[kind] += 1
+        q_bucket = counts_by_quarter.setdefault(
+            (fd.year, _quarter_of(fd)), {k: 0 for k in TYPE_ORDER}
+        )
+        q_bucket[kind] += 1
+        m_bucket = counts_by_month.setdefault(
+            (fd.year, fd.month), {k: 0 for k in TYPE_ORDER}
+        )
+        m_bucket[kind] += 1
         totals[kind] += 1
 
     if not counts_by_year:
         return {
             "byYear": [],
+            "byQuarter": [],
+            "byMonth": [],
             "totals": totals,
             "typesShown": [],
             "currentYear": cur_year,
@@ -1713,8 +1778,37 @@ def compute_filings_by_type(
             }
         )
 
+    cur_quarter = _quarter_of(today)
+    cur_month = today.month
+    by_quarter: list[dict[str, Any]] = []
+    for y, q in _enumerate_year_quarters(y_min, y_max):
+        bucket = counts_by_quarter.get((y, q)) or {k: 0 for k in TYPE_ORDER}
+        by_quarter.append(
+            {
+                "year": y,
+                "quarter": q,
+                "filings": sum(bucket.values()),
+                "byType": dict(bucket),
+                "isPartial": (y == cur_year and q == cur_quarter),
+            }
+        )
+    by_month: list[dict[str, Any]] = []
+    for y, m in _enumerate_year_months(y_min, y_max):
+        bucket = counts_by_month.get((y, m)) or {k: 0 for k in TYPE_ORDER}
+        by_month.append(
+            {
+                "year": y,
+                "month": m,
+                "filings": sum(bucket.values()),
+                "byType": dict(bucket),
+                "isPartial": (y == cur_year and m == cur_month),
+            }
+        )
+
     return {
         "byYear": by_year,
+        "byQuarter": by_quarter,
+        "byMonth": by_month,
         "totals": totals,
         "typesShown": types_shown,
         "currentYear": cur_year,
@@ -1741,6 +1835,10 @@ def compute_foreign_priority_by_year(
 
     by_year_with: dict[int, int] = {}
     by_year_without: dict[int, int] = {}
+    by_q_with: dict[tuple[int, int], int] = {}
+    by_q_without: dict[tuple[int, int], int] = {}
+    by_m_with: dict[tuple[int, int], int] = {}
+    by_m_without: dict[tuple[int, int], int] = {}
     total_with = 0
     total_without = 0
 
@@ -1748,17 +1846,25 @@ def compute_foreign_priority_by_year(
         fd = _coerce_date(r.get("filing_date"))
         if fd is None:
             continue
+        q_key = (fd.year, _quarter_of(fd))
+        m_key = (fd.year, fd.month)
         if r.get("has_foreign_priority"):
             by_year_with[fd.year] = by_year_with.get(fd.year, 0) + 1
+            by_q_with[q_key] = by_q_with.get(q_key, 0) + 1
+            by_m_with[m_key] = by_m_with.get(m_key, 0) + 1
             total_with += 1
         else:
             by_year_without[fd.year] = by_year_without.get(fd.year, 0) + 1
+            by_q_without[q_key] = by_q_without.get(q_key, 0) + 1
+            by_m_without[m_key] = by_m_without.get(m_key, 0) + 1
             total_without += 1
 
     years_seen = set(by_year_with) | set(by_year_without)
     if not years_seen:
         return {
             "byYear": [],
+            "byQuarter": [],
+            "byMonth": [],
             "totals": {
                 "withForeign": 0,
                 "withoutForeign": 0,
@@ -1786,11 +1892,44 @@ def compute_foreign_priority_by_year(
             }
         )
 
+    cur_quarter = _quarter_of(today)
+    cur_month = today.month
+    by_quarter: list[dict[str, Any]] = []
+    for y, q in _enumerate_year_quarters(y_min, y_max):
+        w = by_q_with.get((y, q), 0)
+        wo = by_q_without.get((y, q), 0)
+        by_quarter.append(
+            {
+                "year": y,
+                "quarter": q,
+                "filings": w + wo,
+                "withForeign": w,
+                "withoutForeign": wo,
+                "isPartial": (y == cur_year and q == cur_quarter),
+            }
+        )
+    by_month: list[dict[str, Any]] = []
+    for y, m in _enumerate_year_months(y_min, y_max):
+        w = by_m_with.get((y, m), 0)
+        wo = by_m_without.get((y, m), 0)
+        by_month.append(
+            {
+                "year": y,
+                "month": m,
+                "filings": w + wo,
+                "withForeign": w,
+                "withoutForeign": wo,
+                "isPartial": (y == cur_year and m == cur_month),
+            }
+        )
+
     grand_total = total_with + total_without
     pct = round(100.0 * total_with / grand_total, 1) if grand_total else None
 
     return {
         "byYear": by_year,
+        "byQuarter": by_quarter,
+        "byMonth": by_month,
         "totals": {
             "withForeign": total_with,
             "withoutForeign": total_without,

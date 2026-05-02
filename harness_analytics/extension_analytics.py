@@ -164,6 +164,42 @@ def _empty_year_row(year: int) -> dict[str, Any]:
     }
 
 
+def _empty_quarter_row(year: int, quarter: int) -> dict[str, Any]:
+    return {
+        "year": year,
+        "quarter": quarter,
+        "ctnf": 0,
+        "ctfr": 0,
+        "restriction": 0,
+        "total": 0,
+        "oneMonth": 0,
+        "twoMonth": 0,
+        "threeMonth": 0,
+        "fourPlus": 0,
+        "isPartial": False,
+    }
+
+
+def _empty_month_row(year: int, month: int) -> dict[str, Any]:
+    return {
+        "year": year,
+        "month": month,
+        "ctnf": 0,
+        "ctfr": 0,
+        "restriction": 0,
+        "total": 0,
+        "oneMonth": 0,
+        "twoMonth": 0,
+        "threeMonth": 0,
+        "fourPlus": 0,
+        "isPartial": False,
+    }
+
+
+def _quarter_of(d: date) -> int:
+    return (d.month - 1) // 3 + 1
+
+
 def _bucket_key(months: int) -> str:
     if months <= 1:
         return "oneMonth"
@@ -197,21 +233,32 @@ def compute_extensions_by_year(
     Returns::
 
         {
-            "byYear":  [{"year": 2023, "ctnf": 5, "ctfr": 2,
-                         "restriction": 1, "total": 8,
-                         "isPartial": False}, ...],
+            "byYear":    [{"year": 2023, "ctnf": 5, "ctfr": 2,
+                           "restriction": 1, "total": 8,
+                           "isPartial": False}, ...],
+            "byQuarter": [{"year": 2023, "quarter": 1, ...}, ...],
+            "byMonth":   [{"year": 2023, "month":   1, ...}, ...],
             "totals":  {"ctnf": ..., "ctfr": ..., "restriction": ..., "total": ...},
             "appsContributing": int,   # apps with >=1 extension
         }
 
-    ``byYear`` is dense: every year between the min and max year with any
-    extension is present (zero-filled gaps make the chart axis stable).
-    The current calendar year (per ``today``, defaulting to ``date.today()``)
-    is flagged ``isPartial=True`` so the renderer can overlay a YTD
-    projection. Zero-filled gap rows for prior years are ``isPartial=False``.
+    ``byYear`` / ``byQuarter`` / ``byMonth`` are dense: every period in
+    the year span containing extensions is present (zero-filled gaps make
+    the chart axis stable). The current calendar year / quarter / month
+    (per ``today``, defaulting to ``date.today()``) is flagged
+    ``isPartial=True`` so the renderer can overlay a YTD projection at
+    whatever grain the user has drilled into.
     """
-    by_year: dict[int, dict[str, int]] = {}
+    by_year: dict[int, dict[str, Any]] = {}
+    by_quarter: dict[tuple[int, int], dict[str, Any]] = {}
+    by_month: dict[tuple[int, int], dict[str, Any]] = {}
     apps_contributing: set[int] = set()
+
+    def _bump(rows: dict, key, factory, oa_kind: str, months: int) -> None:
+        row = rows.setdefault(key, factory())
+        row[oa_kind] += 1
+        row["total"] += 1
+        row[_bucket_key(months)] += 1
 
     for app_id, buckets in grouped.items():
         ctnf = _clean_dates(buckets.get("ctnf", []))
@@ -258,33 +305,53 @@ def compute_extensions_by_year(
         if late_ctnf or late_ctfr or late_ctrs:
             apps_contributing.add(app_id)
 
-        for resp, months in late_ctnf:
-            row = by_year.setdefault(resp.year, _empty_year_row(resp.year))
-            row["ctnf"] += 1
-            row["total"] += 1
-            row[_bucket_key(months)] += 1
-        for resp, months in late_ctfr:
-            row = by_year.setdefault(resp.year, _empty_year_row(resp.year))
-            row["ctfr"] += 1
-            row["total"] += 1
-            row[_bucket_key(months)] += 1
-        for resp, months in late_ctrs:
-            row = by_year.setdefault(resp.year, _empty_year_row(resp.year))
-            row["restriction"] += 1
-            row["total"] += 1
-            row[_bucket_key(months)] += 1
+        for kind, late in (
+            ("ctnf", late_ctnf),
+            ("ctfr", late_ctfr),
+            ("restriction", late_ctrs),
+        ):
+            for resp, months in late:
+                q = _quarter_of(resp)
+                _bump(by_year, resp.year, lambda y=resp.year: _empty_year_row(y), kind, months)
+                _bump(
+                    by_quarter,
+                    (resp.year, q),
+                    lambda y=resp.year, qq=q: _empty_quarter_row(y, qq),
+                    kind,
+                    months,
+                )
+                _bump(
+                    by_month,
+                    (resp.year, resp.month),
+                    lambda y=resp.year, m=resp.month: _empty_month_row(y, m),
+                    kind,
+                    months,
+                )
 
     if by_year:
         y_min = min(by_year)
         y_max = max(by_year)
         for y in range(y_min, y_max + 1):
             by_year.setdefault(y, _empty_year_row(y))
+            for q in range(1, 5):
+                by_quarter.setdefault((y, q), _empty_quarter_row(y, q))
+            for m in range(1, 13):
+                by_month.setdefault((y, m), _empty_month_row(y, m))
 
-    cur_year = (today or date.today()).year
+    today_d = today or date.today()
+    cur_year = today_d.year
+    cur_quarter = _quarter_of(today_d)
+    cur_month = today_d.month
     for y, row in by_year.items():
         row["isPartial"] = (y == cur_year)
+    for (y, q), row in by_quarter.items():
+        row["isPartial"] = (y == cur_year and q == cur_quarter)
+    for (y, m), row in by_month.items():
+        row["isPartial"] = (y == cur_year and m == cur_month)
 
     rows = [by_year[y] for y in sorted(by_year)]
+    quarter_rows = [by_quarter[k] for k in sorted(by_quarter)]
+    month_rows = [by_month[k] for k in sorted(by_month)]
     totals = {
         "ctnf": sum(r["ctnf"] for r in rows),
         "ctfr": sum(r["ctfr"] for r in rows),
@@ -297,6 +364,8 @@ def compute_extensions_by_year(
     }
     return {
         "byYear": rows,
+        "byQuarter": quarter_rows,
+        "byMonth": month_rows,
         "totals": totals,
         "appsContributing": len(apps_contributing),
     }

@@ -1457,6 +1457,17 @@ tbody tr:focus-visible {
   color: var(--slate-500);
 }
 
+/* Drill-down click affordance for the four YTD-projection charts.
+   Applied per-leaf via JS so unrelated SVG groups don't pick up the
+   cursor or hover effect. */
+.drillable-bar {
+  cursor: pointer;
+  transition: filter 0.1s ease;
+}
+.drillable-bar:hover {
+  filter: brightness(1.08);
+}
+
 .ext-table-wrap {
   border: 1px solid var(--slate-200);
   border-radius: var(--radius);

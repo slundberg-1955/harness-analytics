@@ -477,6 +477,69 @@ def test_compute_extensions_by_year_flags_current_year_partial():
     assert flags == {2023: False, 2024: False, 2025: False, 2026: True}
 
 
+def test_compute_extensions_by_year_emits_quarter_and_month_drill_down():
+    """byQuarter / byMonth carry the same per-row shape as byYear plus a
+    ``quarter`` / ``month`` key, are dense across the year span, flag only
+    the current quarter / month as partial, and per-quarter sums roll up
+    to the per-year totals (so drill-down stacks visually match)."""
+    g = {
+        # 2023: a CTNF response in Q1 (Mar) and a CTFR response in Q3 (Aug).
+        1: {
+            "ctnf": [date(2022, 9, 1)],
+            "ctfr": [date(2023, 5, 1)],
+            "ctrs": [], "noa": [],
+            "response": [date(2023, 3, 15), date(2023, 8, 20)],
+            "rem": [], "elc": [],
+        },
+        # Current-year (2026) CTNF response in Q2 (May).
+        2: {
+            "ctnf": [date(2026, 1, 1)],
+            "ctfr": [], "ctrs": [], "noa": [],
+            "response": [date(2026, 5, 1)],
+            "rem": [], "elc": [],
+        },
+    }
+    out = compute_extensions_by_year(g, today=date(2026, 5, 15))
+
+    by_q = {(r["year"], r["quarter"]): r for r in out["byQuarter"]}
+    by_m = {(r["year"], r["month"]): r for r in out["byMonth"]}
+    by_y = {r["year"]: r for r in out["byYear"]}
+
+    # Density: every (year, quarter) and (year, month) in the year span.
+    for y in range(2023, 2027):
+        for q in range(1, 5):
+            assert (y, q) in by_q
+        for m in range(1, 13):
+            assert (y, m) in by_m
+
+    # 2023 quarters: Q1 has the CTNF response, Q3 the CTFR response.
+    assert by_q[(2023, 1)]["ctnf"] == 1
+    assert by_q[(2023, 1)]["total"] == 1
+    assert by_q[(2023, 3)]["ctfr"] == 1
+    assert by_q[(2023, 3)]["total"] == 1
+    # Q2 / Q4 are zero.
+    assert by_q[(2023, 2)]["total"] == 0
+
+    # Per-year invariant: quarters sum to year totals.
+    for y in range(2023, 2027):
+        for field in ("ctnf", "ctfr", "restriction", "total",
+                      "oneMonth", "twoMonth", "threeMonth", "fourPlus"):
+            assert sum(by_q[(y, q)][field] for q in range(1, 5)) == by_y[y][field]
+            assert sum(by_m[(y, m)][field] for m in range(1, 13)) == by_y[y][field]
+
+    # Current quarter / month flagged as partial.
+    assert by_q[(2026, 2)]["isPartial"] is True
+    assert by_m[(2026, 5)]["isPartial"] is True
+    # Other quarters / months in the current year not flagged.
+    assert by_q[(2026, 1)]["isPartial"] is False
+    assert by_m[(2026, 4)]["isPartial"] is False
+    # Prior-year drill rows never flagged.
+    for q in range(1, 5):
+        assert by_q[(2025, q)]["isPartial"] is False
+    for m in range(1, 13):
+        assert by_m[(2024, m)]["isPartial"] is False
+
+
 def test_compute_extensions_by_year_default_today_uses_date_today(monkeypatch):
     """When ``today`` is not passed, the function falls back to
     ``date.today()`` — verify the current-year row is still flagged.

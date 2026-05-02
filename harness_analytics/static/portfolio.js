@@ -121,6 +121,16 @@
     aaRecency: "all",
     aaCustomStart: "",
     aaCustomEnd: "",
+    // Per-chart year-drill state for the four YTD-projection charts.
+    // Shape: { [chartKey]: { [year]: { level: 'quarter', expandedQuarters: { [q]: true } } } }
+    // Missing entry == year-level (default). Click handlers mutate this in
+    // place and re-render only the affected chart.
+    drillState: {
+      filingsByYear: {},
+      filingsByType: {},
+      filingsByForeignPriority: {},
+      extensionsByYear: {},
+    },
   };
 
   // Quick-preset definitions for the rail above the chip filters. Each
@@ -1081,36 +1091,40 @@
   function renderExtensionsChart(data) {
     const host = document.getElementById("ext-chart");
     if (!host) return;
-    const rows = (data && data.byYear) || [];
-    if (!rows.length) {
+    const yearRows = (data && data.byYear) || [];
+    if (!yearRows.length) {
       host.innerHTML = `<div class="ext-empty">No extensions of time detected in the current selection.</div>`;
+      host.onclick = null;
       return;
     }
-    const W = 920, H = 296, padL = 56, padR = 24, padT = 18, padB = 50;
+    const W = 920, H = 296, padL = 56, padR = 24, padT = 18, padB = 56;
     const innerW = W - padL - padR, innerH = H - padT - padB;
     const today = new Date();
-    // Belt-and-suspenders: prefer the backend ``isPartial`` flag, fall back
-    // to a year-of-today comparison if an older payload is in flight.
-    const isPartial = (r) => r.isPartial === true || r.year === today.getFullYear();
-    const projections = rows.map((r) =>
-      isPartial(r) ? ytdProjection(r.total || 0, r.year, today) : null
+    const drill = state.drillState.extensionsByYear;
+    const leaves = expandRowsForDrill(
+      yearRows,
+      (data && data.byQuarter) || [],
+      (data && data.byMonth) || [],
+      drill,
     );
+    const enriched = leaves.map((lf) => {
+      const total = (lf.row && lf.row.total) || 0;
+      const proj = lf.isPartial
+        ? ytdProjectionForPeriod(total, lf.periodStart, lf.periodEnd, today)
+        : null;
+      return Object.assign({}, lf, { total, proj });
+    });
     const maxTotal = Math.max(
       1,
-      ...rows.map((r, i) => {
-        const proj = projections[i];
-        return proj ? proj.projected : (r.total || 0);
-      })
+      ...enriched.map((lf) => (lf.proj ? lf.proj.projected : lf.total)),
     );
-    // Round the y-axis up to a nice number so the gridlines look clean.
     const niceMax = (() => {
       const candidates = [5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 5000];
       for (const c of candidates) { if (c >= maxTotal) return c; }
       return Math.ceil(maxTotal / 1000) * 1000;
     })();
     const yScale = (v) => padT + innerH - (v / niceMax) * innerH;
-    const bandW = innerW / rows.length;
-    const barW = Math.max(8, Math.min(48, bandW * 0.65));
+    const layout = drillBandLayout(enriched, padL, innerW);
 
     const colors = { ctnf: "#2563eb", ctfr: "#e11d48", restriction: "#d97706" };
 
@@ -1121,17 +1135,17 @@
         + `<text x="${padL - 8}" y="${y + 4}" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#64748b">${v.toLocaleString()}</text></g>`;
     }).join("");
 
-    const bars = rows.map((r, i) => {
-      const cx = padL + bandW * (i + 0.5);
-      const xLeft = cx - barW / 2;
-      const ctnf = r.ctnf || 0;
-      const ctfr = r.ctfr || 0;
-      const ctrs = r.restriction || 0;
-      const total = r.total || 0;
-      const proj = projections[i];
+    function periodLabel(leaf) {
+      if (leaf.kind === "year") return `${leaf.parentYear}${leaf.isPartial ? " (YTD)" : ""}`;
+      if (leaf.kind === "quarter") return `${leaf.parentYear} Q${leaf.parentQuarter}${leaf.isPartial ? " (PTD)" : ""}`;
+      return `${leaf.parentYear}-${String(leaf.row.month).padStart(2, "0")}${leaf.isPartial ? " (MTD)" : ""}`;
+    }
+
+    const bars = layout.map(({ leaf, x, w, cx }) => {
+      const r = leaf.row;
+      const total = leaf.total;
+      const proj = leaf.proj;
       const projDelta = proj && proj.delta > 0 && total > 0 ? proj.delta : 0;
-      // Track running total in value-space, then convert to pixels per
-      // segment so per-segment rounding doesn't accumulate gaps.
       let runningValue = 0;
       let projCursor = total;
       const segs = [];
@@ -1140,7 +1154,7 @@
         const yBottom = yScale(runningValue);
         const yTop = yScale(runningValue + value);
         const h = Math.max(1, yBottom - yTop);
-        segs.push(`<rect x="${xLeft}" y="${yTop}" width="${barW}" height="${h}" fill="${color}"/>`);
+        segs.push(`<rect x="${x}" y="${yTop}" width="${w}" height="${h}" fill="${color}"/>`);
         runningValue += value;
         if (projDelta > 0) {
           const segDelta = (value / total) * projDelta;
@@ -1148,51 +1162,74 @@
             const yProjBottom = yScale(projCursor);
             const yProjTop = yScale(projCursor + segDelta);
             const projH = Math.max(1, yProjBottom - yProjTop);
-            segs.push(`<rect x="${xLeft}" y="${yProjTop}" width="${barW}" height="${projH}" fill="${color}" fill-opacity="0.32" stroke="${color}" stroke-width="1" stroke-dasharray="3 3"/>`);
+            segs.push(`<rect x="${x}" y="${yProjTop}" width="${w}" height="${projH}" fill="${color}" fill-opacity="0.32" stroke="${color}" stroke-width="1" stroke-dasharray="3 3"/>`);
             projCursor += segDelta;
           }
         }
       }
-      pushSeg(ctnf, colors.ctnf);
-      pushSeg(ctfr, colors.ctfr);
-      pushSeg(ctrs, colors.restriction);
+      pushSeg(r.ctnf || 0, colors.ctnf);
+      pushSeg(r.ctfr || 0, colors.ctfr);
+      pushSeg(r.restriction || 0, colors.restriction);
 
       const tipParts = [];
-      if (ctnf) tipParts.push(`CTNF ${ctnf}`);
-      if (ctfr) tipParts.push(`CTFR ${ctfr}`);
-      if (ctrs) tipParts.push(`Restriction ${ctrs}`);
+      if (r.ctnf) tipParts.push(`CTNF ${r.ctnf}`);
+      if (r.ctfr) tipParts.push(`CTFR ${r.ctfr}`);
+      if (r.restriction) tipParts.push(`Restriction ${r.restriction}`);
       const durParts = [];
       if (r.oneMonth)   durParts.push(`1mo ${r.oneMonth}`);
       if (r.twoMonth)   durParts.push(`2mo ${r.twoMonth}`);
       if (r.threeMonth) durParts.push(`3mo ${r.threeMonth}`);
       if (r.fourPlus)   durParts.push(`4+mo ${r.fourPlus}`);
       const partialSuffix = projDelta > 0
-        ? ` · projected ~${proj.projected.toLocaleString()} by year-end (linear pace)`
+        ? ` · projected ~${proj.projected.toLocaleString()} by ${leaf.kind}-end (linear pace)`
         : "";
-      const tip = `${r.year}${isPartial(r) ? " (YTD)" : ""}${tipParts.length ? " · " + tipParts.join(" · ") : ""} · Total ${r.total}${partialSuffix}${durParts.length ? "\nLength: " + durParts.join(", ") : ""}`;
+      const tip = `${periodLabel(leaf)}${tipParts.length ? " · " + tipParts.join(" · ") : ""} · Total ${total}${partialSuffix}${durParts.length ? "\nLength: " + durParts.join(", ") : ""}`;
+      const labelFont = leaf.kind === "year" ? 10 : (w >= 22 ? 9 : 0);
       const labelText = projDelta > 0
-        ? `${r.total} ~${proj.projected.toLocaleString()}`
-        : `${r.total}`;
-      const labelY = projDelta > 0 ? yScale(proj.projected) - 6 : yScale(r.total) - 6;
-      const totalLabel = r.total > 0
-        ? `<text x="${cx}" y="${labelY}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#475569">${labelText}</text>`
+        ? `${total} ~${proj.projected.toLocaleString()}`
+        : `${total}`;
+      const labelY = projDelta > 0 ? yScale(proj.projected) - 6 : yScale(total) - 6;
+      const totalLabel = total > 0 && labelFont
+        ? `<text x="${cx}" y="${labelY}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="${labelFont}" fill="#475569">${labelText}</text>`
         : "";
-      return `<g><title>${escapeHtml(tip)}</title>${segs.join("")}${totalLabel}</g>`;
+      const action = leaf.kind === "year"
+        ? "drillYear"
+        : leaf.kind === "quarter" ? "drillQuarter" : "collapseMonth";
+      const qAttr = leaf.parentQuarter ? ` data-drill-quarter="${leaf.parentQuarter}"` : "";
+      return `<g class="drillable-bar" data-drill-action="${action}" data-drill-year="${leaf.parentYear}"${qAttr}>`
+        + `<title>${escapeHtml(tip)}</title>${segs.join("")}${totalLabel}</g>`;
     }).join("");
 
-    const xLabels = rows.map((r, i) => {
-      const cx = padL + bandW * (i + 0.5);
-      const suffix = isPartial(r) ? " YTD" : "";
-      return `<text x="${cx}" y="${H - padB + 18}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#64748b">${r.year}${suffix}</text>`;
+    const subLabels = layout
+      .filter(({ leaf }) => leaf.kind !== "year")
+      .map(({ leaf, cx }) => `<text x="${cx}" y="${H - padB + 14}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="9" fill="#94a3b8">${leaf.labelShort}</text>`)
+      .join("");
+    const yearGroups = new Map();
+    for (const item of layout) {
+      if (!yearGroups.has(item.leaf.parentYear)) yearGroups.set(item.leaf.parentYear, item);
+    }
+    const yearLabels = Array.from(yearGroups.entries()).map(([yr, item]) => {
+      const expanded = !!drill[yr];
+      const cx = item.groupX + item.groupW / 2;
+      const labelY = H - padB + (expanded ? 30 : 18);
+      const isCurrentYearUnexpanded = !expanded && item.leaf.kind === "year" && item.leaf.isPartial;
+      const suffix = isCurrentYearUnexpanded ? " YTD" : "";
+      const collapseAttrs = expanded
+        ? ` data-drill-action="collapseYear" data-drill-year="${yr}" style="cursor:pointer"`
+        : "";
+      const arrow = expanded ? ' <tspan font-size="9" fill="#94a3b8">collapse</tspan>' : "";
+      return `<g${collapseAttrs}>`
+        + (expanded
+          ? `<rect x="${item.groupX}" y="${labelY - 12}" width="${item.groupW}" height="20" fill="transparent"/>`
+          : "")
+        + `<text x="${cx}" y="${labelY}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#64748b">${yr}${suffix}${arrow}</text>`
+        + `</g>`;
     }).join("");
 
-    host.innerHTML = `
-      <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
-        ${yTicks}
-        ${bars}
-        ${xLabels}
-      </svg>
-    `;
+    host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${yTicks}${bars}${subLabels}${yearLabels}</svg>`;
+    wireDrillClicks(host, "extensionsByYear", () => {
+      renderExtensionsChart(state.lastData && state.lastData.extensionsByYear);
+    });
   }
 
   function renderExtensionsTable(data) {
@@ -1308,16 +1345,14 @@
     return n > 0 ? "at-delta-up" : "at-delta-down";
   }
 
-  // Linear day-of-year projection for in-progress calendar years. Returns
-  // null when ``year`` is not the current calendar year. ``actual`` is the
-  // YTD count; ``projected`` is the estimated full-year total. The 5%
-  // guard prevents January noise from drawing a 20x-tall ghost extension.
-  function ytdProjection(actual, year, today) {
+  // Linear projection for an in-progress period (year, quarter, or month).
+  // Returns null when ``today`` falls outside ``[periodStart, periodEnd)``.
+  // The 5% guard prevents the first day of a period from drawing a 20x
+  // ghost extension while the elapsed fraction is still meaningless.
+  function ytdProjectionForPeriod(actual, periodStart, periodEnd, today) {
     const now = today || new Date();
-    if (year !== now.getFullYear()) return null;
-    const start = new Date(year, 0, 1);
-    const end = new Date(year + 1, 0, 1);
-    const fraction = (now - start) / (end - start);
+    if (now < periodStart || now >= periodEnd) return null;
+    const fraction = (now - periodStart) / (periodEnd - periodStart);
     if (!actual || fraction < 0.05) {
       return { actual: actual || 0, projected: actual || 0, delta: 0, fraction };
     }
@@ -1330,28 +1365,207 @@
     };
   }
 
+  // Year-level convenience wrapper for legacy call sites.
+  function ytdProjection(actual, year, today) {
+    return ytdProjectionForPeriod(
+      actual,
+      new Date(year, 0, 1),
+      new Date(year + 1, 0, 1),
+      today,
+    );
+  }
+
+  // ---- Drill-down helpers ------------------------------------------------
+  //
+  // ``expandRowsForDrill`` flattens (yearRows, quarterRows, monthRows) into
+  // a single ordered "leaves" array based on the per-chart drill state.
+  // Each leaf carries enough context (kind, parentYear, parentQuarter,
+  // periodStart/End, payload) for the renderer to draw it without
+  // re-deriving anything. ``drillBandLayout`` then takes the leaves + the
+  // chart's plot rect and assigns each leaf an x-position / width inside
+  // its parent year's band so expanded years stay aligned with collapsed
+  // ones.
+  //
+  // Year-group widths are uniform regardless of how many sub-bars they
+  // contain — that keeps 2024's slot the same width whether it's drilled
+  // or not, which is what makes the drill feel like a true zoom-in.
+
+  const _MONTH_LABELS = ["J", "F", "M", "A", "M", "J", "J", "A", "S", "O", "N", "D"];
+
+  function expandRowsForDrill(yearRows, quarterRows, monthRows, drillState) {
+    const qByKey = Object.create(null);
+    for (const q of quarterRows || []) qByKey[`${q.year}-${q.quarter}`] = q;
+    const mByKey = Object.create(null);
+    for (const m of monthRows || []) mByKey[`${m.year}-${m.month}`] = m;
+    const leaves = [];
+    for (const yr of yearRows || []) {
+      const ds = (drillState || {})[yr.year];
+      const expanded = ds && ds.level === "quarter";
+      if (!expanded) {
+        leaves.push({
+          kind: "year",
+          parentYear: yr.year,
+          row: yr,
+          periodStart: new Date(yr.year, 0, 1),
+          periodEnd: new Date(yr.year + 1, 0, 1),
+          isPartial: yr.isPartial === true,
+        });
+        continue;
+      }
+      const expandedQs = (ds && ds.expandedQuarters) || {};
+      for (let q = 1; q <= 4; q++) {
+        const qRow = qByKey[`${yr.year}-${q}`] || { year: yr.year, quarter: q, filings: 0, isPartial: false };
+        const qStart = new Date(yr.year, (q - 1) * 3, 1);
+        const qEnd = new Date(yr.year, q * 3, 1);
+        if (expandedQs[q]) {
+          for (let m = (q - 1) * 3 + 1; m <= q * 3; m++) {
+            const mRow = mByKey[`${yr.year}-${m}`] || { year: yr.year, month: m, filings: 0, isPartial: false };
+            leaves.push({
+              kind: "month",
+              parentYear: yr.year,
+              parentQuarter: q,
+              row: mRow,
+              periodStart: new Date(yr.year, m - 1, 1),
+              periodEnd: new Date(yr.year, m, 1),
+              isPartial: mRow.isPartial === true,
+              labelShort: _MONTH_LABELS[m - 1],
+            });
+          }
+        } else {
+          leaves.push({
+            kind: "quarter",
+            parentYear: yr.year,
+            parentQuarter: q,
+            row: qRow,
+            periodStart: qStart,
+            periodEnd: qEnd,
+            isPartial: qRow.isPartial === true,
+            labelShort: `Q${q}`,
+          });
+        }
+      }
+    }
+    return leaves;
+  }
+
+  // Click semantics: year -> drill to quarters; quarter -> drill that
+  // quarter to months; month -> collapse the quarter back to quarter
+  // level; clicking the year axis label of an expanded year collapses it
+  // back to year. A no-op fallthrough is harmless if the user clicks twice
+  // in flight while a re-render is pending.
+  function drillCycle(chartKey, action, year, quarter) {
+    const drill = state.drillState[chartKey] || (state.drillState[chartKey] = {});
+    if (action === "drillYear") {
+      drill[year] = { level: "quarter", expandedQuarters: {} };
+    } else if (action === "drillQuarter") {
+      const ys = drill[year] || { level: "quarter", expandedQuarters: {} };
+      ys.level = "quarter";
+      ys.expandedQuarters = ys.expandedQuarters || {};
+      ys.expandedQuarters[quarter] = true;
+      drill[year] = ys;
+    } else if (action === "collapseMonth") {
+      const ys = drill[year];
+      if (ys && ys.expandedQuarters) {
+        delete ys.expandedQuarters[quarter];
+      }
+    } else if (action === "collapseYear") {
+      delete drill[year];
+    }
+  }
+
+  // Wire up a single delegated click handler per chart host. The renderer
+  // tags each interactive element with data-* attrs so this stays
+  // chart-agnostic.
+  function wireDrillClicks(host, chartKey, rerender) {
+    if (!host) return;
+    host.onclick = (e) => {
+      const t = e.target.closest("[data-drill-action]");
+      if (!t) return;
+      const action = t.dataset.drillAction;
+      const year = parseInt(t.dataset.drillYear, 10);
+      const quarter = t.dataset.drillQuarter ? parseInt(t.dataset.drillQuarter, 10) : null;
+      if (!Number.isFinite(year)) return;
+      drillCycle(chartKey, action, year, quarter);
+      rerender();
+    };
+  }
+
+  // Lay out leaves inside a plot rect [x0..x0+totalW] so each parent year
+  // gets the same horizontal band whether or not it's expanded; sub-bars
+  // share the year band with thin gutters; the bar width is clamped to a
+  // sensible range so dense drills (12 months in one band) stay readable.
+  function drillBandLayout(leaves, x0, totalW) {
+    if (!leaves.length) return [];
+    const yearOrder = [];
+    const groups = new Map();
+    for (const lf of leaves) {
+      if (!groups.has(lf.parentYear)) {
+        yearOrder.push(lf.parentYear);
+        groups.set(lf.parentYear, []);
+      }
+      groups.get(lf.parentYear).push(lf);
+    }
+    const yearBandW = totalW / yearOrder.length;
+    const groupPad = 4;
+    const subGutter = 2;
+    const out = [];
+    for (let i = 0; i < yearOrder.length; i++) {
+      const groupX = x0 + yearBandW * i;
+      const groupLeaves = groups.get(yearOrder[i]);
+      const subN = groupLeaves.length;
+      const innerW = Math.max(8, yearBandW - groupPad * 2);
+      const subW = subN > 1
+        ? (innerW - subGutter * (subN - 1)) / subN
+        : Math.max(8, Math.min(48, yearBandW * 0.65));
+      const startX = subN > 1
+        ? groupX + groupPad
+        : groupX + (yearBandW - subW) / 2;
+      for (let s = 0; s < subN; s++) {
+        const xLeft = startX + s * (subW + subGutter);
+        out.push({
+          leaf: groupLeaves[s],
+          x: xLeft,
+          w: subW,
+          cx: xLeft + subW / 2,
+          groupX,
+          groupW: yearBandW,
+          isFirstInGroup: s === 0,
+          isLastInGroup: s === subN - 1,
+        });
+      }
+    }
+    return out;
+  }
+
   function renderAtYearChart(data) {
     const host = document.getElementById("at-year-chart");
     if (!host) return;
-    const rows = (data && data.byYear) || [];
-    if (!rows.length) {
+    const yearRows = (data && data.byYear) || [];
+    if (!yearRows.length) {
       host.innerHTML = `<div class="ext-empty">No filings detected in the current selection.</div>`;
+      host.onclick = null;
       return;
     }
-    const W = 920, H = 240, padL = 56, padR = 24, padT = 18, padB = 40;
+    const W = 920, H = 250, padL = 56, padR = 24, padT = 18, padB = 50;
     const innerW = W - padL - padR, innerH = H - padT - padB;
     const today = new Date();
-    // Pre-compute YTD projections so the y-axis can include the projected
-    // tip and the bar rendering can reuse the same projected total.
-    const projections = rows.map((r) =>
-      r.isPartial ? ytdProjection(r.filings || 0, r.year, today) : null
+    const drill = state.drillState.filingsByYear;
+    const leaves = expandRowsForDrill(
+      yearRows,
+      (data && data.byQuarter) || [],
+      (data && data.byMonth) || [],
+      drill,
     );
+    const enriched = leaves.map((lf) => {
+      const actual = (lf.row && lf.row.filings) || 0;
+      const proj = lf.isPartial
+        ? ytdProjectionForPeriod(actual, lf.periodStart, lf.periodEnd, today)
+        : null;
+      return Object.assign({}, lf, { actual, proj });
+    });
     const maxV = Math.max(
       1,
-      ...rows.map((r, i) => {
-        const proj = projections[i];
-        return proj ? proj.projected : (r.filings || 0);
-      })
+      ...enriched.map((lf) => (lf.proj ? lf.proj.projected : lf.actual)),
     );
     const niceMax = (() => {
       const candidates = [5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000];
@@ -1359,8 +1573,7 @@
       return Math.ceil(maxV / 1000) * 1000;
     })();
     const yScale = (v) => padT + innerH - (v / niceMax) * innerH;
-    const bandW = innerW / rows.length;
-    const barW = Math.max(8, Math.min(48, bandW * 0.65));
+    const layout = drillBandLayout(enriched, padL, innerW);
 
     const yTicks = [0, 0.25, 0.5, 0.75, 1.0].map((p) => {
       const v = Math.round(niceMax * p);
@@ -1369,47 +1582,85 @@
         + `<text x="${padL - 8}" y="${y + 4}" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#64748b">${v.toLocaleString()}</text></g>`;
     }).join("");
 
-    const bars = rows.map((r, i) => {
-      const cx = padL + bandW * (i + 0.5);
-      const xLeft = cx - barW / 2;
-      const v = r.filings || 0;
+    const bars = layout.map(({ leaf, x, w, cx }) => {
+      const v = leaf.actual;
       const yTop = yScale(v);
       const h = Math.max(1, yScale(0) - yTop);
-      // Partial (current) year gets a hollow / outlined bar so attorneys
-      // visually distinguish "in-progress YTD" from "settled prior year"
-      // without reading the legend.
-      const fill = r.isPartial ? "#dbeafe" : "#2563eb";
-      const stroke = r.isPartial ? "#2563eb" : "transparent";
-      const dashAttr = r.isPartial ? ' stroke-dasharray="3 3"' : "";
-      const proj = projections[i];
+      const fill = leaf.isPartial ? "#dbeafe" : "#2563eb";
+      const stroke = leaf.isPartial ? "#2563eb" : "transparent";
+      const dashAttr = leaf.isPartial ? ' stroke-dasharray="3 3"' : "";
+      const proj = leaf.proj;
       let projOverlay = "";
       let labelText = v.toLocaleString();
-      let tip = `${r.year}${r.isPartial ? " (YTD)" : ""} · ${v.toLocaleString()} filing${v === 1 ? "" : "s"}`
-        + (r.deltaPct != null ? ` · ${fmtSignedPct(r.deltaPct)} ${r.compareLabel || ""}` : "");
+      let periodLabel;
+      if (leaf.kind === "year") periodLabel = `${leaf.parentYear}${leaf.isPartial ? " (YTD)" : ""}`;
+      else if (leaf.kind === "quarter") periodLabel = `${leaf.parentYear} Q${leaf.parentQuarter}${leaf.isPartial ? " (PTD)" : ""}`;
+      else periodLabel = `${leaf.parentYear}-${String(leaf.row.month).padStart(2, "0")}${leaf.isPartial ? " (MTD)" : ""}`;
+      const compareLine = leaf.kind === "year" && leaf.row.deltaPct != null
+        ? ` · ${fmtSignedPct(leaf.row.deltaPct)} ${leaf.row.compareLabel || ""}`
+        : "";
+      let tip = `${periodLabel} · ${v.toLocaleString()} filing${v === 1 ? "" : "s"}${compareLine}`;
       if (proj && proj.delta > 0) {
         const yProjTop = yScale(proj.projected);
         const projH = Math.max(1, yTop - yProjTop);
-        projOverlay = `<rect x="${xLeft}" y="${yProjTop}" width="${barW}" height="${projH}" fill="#2563eb" fill-opacity="0.32" stroke="#2563eb" stroke-width="1" stroke-dasharray="3 3"/>`;
+        projOverlay = `<rect x="${x}" y="${yProjTop}" width="${w}" height="${projH}" fill="#2563eb" fill-opacity="0.32" stroke="#2563eb" stroke-width="1" stroke-dasharray="3 3"/>`;
         labelText = `${v.toLocaleString()} ~${proj.projected.toLocaleString()}`;
-        tip += ` · projected ~${proj.projected.toLocaleString()} by year-end (linear pace)`;
+        tip += ` · projected ~${proj.projected.toLocaleString()} by ${leaf.kind}-end (linear pace)`;
       }
+      // Smaller font + skip labels on sub-bars when the bar is too narrow.
+      const labelFont = leaf.kind === "year" ? 10 : (w >= 22 ? 9 : 0);
       const labelY = proj && proj.delta > 0 ? yScale(proj.projected) - 6 : yTop - 6;
-      const label = v > 0
-        ? `<text x="${cx}" y="${labelY}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#475569">${labelText}</text>`
+      const label = v > 0 && labelFont
+        ? `<text x="${cx}" y="${labelY}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="${labelFont}" fill="#475569">${labelText}</text>`
         : "";
-      return `<g><title>${escapeHtml(tip)}</title>`
-        + `<rect x="${xLeft}" y="${yTop}" width="${barW}" height="${h}" fill="${fill}" stroke="${stroke}" stroke-width="1.5"${dashAttr}/>`
+      const action = leaf.kind === "year"
+        ? "drillYear"
+        : leaf.kind === "quarter" ? "drillQuarter" : "collapseMonth";
+      const qAttr = leaf.parentQuarter ? ` data-drill-quarter="${leaf.parentQuarter}"` : "";
+      return `<g class="drillable-bar" data-drill-action="${action}" data-drill-year="${leaf.parentYear}"${qAttr}>`
+        + `<title>${escapeHtml(tip)}</title>`
+        + `<rect x="${x}" y="${yTop}" width="${w}" height="${h}" fill="${fill}" stroke="${stroke}" stroke-width="1.5"${dashAttr}/>`
         + projOverlay
-        + `${label}</g>`;
+        + label
+        + `</g>`;
     }).join("");
 
-    const xLabels = rows.map((r, i) => {
-      const cx = padL + bandW * (i + 0.5);
-      const suffix = r.isPartial ? " YTD" : "";
-      return `<text x="${cx}" y="${H - padB + 18}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#64748b">${r.year}${suffix}</text>`;
+    // One sub-label (Q1..Q4 or J/F/M/...) under each sub-bar, plus one
+    // year label per year-group anchored under its band. The year label
+    // doubles as a "click to collapse" target when its year is expanded.
+    const subLabels = layout
+      .filter(({ leaf }) => leaf.kind !== "year")
+      .map(({ leaf, cx }) => `<text x="${cx}" y="${H - padB + 14}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="9" fill="#94a3b8">${leaf.labelShort}</text>`)
+      .join("");
+    const yearGroups = new Map();
+    for (const item of layout) {
+      if (!yearGroups.has(item.leaf.parentYear)) yearGroups.set(item.leaf.parentYear, item);
+    }
+    const yearLabels = Array.from(yearGroups.entries()).map(([yr, item]) => {
+      const expanded = !!drill[yr];
+      const cx = item.groupX + item.groupW / 2;
+      const labelY = H - padB + (expanded ? 30 : 18);
+      const yearTextY = labelY;
+      // Show " YTD" only on the unexpanded current-year leaf so the suffix
+      // doesn't lie when the user is looking at quarter-level Q2 detail.
+      const isCurrentYearUnexpanded = !expanded && item.leaf.kind === "year" && item.leaf.isPartial;
+      const suffix = isCurrentYearUnexpanded ? " YTD" : "";
+      const collapseAttrs = expanded
+        ? ` data-drill-action="collapseYear" data-drill-year="${yr}" style="cursor:pointer"`
+        : "";
+      const arrow = expanded ? ' <tspan font-size="9" fill="#94a3b8">collapse</tspan>' : "";
+      return `<g${collapseAttrs}>`
+        + (expanded
+          ? `<rect x="${item.groupX}" y="${labelY - 12}" width="${item.groupW}" height="20" fill="transparent"/>`
+          : "")
+        + `<text x="${cx}" y="${yearTextY}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#64748b">${yr}${suffix}${arrow}</text>`
+        + `</g>`;
     }).join("");
 
-    host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${yTicks}${bars}${xLabels}</svg>`;
+    host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${yTicks}${bars}${subLabels}${yearLabels}</svg>`;
+    wireDrillClicks(host, "filingsByYear", () => {
+      renderAtYearChart(state.lastData && state.lastData.applicantTrends);
+    });
   }
 
   function renderAtYearTable(data) {
@@ -1536,26 +1787,39 @@
   // Shared stacked-bar renderer used by both the Type and Foreign-Priority
   // charts. ``segmentsFor(row)`` returns an ordered list of
   // ``{key, label, value, color}`` objects; the renderer stacks them
-  // bottom-up and dashes the partial (current) year so YTD reads as
-  // in-progress without forcing the eye to the legend.
-  function renderAtStackedBarChart(host, rows, segmentsFor, opts) {
+  // bottom-up and dashes the partial period bar so YTD/PTD/MTD reads as
+  // in-progress without forcing the eye to the legend. ``data`` carries
+  // the full backend payload so the renderer can drill into byQuarter /
+  // byMonth on click; ``chartKey`` selects the drill-state slot and
+  // ``rerender`` is the entry point used after a click mutates state.
+  function renderAtStackedBarChart(host, data, segmentsFor, chartKey, rerender) {
     if (!host) return;
-    if (!rows || !rows.length) {
+    const yearRows = (data && data.byYear) || [];
+    if (!yearRows.length) {
       host.innerHTML = `<div class="ext-empty">No filings detected in the current selection.</div>`;
+      host.onclick = null;
       return;
     }
-    const W = 920, H = 240, padL = 56, padR = 24, padT = 18, padB = 40;
+    const W = 920, H = 250, padL = 56, padR = 24, padT = 18, padB = 50;
     const innerW = W - padL - padR, innerH = H - padT - padB;
     const today = new Date();
-    const projections = rows.map((r) =>
-      r.isPartial ? ytdProjection(r.filings || 0, r.year, today) : null
+    const drill = state.drillState[chartKey];
+    const leaves = expandRowsForDrill(
+      yearRows,
+      (data && data.byQuarter) || [],
+      (data && data.byMonth) || [],
+      drill,
     );
+    const enriched = leaves.map((lf) => {
+      const total = (lf.row && lf.row.filings) || 0;
+      const proj = lf.isPartial
+        ? ytdProjectionForPeriod(total, lf.periodStart, lf.periodEnd, today)
+        : null;
+      return Object.assign({}, lf, { total, proj });
+    });
     const maxV = Math.max(
       1,
-      ...rows.map((r, i) => {
-        const proj = projections[i];
-        return proj ? proj.projected : (r.filings || 0);
-      })
+      ...enriched.map((lf) => (lf.proj ? lf.proj.projected : lf.total)),
     );
     const niceMax = (() => {
       const candidates = [5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000];
@@ -1563,8 +1827,7 @@
       return Math.ceil(maxV / 1000) * 1000;
     })();
     const yScale = (v) => padT + innerH - (v / niceMax) * innerH;
-    const bandW = innerW / rows.length;
-    const barW = Math.max(8, Math.min(48, bandW * 0.65));
+    const layout = drillBandLayout(enriched, padL, innerW);
 
     const yTicks = [0, 0.25, 0.5, 0.75, 1.0].map((p) => {
       const v = Math.round(niceMax * p);
@@ -1573,15 +1836,16 @@
         + `<text x="${padL - 8}" y="${y + 4}" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#64748b">${v.toLocaleString()}</text></g>`;
     }).join("");
 
-    const bars = rows.map((r, i) => {
-      const cx = padL + bandW * (i + 0.5);
-      const xLeft = cx - barW / 2;
-      const total = r.filings || 0;
-      const segments = segmentsFor(r) || [];
-      const proj = projections[i];
-      // Distribute the projected delta across non-empty segments using each
-      // segment's share of the actual total. Preserves segment proportions
-      // in the projected portion.
+    function periodLabel(leaf) {
+      if (leaf.kind === "year") return `${leaf.parentYear}${leaf.isPartial ? " YTD" : ""}`;
+      if (leaf.kind === "quarter") return `${leaf.parentYear} Q${leaf.parentQuarter}${leaf.isPartial ? " PTD" : ""}`;
+      return `${leaf.parentYear}-${String(leaf.row.month).padStart(2, "0")}${leaf.isPartial ? " MTD" : ""}`;
+    }
+
+    const bars = layout.map(({ leaf, x, w, cx }) => {
+      const total = leaf.total;
+      const segments = segmentsFor(leaf.row) || [];
+      const proj = leaf.proj;
       const projDelta = proj && proj.delta > 0 && total > 0 ? proj.delta : 0;
       let cursor = 0;
       let projCursor = total;
@@ -1594,47 +1858,72 @@
         const pct = total ? Math.round((100.0 * v / total)) : 0;
         const segDelta = projDelta > 0 ? (v / total) * projDelta : 0;
         const segProjected = v + segDelta;
-        const tipBase = `${seg.label}: ${v.toLocaleString()} (${pct}%) of ${total.toLocaleString()} in ${r.year}${r.isPartial ? " YTD" : ""}`;
+        const tipBase = `${seg.label}: ${v.toLocaleString()} (${pct}%) of ${total.toLocaleString()} in ${periodLabel(leaf)}`;
         const tip = projDelta > 0
-          ? `${tipBase} · projected ~${Math.round(segProjected).toLocaleString()} by year-end (linear pace)`
+          ? `${tipBase} · projected ~${Math.round(segProjected).toLocaleString()} by ${leaf.kind}-end (linear pace)`
           : tipBase;
-        const dashAttr = r.isPartial ? ' stroke-dasharray="3 3" stroke="#1e293b" stroke-width="1"' : "";
+        const dashAttr = leaf.isPartial ? ' stroke-dasharray="3 3" stroke="#1e293b" stroke-width="1"' : "";
         let projOverlay = "";
         if (segDelta > 0) {
           const yProjTop = yScale(projCursor + segDelta);
           const yProjBottom = yScale(projCursor);
           const projH = Math.max(1, yProjBottom - yProjTop);
-          projOverlay = `<rect x="${xLeft}" y="${yProjTop}" width="${barW}" height="${projH}" fill="${seg.color}" fill-opacity="0.32" stroke="${seg.color}" stroke-width="1" stroke-dasharray="3 3"/>`;
+          projOverlay = `<rect x="${x}" y="${yProjTop}" width="${w}" height="${projH}" fill="${seg.color}" fill-opacity="0.32" stroke="${seg.color}" stroke-width="1" stroke-dasharray="3 3"/>`;
           projCursor += segDelta;
         }
         return `<g><title>${escapeHtml(tip)}</title>`
-          + `<rect x="${xLeft}" y="${yTop}" width="${barW}" height="${h}" fill="${seg.color}"${dashAttr}/>`
+          + `<rect x="${x}" y="${yTop}" width="${w}" height="${h}" fill="${seg.color}"${dashAttr}/>`
           + projOverlay
           + `</g>`;
       }).join("");
+      const labelFont = leaf.kind === "year" ? 10 : (w >= 22 ? 9 : 0);
       const labelTop = projDelta > 0 ? yScale(proj.projected) - 6 : yScale(total) - 6;
       const labelText = projDelta > 0
         ? `${total.toLocaleString()} ~${proj.projected.toLocaleString()}`
         : total.toLocaleString();
-      const label = total > 0
-        ? `<text x="${cx}" y="${labelTop}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#475569">${labelText}</text>`
+      const label = total > 0 && labelFont
+        ? `<text x="${cx}" y="${labelTop}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="${labelFont}" fill="#475569">${labelText}</text>`
         : "";
-      return `<g>${segSvg}${label}</g>`;
+      const action = leaf.kind === "year"
+        ? "drillYear"
+        : leaf.kind === "quarter" ? "drillQuarter" : "collapseMonth";
+      const qAttr = leaf.parentQuarter ? ` data-drill-quarter="${leaf.parentQuarter}"` : "";
+      return `<g class="drillable-bar" data-drill-action="${action}" data-drill-year="${leaf.parentYear}"${qAttr}>${segSvg}${label}</g>`;
     }).join("");
 
-    const xLabels = rows.map((r, i) => {
-      const cx = padL + bandW * (i + 0.5);
-      const suffix = r.isPartial ? " YTD" : "";
-      return `<text x="${cx}" y="${H - padB + 18}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#64748b">${r.year}${suffix}</text>`;
+    const subLabels = layout
+      .filter(({ leaf }) => leaf.kind !== "year")
+      .map(({ leaf, cx }) => `<text x="${cx}" y="${H - padB + 14}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="9" fill="#94a3b8">${leaf.labelShort}</text>`)
+      .join("");
+    const yearGroups = new Map();
+    for (const item of layout) {
+      if (!yearGroups.has(item.leaf.parentYear)) yearGroups.set(item.leaf.parentYear, item);
+    }
+    const yearLabels = Array.from(yearGroups.entries()).map(([yr, item]) => {
+      const expanded = !!drill[yr];
+      const cx = item.groupX + item.groupW / 2;
+      const labelY = H - padB + (expanded ? 30 : 18);
+      const isCurrentYearUnexpanded = !expanded && item.leaf.kind === "year" && item.leaf.isPartial;
+      const suffix = isCurrentYearUnexpanded ? " YTD" : "";
+      const collapseAttrs = expanded
+        ? ` data-drill-action="collapseYear" data-drill-year="${yr}" style="cursor:pointer"`
+        : "";
+      const arrow = expanded ? ' <tspan font-size="9" fill="#94a3b8">collapse</tspan>' : "";
+      return `<g${collapseAttrs}>`
+        + (expanded
+          ? `<rect x="${item.groupX}" y="${labelY - 12}" width="${item.groupW}" height="20" fill="transparent"/>`
+          : "")
+        + `<text x="${cx}" y="${labelY}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#64748b">${yr}${suffix}${arrow}</text>`
+        + `</g>`;
     }).join("");
 
-    host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${yTicks}${bars}${xLabels}</svg>`;
+    host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${yTicks}${bars}${subLabels}${yearLabels}</svg>`;
+    wireDrillClicks(host, chartKey, rerender);
   }
 
   function renderAtTypeChart(data) {
     const host = document.getElementById("at-type-chart");
     if (!host) return;
-    const rows = (data && data.byYear) || [];
     const typesShown = (data && data.typesShown) || [];
     const sub = document.getElementById("at-type-sub");
     if (sub) {
@@ -1646,8 +1935,8 @@
       sub.textContent = `${labels} · ${total.toLocaleString()} FILING${total === 1 ? "" : "S"}${asOf ? " · AS OF " + asOf : ""}`;
     }
     renderAtLegend("at-type-legend", typesShown, AT_TYPE_META);
-    renderAtStackedBarChart(host, rows, (r) => {
-      return typesShown.map((k) => {
+    const segmentsFor = (r) =>
+      typesShown.map((k) => {
         const meta = AT_TYPE_META[k] || { label: k, color: "#94a3b8" };
         return {
           key: k,
@@ -1656,13 +1945,14 @@
           color: meta.color,
         };
       });
+    renderAtStackedBarChart(host, data, segmentsFor, "filingsByType", () => {
+      renderAtTypeChart(state.lastData && state.lastData.filingsByType);
     });
   }
 
   function renderAtForeignPriorityChart(data) {
     const host = document.getElementById("at-fp-chart");
     if (!host) return;
-    const rows = (data && data.byYear) || [];
     const sub = document.getElementById("at-fp-sub");
     if (sub) {
       const totals = (data && data.totals) || {};
@@ -1673,10 +1963,13 @@
       sub.textContent = `${w.toLocaleString()} WITH FOREIGN PRIORITY · ${wo.toLocaleString()} WITHOUT · ${pctText} CLAIM FOREIGN PRIORITY`;
     }
     renderAtLegend("at-fp-legend", ["withForeign", "withoutForeign"], AT_FP_META);
-    renderAtStackedBarChart(host, rows, (r) => [
+    const segmentsFor = (r) => [
       { key: "withForeign",    label: AT_FP_META.withForeign.label,    value: r.withForeign || 0,    color: AT_FP_META.withForeign.color },
       { key: "withoutForeign", label: AT_FP_META.withoutForeign.label, value: r.withoutForeign || 0, color: AT_FP_META.withoutForeign.color },
-    ]);
+    ];
+    renderAtStackedBarChart(host, data, segmentsFor, "filingsByForeignPriority", () => {
+      renderAtForeignPriorityChart(state.lastData && state.lastData.filingsByForeignPriority);
+    });
   }
 
   // ---------------------------------------------------------------------

@@ -1194,6 +1194,122 @@ def test_applicant_trends_top_applicants_caps_at_limit() -> None:
     assert out["totalApplicantsWithFilings"] == 50
 
 
+def test_applicant_trends_drill_down_quarter_and_month_buckets() -> None:
+    """byQuarter / byMonth carry per-period filing counts, are dense across
+    the full year span, and flag only the current quarter / month as
+    partial. Per-quarter sums equal the per-year filing total so drill-down
+    bars stack to the same height as the parent year."""
+    rows = (
+        [_filing_row(f"Q1A-{i}", filing_date=date(2024, 1, 15)) for i in range(3)]
+        + [_filing_row(f"Q1B-{i}", filing_date=date(2024, 3, 1))  for i in range(2)]
+        + [_filing_row(f"Q3A-{i}", filing_date=date(2024, 7, 5))  for i in range(4)]
+        + [_filing_row(f"Q4A-{i}", filing_date=date(2024, 12, 28)) for i in range(1)]
+        + [_filing_row("CY-Q2-MAY", filing_date=date(2026, 5, 2))]
+        + [_filing_row("CY-Q2-APR", filing_date=date(2026, 4, 30))]
+    )
+    out = compute_applicant_trends(rows, today=date(2026, 5, 2))
+
+    by_q = {(r["year"], r["quarter"]): r for r in out["byQuarter"]}
+    by_m = {(r["year"], r["month"]): r for r in out["byMonth"]}
+
+    # 2024 Q1 = Jan + Mar filings.
+    assert by_q[(2024, 1)]["filings"] == 5
+    assert by_q[(2024, 3)]["filings"] == 4
+    assert by_q[(2024, 4)]["filings"] == 1
+    assert by_q[(2024, 2)]["filings"] == 0
+    # Each quarter's isPartial is False (2024 != current year).
+    for q in range(1, 5):
+        assert by_q[(2024, q)]["isPartial"] is False
+
+    # Per-year invariant: quarter sums == year sum (both for actual and zero years).
+    assert sum(by_q[(2024, q)]["filings"] for q in range(1, 5)) == 10
+    assert sum(by_q[(2025, q)]["filings"] for q in range(1, 5)) == 0
+
+    # Current year/quarter/month flagged.
+    assert by_q[(2026, 2)]["isPartial"] is True
+    assert by_q[(2026, 1)]["isPartial"] is False
+    assert by_q[(2026, 2)]["filings"] == 2
+
+    # Months — May 2026 is the current partial month, April 2026 is settled.
+    assert by_m[(2026, 5)]["isPartial"] is True
+    assert by_m[(2026, 5)]["filings"] == 1
+    assert by_m[(2026, 4)]["isPartial"] is False
+    assert by_m[(2026, 4)]["filings"] == 1
+
+    # Density: full month range present from y_min through current year.
+    expected_keys = {(y, m) for y in (2024, 2025, 2026) for m in range(1, 13)}
+    assert set(by_m.keys()) == expected_keys
+
+
+def test_filings_by_type_drill_down_quarter_and_month_segments() -> None:
+    rows = [
+        _row("PROV-Q1", filing_date=date(2024, 2, 1), application_type="provisional"),
+        _row("REG-Q1",  filing_date=date(2024, 3, 1), application_type="regular"),
+        _row("CON-Q3",  filing_date=date(2024, 8, 1), application_type="con"),
+        _row("CY-PROV", filing_date=date(2026, 5, 1), application_type="provisional"),
+    ]
+    out = compute_filings_by_type(rows, today=date(2026, 5, 15))
+    by_q = {(r["year"], r["quarter"]): r for r in out["byQuarter"]}
+    by_m = {(r["year"], r["month"]): r for r in out["byMonth"]}
+
+    # 2024 Q1: 1 provisional + 1 regular = 2 filings; Q3: 1 con; rest empty.
+    assert by_q[(2024, 1)]["filings"] == 2
+    assert by_q[(2024, 1)]["byType"]["provisional"] == 1
+    assert by_q[(2024, 1)]["byType"]["regular"] == 1
+    assert by_q[(2024, 3)]["filings"] == 1
+    assert by_q[(2024, 3)]["byType"]["con"] == 1
+    assert by_q[(2024, 2)]["filings"] == 0
+    assert sum(by_q[(2024, 2)]["byType"].values()) == 0
+
+    # Drill invariant: per-quarter type segment sums == filings.
+    for r in out["byQuarter"]:
+        assert sum(r["byType"].values()) == r["filings"]
+    for r in out["byMonth"]:
+        assert sum(r["byType"].values()) == r["filings"]
+
+    # Current quarter/month flag.
+    assert by_q[(2026, 2)]["isPartial"] is True
+    assert by_m[(2026, 5)]["isPartial"] is True
+    assert by_m[(2026, 5)]["byType"]["provisional"] == 1
+
+
+def test_filings_by_foreign_priority_drill_down_quarter_and_month() -> None:
+    rows = [
+        _row("F-Q1", filing_date=date(2024, 2, 1), has_foreign_priority=True),
+        _row("D-Q1", filing_date=date(2024, 3, 1), has_foreign_priority=False),
+        _row("F-Q3", filing_date=date(2024, 9, 1), has_foreign_priority=True),
+        _row("CY-FOR", filing_date=date(2026, 5, 1), has_foreign_priority=True),
+    ]
+    out = compute_foreign_priority_by_year(rows, today=date(2026, 5, 15))
+    by_q = {(r["year"], r["quarter"]): r for r in out["byQuarter"]}
+    by_m = {(r["year"], r["month"]): r for r in out["byMonth"]}
+
+    assert by_q[(2024, 1)]["withForeign"] == 1
+    assert by_q[(2024, 1)]["withoutForeign"] == 1
+    assert by_q[(2024, 1)]["filings"] == 2
+    assert by_q[(2024, 3)]["withForeign"] == 1
+    assert by_q[(2024, 3)]["withoutForeign"] == 0
+    # Per-quarter invariant: with + without == filings
+    for r in out["byQuarter"]:
+        assert r["withForeign"] + r["withoutForeign"] == r["filings"]
+
+    assert by_m[(2026, 5)]["isPartial"] is True
+    assert by_m[(2026, 5)]["withForeign"] == 1
+    assert by_q[(2026, 2)]["isPartial"] is True
+
+
+def test_filings_by_type_empty_returns_empty_drill_payloads() -> None:
+    out = compute_filings_by_type([], today=date(2026, 4, 30))
+    assert out["byQuarter"] == []
+    assert out["byMonth"] == []
+
+
+def test_filings_by_foreign_priority_empty_returns_empty_drill_payloads() -> None:
+    out = compute_foreign_priority_by_year([], today=date(2026, 4, 30))
+    assert out["byQuarter"] == []
+    assert out["byMonth"] == []
+
+
 # ---------------------------------------------------------------------------
 # Filings by Type / Foreign Priority — stacked-by-year aggregators.
 # ---------------------------------------------------------------------------
