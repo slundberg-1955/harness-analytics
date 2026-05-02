@@ -1088,7 +1088,20 @@
     }
     const W = 920, H = 296, padL = 56, padR = 24, padT = 18, padB = 50;
     const innerW = W - padL - padR, innerH = H - padT - padB;
-    const maxTotal = Math.max(1, ...rows.map((r) => r.total || 0));
+    const today = new Date();
+    // Belt-and-suspenders: prefer the backend ``isPartial`` flag, fall back
+    // to a year-of-today comparison if an older payload is in flight.
+    const isPartial = (r) => r.isPartial === true || r.year === today.getFullYear();
+    const projections = rows.map((r) =>
+      isPartial(r) ? ytdProjection(r.total || 0, r.year, today) : null
+    );
+    const maxTotal = Math.max(
+      1,
+      ...rows.map((r, i) => {
+        const proj = projections[i];
+        return proj ? proj.projected : (r.total || 0);
+      })
+    );
     // Round the y-axis up to a nice number so the gridlines look clean.
     const niceMax = (() => {
       const candidates = [5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 5000];
@@ -1114,9 +1127,13 @@
       const ctnf = r.ctnf || 0;
       const ctfr = r.ctfr || 0;
       const ctrs = r.restriction || 0;
+      const total = r.total || 0;
+      const proj = projections[i];
+      const projDelta = proj && proj.delta > 0 && total > 0 ? proj.delta : 0;
       // Track running total in value-space, then convert to pixels per
       // segment so per-segment rounding doesn't accumulate gaps.
       let runningValue = 0;
+      let projCursor = total;
       const segs = [];
       function pushSeg(value, color) {
         if (value <= 0) return;
@@ -1125,6 +1142,16 @@
         const h = Math.max(1, yBottom - yTop);
         segs.push(`<rect x="${xLeft}" y="${yTop}" width="${barW}" height="${h}" fill="${color}"/>`);
         runningValue += value;
+        if (projDelta > 0) {
+          const segDelta = (value / total) * projDelta;
+          if (segDelta > 0) {
+            const yProjBottom = yScale(projCursor);
+            const yProjTop = yScale(projCursor + segDelta);
+            const projH = Math.max(1, yProjBottom - yProjTop);
+            segs.push(`<rect x="${xLeft}" y="${yProjTop}" width="${barW}" height="${projH}" fill="${color}" fill-opacity="0.32" stroke="${color}" stroke-width="1" stroke-dasharray="3 3"/>`);
+            projCursor += segDelta;
+          }
+        }
       }
       pushSeg(ctnf, colors.ctnf);
       pushSeg(ctfr, colors.ctfr);
@@ -1139,16 +1166,24 @@
       if (r.twoMonth)   durParts.push(`2mo ${r.twoMonth}`);
       if (r.threeMonth) durParts.push(`3mo ${r.threeMonth}`);
       if (r.fourPlus)   durParts.push(`4+mo ${r.fourPlus}`);
-      const tip = `${r.year}${tipParts.length ? " · " + tipParts.join(" · ") : ""} · Total ${r.total}${durParts.length ? "\nLength: " + durParts.join(", ") : ""}`;
+      const partialSuffix = projDelta > 0
+        ? ` · projected ~${proj.projected.toLocaleString()} by year-end (linear pace)`
+        : "";
+      const tip = `${r.year}${isPartial(r) ? " (YTD)" : ""}${tipParts.length ? " · " + tipParts.join(" · ") : ""} · Total ${r.total}${partialSuffix}${durParts.length ? "\nLength: " + durParts.join(", ") : ""}`;
+      const labelText = projDelta > 0
+        ? `${r.total} ~${proj.projected.toLocaleString()}`
+        : `${r.total}`;
+      const labelY = projDelta > 0 ? yScale(proj.projected) - 6 : yScale(r.total) - 6;
       const totalLabel = r.total > 0
-        ? `<text x="${cx}" y="${yScale(r.total) - 6}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#475569">${r.total}</text>`
+        ? `<text x="${cx}" y="${labelY}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#475569">${labelText}</text>`
         : "";
       return `<g><title>${escapeHtml(tip)}</title>${segs.join("")}${totalLabel}</g>`;
     }).join("");
 
     const xLabels = rows.map((r, i) => {
       const cx = padL + bandW * (i + 0.5);
-      return `<text x="${cx}" y="${H - padB + 18}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#64748b">${r.year}</text>`;
+      const suffix = isPartial(r) ? " YTD" : "";
+      return `<text x="${cx}" y="${H - padB + 18}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#64748b">${r.year}${suffix}</text>`;
     }).join("");
 
     host.innerHTML = `
@@ -1273,6 +1308,28 @@
     return n > 0 ? "at-delta-up" : "at-delta-down";
   }
 
+  // Linear day-of-year projection for in-progress calendar years. Returns
+  // null when ``year`` is not the current calendar year. ``actual`` is the
+  // YTD count; ``projected`` is the estimated full-year total. The 5%
+  // guard prevents January noise from drawing a 20x-tall ghost extension.
+  function ytdProjection(actual, year, today) {
+    const now = today || new Date();
+    if (year !== now.getFullYear()) return null;
+    const start = new Date(year, 0, 1);
+    const end = new Date(year + 1, 0, 1);
+    const fraction = (now - start) / (end - start);
+    if (!actual || fraction < 0.05) {
+      return { actual: actual || 0, projected: actual || 0, delta: 0, fraction };
+    }
+    const projected = Math.round(actual / fraction);
+    return {
+      actual,
+      projected,
+      delta: Math.max(0, projected - actual),
+      fraction,
+    };
+  }
+
   function renderAtYearChart(data) {
     const host = document.getElementById("at-year-chart");
     if (!host) return;
@@ -1283,7 +1340,19 @@
     }
     const W = 920, H = 240, padL = 56, padR = 24, padT = 18, padB = 40;
     const innerW = W - padL - padR, innerH = H - padT - padB;
-    const maxV = Math.max(1, ...rows.map((r) => r.filings || 0));
+    const today = new Date();
+    // Pre-compute YTD projections so the y-axis can include the projected
+    // tip and the bar rendering can reuse the same projected total.
+    const projections = rows.map((r) =>
+      r.isPartial ? ytdProjection(r.filings || 0, r.year, today) : null
+    );
+    const maxV = Math.max(
+      1,
+      ...rows.map((r, i) => {
+        const proj = projections[i];
+        return proj ? proj.projected : (r.filings || 0);
+      })
+    );
     const niceMax = (() => {
       const candidates = [5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000];
       for (const c of candidates) { if (c >= maxV) return c; }
@@ -1312,13 +1381,25 @@
       const fill = r.isPartial ? "#dbeafe" : "#2563eb";
       const stroke = r.isPartial ? "#2563eb" : "transparent";
       const dashAttr = r.isPartial ? ' stroke-dasharray="3 3"' : "";
-      const tip = `${r.year}${r.isPartial ? " (YTD)" : ""} · ${v.toLocaleString()} filing${v === 1 ? "" : "s"}`
+      const proj = projections[i];
+      let projOverlay = "";
+      let labelText = v.toLocaleString();
+      let tip = `${r.year}${r.isPartial ? " (YTD)" : ""} · ${v.toLocaleString()} filing${v === 1 ? "" : "s"}`
         + (r.deltaPct != null ? ` · ${fmtSignedPct(r.deltaPct)} ${r.compareLabel || ""}` : "");
+      if (proj && proj.delta > 0) {
+        const yProjTop = yScale(proj.projected);
+        const projH = Math.max(1, yTop - yProjTop);
+        projOverlay = `<rect x="${xLeft}" y="${yProjTop}" width="${barW}" height="${projH}" fill="#2563eb" fill-opacity="0.32" stroke="#2563eb" stroke-width="1" stroke-dasharray="3 3"/>`;
+        labelText = `${v.toLocaleString()} ~${proj.projected.toLocaleString()}`;
+        tip += ` · projected ~${proj.projected.toLocaleString()} by year-end (linear pace)`;
+      }
+      const labelY = proj && proj.delta > 0 ? yScale(proj.projected) - 6 : yTop - 6;
       const label = v > 0
-        ? `<text x="${cx}" y="${yTop - 6}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#475569">${v.toLocaleString()}</text>`
+        ? `<text x="${cx}" y="${labelY}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#475569">${labelText}</text>`
         : "";
       return `<g><title>${escapeHtml(tip)}</title>`
         + `<rect x="${xLeft}" y="${yTop}" width="${barW}" height="${h}" fill="${fill}" stroke="${stroke}" stroke-width="1.5"${dashAttr}/>`
+        + projOverlay
         + `${label}</g>`;
     }).join("");
 
@@ -1465,7 +1546,17 @@
     }
     const W = 920, H = 240, padL = 56, padR = 24, padT = 18, padB = 40;
     const innerW = W - padL - padR, innerH = H - padT - padB;
-    const maxV = Math.max(1, ...rows.map((r) => r.filings || 0));
+    const today = new Date();
+    const projections = rows.map((r) =>
+      r.isPartial ? ytdProjection(r.filings || 0, r.year, today) : null
+    );
+    const maxV = Math.max(
+      1,
+      ...rows.map((r, i) => {
+        const proj = projections[i];
+        return proj ? proj.projected : (r.filings || 0);
+      })
+    );
     const niceMax = (() => {
       const candidates = [5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000];
       for (const c of candidates) { if (c >= maxV) return c; }
@@ -1487,7 +1578,13 @@
       const xLeft = cx - barW / 2;
       const total = r.filings || 0;
       const segments = segmentsFor(r) || [];
+      const proj = projections[i];
+      // Distribute the projected delta across non-empty segments using each
+      // segment's share of the actual total. Preserves segment proportions
+      // in the projected portion.
+      const projDelta = proj && proj.delta > 0 && total > 0 ? proj.delta : 0;
       let cursor = 0;
+      let projCursor = total;
       const segSvg = segments.map((seg) => {
         const v = seg.value || 0;
         if (v <= 0) return "";
@@ -1495,13 +1592,32 @@
         const h = Math.max(1, yScale(cursor) - yTop);
         cursor += v;
         const pct = total ? Math.round((100.0 * v / total)) : 0;
-        const tip = `${seg.label}: ${v.toLocaleString()} (${pct}%) of ${total.toLocaleString()} in ${r.year}${r.isPartial ? " YTD" : ""}`;
+        const segDelta = projDelta > 0 ? (v / total) * projDelta : 0;
+        const segProjected = v + segDelta;
+        const tipBase = `${seg.label}: ${v.toLocaleString()} (${pct}%) of ${total.toLocaleString()} in ${r.year}${r.isPartial ? " YTD" : ""}`;
+        const tip = projDelta > 0
+          ? `${tipBase} · projected ~${Math.round(segProjected).toLocaleString()} by year-end (linear pace)`
+          : tipBase;
         const dashAttr = r.isPartial ? ' stroke-dasharray="3 3" stroke="#1e293b" stroke-width="1"' : "";
+        let projOverlay = "";
+        if (segDelta > 0) {
+          const yProjTop = yScale(projCursor + segDelta);
+          const yProjBottom = yScale(projCursor);
+          const projH = Math.max(1, yProjBottom - yProjTop);
+          projOverlay = `<rect x="${xLeft}" y="${yProjTop}" width="${barW}" height="${projH}" fill="${seg.color}" fill-opacity="0.32" stroke="${seg.color}" stroke-width="1" stroke-dasharray="3 3"/>`;
+          projCursor += segDelta;
+        }
         return `<g><title>${escapeHtml(tip)}</title>`
-          + `<rect x="${xLeft}" y="${yTop}" width="${barW}" height="${h}" fill="${seg.color}"${dashAttr}/></g>`;
+          + `<rect x="${xLeft}" y="${yTop}" width="${barW}" height="${h}" fill="${seg.color}"${dashAttr}/>`
+          + projOverlay
+          + `</g>`;
       }).join("");
+      const labelTop = projDelta > 0 ? yScale(proj.projected) - 6 : yScale(total) - 6;
+      const labelText = projDelta > 0
+        ? `${total.toLocaleString()} ~${proj.projected.toLocaleString()}`
+        : total.toLocaleString();
       const label = total > 0
-        ? `<text x="${cx}" y="${yScale(total) - 6}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#475569">${total.toLocaleString()}</text>`
+        ? `<text x="${cx}" y="${labelTop}" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" fill="#475569">${labelText}</text>`
         : "";
       return `<g>${segSvg}${label}</g>`;
     }).join("");

@@ -142,7 +142,7 @@ def _extension_for_oa(
     return out
 
 
-def _empty_year_row(year: int) -> dict[str, int]:
+def _empty_year_row(year: int) -> dict[str, Any]:
     return {
         "year": year,
         "ctnf": 0,
@@ -158,6 +158,9 @@ def _empty_year_row(year: int) -> dict[str, int]:
         "twoMonth": 0,
         "threeMonth": 0,
         "fourPlus": 0,
+        # Stamped after the per-year roll-up; default False so zero-filled
+        # gap rows aren't accidentally flagged as YTD.
+        "isPartial": False,
     }
 
 
@@ -173,6 +176,8 @@ def _bucket_key(months: int) -> str:
 
 def compute_extensions_by_year(
     grouped: dict[int, dict[str, list[Any]]],
+    *,
+    today: Optional[date] = None,
 ) -> dict[str, Any]:
     """Aggregate per-year extension counts across many applications.
 
@@ -193,13 +198,17 @@ def compute_extensions_by_year(
 
         {
             "byYear":  [{"year": 2023, "ctnf": 5, "ctfr": 2,
-                         "restriction": 1, "total": 8}, ...],
+                         "restriction": 1, "total": 8,
+                         "isPartial": False}, ...],
             "totals":  {"ctnf": ..., "ctfr": ..., "restriction": ..., "total": ...},
             "appsContributing": int,   # apps with >=1 extension
         }
 
     ``byYear`` is dense: every year between the min and max year with any
     extension is present (zero-filled gaps make the chart axis stable).
+    The current calendar year (per ``today``, defaulting to ``date.today()``)
+    is flagged ``isPartial=True`` so the renderer can overlay a YTD
+    projection. Zero-filled gap rows for prior years are ``isPartial=False``.
     """
     by_year: dict[int, dict[str, int]] = {}
     apps_contributing: set[int] = set()
@@ -270,6 +279,10 @@ def compute_extensions_by_year(
         y_max = max(by_year)
         for y in range(y_min, y_max + 1):
             by_year.setdefault(y, _empty_year_row(y))
+
+    cur_year = (today or date.today()).year
+    for y, row in by_year.items():
+        row["isPartial"] = (y == cur_year)
 
     rows = [by_year[y] for y in sorted(by_year)]
     totals = {

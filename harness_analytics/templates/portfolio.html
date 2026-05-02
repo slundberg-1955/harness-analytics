@@ -379,7 +379,11 @@
               merits response to a subsequent CTNF/CTFR doesn't get
               credited back to the restriction. Counts the full
               chip-filtered selection — not affected by the recency window
-              on the Allowance Analytics tab.
+              on the Allowance Analytics tab. The current calendar year is
+              YTD; the lighter dashed extension above the bar is a linear
+              projection (actual ÷ fraction of year elapsed) of the
+              full-year total, distributed across CTNF/CTFR/Restriction
+              segments in the same proportions as the YTD actuals.
             </div>
           </div>
         </div>
@@ -411,6 +415,14 @@
                 <tbody id="at-year-tbody"></tbody>
               </table>
             </div>
+            <div class="ext-method">
+              <strong>Methodology.</strong>
+              The current calendar year is shown as YTD. The lighter dashed
+              extension above the YTD bar is a linear projection of the
+              full-year total (actual ÷ fraction of year elapsed); it's
+              hidden in the first ~18 days of January when the day-of-year
+              denominator is too small to be meaningful.
+            </div>
           </div>
         </div>
 
@@ -434,7 +446,10 @@
               (Continuation, Continuation-in-Part, or Divisional). Rows whose
               type is still being backfilled are bucketed as
               <em>regular</em> so per-year totals stay byte-identical to the
-              chart above.
+              chart above. The current calendar year is YTD; the lighter
+              dashed extension above each segment is a linear projection
+              of the full-year total, distributed across types in the
+              same proportions as the YTD actuals.
             </div>
           </div>
         </div>
@@ -456,7 +471,10 @@
               in the continuity chain is a PCT national-stage filing. Rows
               where the flag is still null (mid-backfill) count as
               <em>no foreign priority</em> so the per-year totals match the
-              Filings by Year chart above.
+              Filings by Year chart above. The current calendar year is YTD;
+              the lighter dashed extension above each segment is a linear
+              projection (actual ÷ fraction of year elapsed) of the
+              full-year total.
             </div>
           </div>
         </div>

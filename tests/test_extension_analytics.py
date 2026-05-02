@@ -453,6 +453,48 @@ def test_elc_before_ctrs_does_not_close_window():
     assert _row(out["byYear"], 2024)["twoMonth"] == 1
 
 
+def test_compute_extensions_by_year_flags_current_year_partial():
+    """The current calendar year row should be flagged ``isPartial=True`` so
+    the frontend can overlay a YTD projection. Prior-year rows — including
+    zero-filled gap rows — must stay ``isPartial=False``.
+    """
+    g = {
+        1: {
+            "ctnf": [date(2023, 1, 1)],
+            "ctfr": [], "ctrs": [], "noa": [],
+            "response": [date(2023, 5, 1)],
+            "rem": [], "elc": [],
+        },
+        2: {
+            "ctnf": [date(2026, 1, 1)],
+            "ctfr": [], "ctrs": [], "noa": [],
+            "response": [date(2026, 5, 1)],
+            "rem": [], "elc": [],
+        },
+    }
+    out = compute_extensions_by_year(g, today=date(2026, 5, 1))
+    flags = {r["year"]: r["isPartial"] for r in out["byYear"]}
+    assert flags == {2023: False, 2024: False, 2025: False, 2026: True}
+
+
+def test_compute_extensions_by_year_default_today_uses_date_today(monkeypatch):
+    """When ``today`` is not passed, the function falls back to
+    ``date.today()`` — verify the current-year row is still flagged.
+    """
+    g = _grouped(
+        ctnf=[date(2024, 1, 1)],
+        response=[date(2024, 5, 1)],
+    )
+    out = compute_extensions_by_year(g)
+    today_year = date.today().year
+    flags = {r["year"]: r["isPartial"] for r in out["byYear"]}
+    if today_year in flags:
+        assert flags[today_year] is True
+    for y, p in flags.items():
+        if y != today_year:
+            assert p is False
+
+
 def test_earlier_of_elc_or_rem_is_the_ctrs_response():
     """If both an Election and a REM are on file after a CTRS, the earlier
     one is the response (boundary closes at min, candidates union takes
