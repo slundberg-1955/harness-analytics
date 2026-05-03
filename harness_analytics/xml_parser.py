@@ -252,12 +252,18 @@ def family_root_app_no_from_xml(application_number: str | None, xml_text: str | 
     return family_root_app_no_from_root(root, application_number)
 
 
-# `has_foreign_priority`: spec §5.7 — true when ForeignPriorityList has any
-# entries, OR when ParentContinuityList contains a PCT national-stage entry.
+# `has_foreign_priority`: spec §5.7 — true when any ForeignPriority entry
+# exists, OR when ParentContinuityList contains a PCT national-stage entry.
+#
+# Note on the wrapper element: the live USPTO bibliographic XML wraps the
+# entries in ``<ForeignPriorities>`` (plural). Older drafts of the spec
+# named the wrapper ``<ForeignPriorityList>``. We don't depend on either
+# wrapper — ``.//ForeignPriority`` matches the leaf element regardless of
+# its parent, which is the only thing we actually need for the boolean.
 def has_foreign_priority_from_root(root: Any) -> bool:
     if root is None:
         return False
-    if root.xpath(".//ForeignPriorityList/ForeignPriority"):
+    if root.xpath(".//ForeignPriority"):
         return True
     for el in root.xpath(".//Continuity/ParentContinuityList/ParentContinuity"):
         parent = (extract_text(el, "ParentApplicationNumber/text()") or "").upper()
@@ -280,10 +286,15 @@ def has_foreign_priority_from_xml(xml_text: str | None) -> bool:
 
 
 def earliest_priority_date_from_root(root: Any) -> Any:
-    """Earliest claim from <DomesticPriorityList> + <ForeignPriorityList>.
+    """Earliest priority claim from any of the priority/benefit blocks.
 
     Used by the timeline ``priority_later_of`` and ``pct_national`` rules.
     Returns a ``date`` or ``None`` if no claim is present or parseable.
+
+    The live USPTO bib XML names the foreign-priority date child element
+    ``<ForeignPriorityDate>`` (not ``<FilingDate>`` like the domestic
+    blocks). We pull both spellings so a future schema change in either
+    direction still produces a date.
     """
     if root is None:
         return None
@@ -291,7 +302,7 @@ def earliest_priority_date_from_root(root: Any) -> Any:
     for path in (
         ".//DomesticPriorityList/DomesticPriority/FilingDate/text()",
         ".//DomesticPriority/FilingDate/text()",
-        ".//ForeignPriorityList/ForeignPriority/FilingDate/text()",
+        ".//ForeignPriority/ForeignPriorityDate/text()",
         ".//ForeignPriority/FilingDate/text()",
         ".//DomesticBenefit/FilingDate/text()",
     ):

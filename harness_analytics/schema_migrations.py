@@ -717,10 +717,15 @@ BEGIN
        AND xml_raw <> ''
   LOOP
     BEGIN
+      -- Live USPTO bib XML names the foreign-priority date child
+      -- ``<ForeignPriorityDate>`` (not ``<FilingDate>`` like the
+      -- domestic blocks). We pull both spellings to stay tolerant of
+      -- either schema.
       SELECT MIN(NULLIF(BTRIM(t::text), '')::date) INTO v_date
         FROM unnest(
           xpath('//DomesticPriorityList/DomesticPriority/FilingDate/text()', xmlparse(content r.xml_raw))
-            || xpath('//ForeignPriorityList/ForeignPriority/FilingDate/text()', xmlparse(content r.xml_raw))
+            || xpath('//ForeignPriority/ForeignPriorityDate/text()', xmlparse(content r.xml_raw))
+            || xpath('//ForeignPriority/FilingDate/text()', xmlparse(content r.xml_raw))
             || xpath('//DomesticBenefit/FilingDate/text()', xmlparse(content r.xml_raw))
         ) AS t;
       IF v_date IS NOT NULL THEN
@@ -882,8 +887,10 @@ BEGIN
       END IF;
 
       -- has_foreign_priority: any ForeignPriority entry, or any PCT parent.
+      -- Live bib XML wraps entries in <ForeignPriorities> (plural). We
+      -- match the leaf element directly to stay schema-tolerant.
       SELECT
-        EXISTS (SELECT 1 FROM unnest(xpath('//ForeignPriorityList/ForeignPriority', v_doc)) x)
+        EXISTS (SELECT 1 FROM unnest(xpath('//ForeignPriority', v_doc)) x)
         OR EXISTS (
           SELECT 1 FROM unnest(
             xpath('//Continuity/ParentContinuityList/ParentContinuity/ParentApplicationNumber/text()', v_doc)
@@ -1099,6 +1106,122 @@ def _run_application_type_backfill_worker(database_url: str) -> None:
         engine.dispose()
 
 
+# Recompute has_foreign_priority + earliest_priority_date from xml_raw
+# for *every* row, regardless of current value. Needed because earlier
+# builds shipped a wrong xpath (looking for ``ForeignPriorityList`` as
+# the wrapper, when the live USPTO bib XML actually wraps entries in
+# ``ForeignPriorities``). Those bad reads wrote ``false`` (not NULL)
+# into the column, so the standard "NULL-only" backfill above can never
+# correct them. This recompute runs once per database — gated by
+# :data:`_FOREIGN_PRIORITY_RECOMPUTE_FLAG` in ``app_settings`` — and
+# overwrites the values directly from XML using the corrected xpath.
+_FOREIGN_PRIORITY_RECOMPUTE_FLAG = "schema.foreignPriorityRecomputed"
+_FOREIGN_PRIORITY_RECOMPUTE_SQL = """
+DO $$
+DECLARE
+  r RECORD;
+  v_doc xml;
+  v_has_fp BOOLEAN;
+  v_pri_date DATE;
+  v_done INTEGER := 0;
+BEGIN
+  FOR r IN
+    SELECT id, xml_raw
+      FROM applications
+     WHERE xml_raw IS NOT NULL AND xml_raw <> ''
+  LOOP
+    BEGIN
+      v_doc := xmlparse(content r.xml_raw);
+
+      SELECT
+        EXISTS (SELECT 1 FROM unnest(xpath('//ForeignPriority', v_doc)) x)
+        OR EXISTS (
+          SELECT 1 FROM unnest(
+            xpath('//Continuity/ParentContinuityList/ParentContinuity/ParentApplicationNumber/text()', v_doc)
+          ) AS y
+          WHERE upper(y::text) LIKE 'PCT/%' OR upper(y::text) LIKE 'PCT %'
+        )
+      INTO v_has_fp;
+
+      SELECT MIN(NULLIF(BTRIM(t::text), '')::date) INTO v_pri_date
+        FROM unnest(
+          xpath('//DomesticPriorityList/DomesticPriority/FilingDate/text()', v_doc)
+            || xpath('//ForeignPriority/ForeignPriorityDate/text()', v_doc)
+            || xpath('//ForeignPriority/FilingDate/text()', v_doc)
+            || xpath('//DomesticBenefit/FilingDate/text()', v_doc)
+        ) AS t;
+
+      UPDATE applications
+         SET has_foreign_priority = v_has_fp,
+             earliest_priority_date = COALESCE(v_pri_date, earliest_priority_date)
+       WHERE id = r.id;
+      v_done := v_done + 1;
+    EXCEPTION WHEN OTHERS THEN
+      NULL;
+    END;
+  END LOOP;
+  RAISE NOTICE 'has_foreign_priority recompute: % rows updated', v_done;
+END $$;
+"""
+
+
+def _set_foreign_priority_recompute_flag(engine) -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO app_settings (key, value, updated_at) "
+                "VALUES (:k, '1', now()) "
+                "ON CONFLICT (key) DO UPDATE SET value = '1', updated_at = now()"
+            ),
+            {"k": _FOREIGN_PRIORITY_RECOMPUTE_FLAG},
+        )
+
+
+def _run_foreign_priority_recompute_worker(database_url: str) -> None:
+    engine = create_engine(database_url, pool_pre_ping=True)
+    try:
+        logger.info("Recomputing has_foreign_priority from xml_raw (background)…")
+        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            conn.execute(text(_FOREIGN_PRIORITY_RECOMPUTE_SQL))
+        _set_foreign_priority_recompute_flag(engine)
+        logger.info("has_foreign_priority recompute complete")
+    except Exception:
+        logger.exception(
+            "has_foreign_priority recompute failed; will retry on next startup"
+        )
+    finally:
+        engine.dispose()
+
+
+def _recompute_has_foreign_priority_once(engine) -> None:
+    """Schedule the one-time has_foreign_priority recompute in a daemon thread."""
+    insp = inspect(engine)
+    if not insp.has_table("applications") or not insp.has_table("app_settings"):
+        return
+    cols = {c["name"] for c in insp.get_columns("applications")}
+    if "has_foreign_priority" not in cols or "xml_raw" not in cols:
+        return
+    with engine.connect() as conn:
+        already = conn.execute(
+            text("SELECT value FROM app_settings WHERE key = :k"),
+            {"k": _FOREIGN_PRIORITY_RECOMPUTE_FLAG},
+        ).first()
+        if already and (already[0] or "").strip() in ("1", "true", "yes"):
+            return
+
+    database_url = get_database_url()
+    if not database_url:
+        return
+    t = threading.Thread(
+        target=_run_foreign_priority_recompute_worker,
+        args=(database_url,),
+        name="has-foreign-priority-recompute",
+        daemon=True,
+    )
+    t.start()
+    logger.info("has_foreign_priority recompute thread started (daemon)")
+
+
 def _backfill_application_type_once(engine) -> None:
     insp = inspect(engine)
     if not insp.has_table("applications") or not insp.has_table("app_settings"):
@@ -1267,6 +1390,7 @@ def ensure_schema_migrations() -> None:
         _backfill_earliest_priority_date_once(engine)
         _backfill_allowance_metrics_once(engine)
         _backfill_application_type_once(engine)
+        _recompute_has_foreign_priority_once(engine)
     finally:
         engine.dispose()
 

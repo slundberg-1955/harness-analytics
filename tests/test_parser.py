@@ -455,6 +455,53 @@ def test_has_foreign_priority_false_for_us_only_application() -> None:
     assert has_foreign_priority_from_xml(None) is False
 
 
+# Live USPTO bib XML wraps entries in <ForeignPriorities> (plural) and
+# uses <ForeignPriorityDate> instead of <FilingDate>. The parser should
+# handle this shape too, otherwise has_foreign_priority is silently false
+# for ~every real application (which is exactly the bug we just fixed).
+def test_has_foreign_priority_true_for_live_uspto_wrapper() -> None:
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<PatentCenterApplication>
+  <ApplicationBibliographicData><ApplicationNumber>18489076</ApplicationNumber></ApplicationBibliographicData>
+  <ForeignPriorities>
+    <ForeignPriority>
+      <ApplicationNumber>10-2022-0123456</ApplicationNumber>
+      <ForeignPriorityDate>2022-09-15</ForeignPriorityDate>
+      <CountryCode>KR</CountryCode>
+    </ForeignPriority>
+  </ForeignPriorities>
+  <FileContentHistories/>
+  <ImageFileWrapperList/>
+</PatentCenterApplication>"""
+    data = parse_biblio_xml(xml)
+    assert data["has_foreign_priority"] is True
+    assert has_foreign_priority_from_xml(xml) is True
+
+
+def test_earliest_priority_date_reads_foreign_priority_date_element() -> None:
+    from datetime import date
+
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<PatentCenterApplication>
+  <ApplicationBibliographicData><ApplicationNumber>18489077</ApplicationNumber></ApplicationBibliographicData>
+  <DomesticPriorityList>
+    <DomesticPriority><FilingDate>2024-02-01</FilingDate></DomesticPriority>
+  </DomesticPriorityList>
+  <ForeignPriorities>
+    <ForeignPriority>
+      <ApplicationNumber>EP9999999</ApplicationNumber>
+      <ForeignPriorityDate>2022-09-15</ForeignPriorityDate>
+      <CountryCode>EP</CountryCode>
+    </ForeignPriority>
+  </ForeignPriorities>
+  <FileContentHistories/>
+  <ImageFileWrapperList/>
+</PatentCenterApplication>"""
+    data = parse_biblio_xml(xml)
+    assert data["earliest_priority_date"] == date(2022, 9, 15)
+    assert earliest_priority_date_from_xml(xml) == date(2022, 9, 15)
+
+
 # ---------------------------------------------------------------------------
 # Application-type classifier (Filings by Type chart).
 # ---------------------------------------------------------------------------
