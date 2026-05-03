@@ -1641,14 +1641,57 @@ tbody tr:focus-visible {
 .growth-controls {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 16px;
+  flex-wrap: wrap;
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--slate-600);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
-.growth-controls input[type="range"] { width: 160px; }
+.growth-period-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.growth-period-label {
+  color: var(--slate-500);
+  font-weight: 600;
+}
+.growth-period-picker select {
+  padding: 3px 6px;
+  border: 1px solid var(--slate-200);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: white;
+  color: var(--slate-800);
+  text-transform: none;
+  letter-spacing: 0;
+  cursor: pointer;
+}
+.growth-period-picker select:hover { border-color: var(--slate-300); }
+.growth-period-picker select:focus {
+  outline: none;
+  border-color: var(--slate-400);
+  box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.06);
+}
+.growth-partial-pill {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--slate-100);
+  color: var(--slate-600);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.growth-min-filings {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.growth-controls input[type="range"] { width: 140px; }
 .growth-controls input[type="number"] {
   width: 60px;
   padding: 3px 6px;

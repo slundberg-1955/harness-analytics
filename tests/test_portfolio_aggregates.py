@@ -1464,102 +1464,98 @@ def _gl_row(
     return r
 
 
-def test_growth_leaders_returns_four_lists_keyed_correctly() -> None:
+def test_growth_leaders_empty_payload_has_picker_metadata() -> None:
     out = compute_growth_leaders([], today=date(2026, 5, 2))
-    assert out["foreignPriority"] == []
-    assert out["nonForeignPriority"] == []
+    assert out["applicants"] == []
+    assert out["yearsAvailable"] == []
     assert out["currentYear"] == 2026
-    assert out["isPartial"] is True
+    assert out["currentQuarter"] == 2
+    assert out["currentMonth"] == 5
     assert out["asOf"] == "2026-05-02"
 
 
-def test_growth_leaders_ranks_by_yoy_pct_with_ytd_baseline() -> None:
-    """Mid-year today: latest = current-year YTD filings, prior = prior-year
-    filings up to the same day-of-year. Late-year prior-year filings
-    after today's day-of-year are NOT in the baseline (matches
-    compute_applicant_trends semantics, so the two views reconcile)."""
-    today = date(2026, 5, 2)
-    rows = (
-        # Acme: prior YTD (Jan 5 + Mar 1) = 2; latest (Feb 1 + Apr 1) = 2 -> 0%
-        # Plus a Sept filing in 2025 that's OUTSIDE the YTD prior baseline.
-        [_gl_row("A1", applicant="Acme", filing_date=date(2025, 1, 5))]
-        + [_gl_row("A2", applicant="Acme", filing_date=date(2025, 3, 1))]
-        + [_gl_row("A3", applicant="Acme", filing_date=date(2025, 9, 1))]
-        + [_gl_row("A4", applicant="Acme", filing_date=date(2026, 2, 1))]
-        + [_gl_row("A5", applicant="Acme", filing_date=date(2026, 4, 1))]
-        # Beta: prior YTD = 1, latest = 4 -> +300%
-        + [_gl_row("B1", applicant="Beta", filing_date=date(2025, 4, 1))]
-        + [_gl_row(f"B-{i}", applicant="Beta", filing_date=date(2026, 3, 1)) for i in range(4)]
-        # Gamma: prior YTD = 4, latest = 1 -> -75%
-        + [_gl_row(f"G-{i}", applicant="Gamma", filing_date=date(2025, 2, 1)) for i in range(4)]
-        + [_gl_row("G-CUR", applicant="Gamma", filing_date=date(2026, 1, 5))]
-    )
-    out = compute_growth_leaders(rows, today=today)
-
-    # All three are non-FP filings; FP list is empty.
-    assert out["foreignPriority"] == []
-    nfp = out["nonForeignPriority"]
-    by_app = {r["applicant"]: r for r in nfp}
-    # Acme: Sept-2025 row is excluded from prior baseline (after May 2 doy).
-    assert by_app["Acme"]["priorFilings"] == 2
-    assert by_app["Acme"]["latestFilings"] == 2
-    assert by_app["Acme"]["deltaPct"] == 0.0
-    # Beta: +300%.
-    assert by_app["Beta"]["priorFilings"] == 1
-    assert by_app["Beta"]["latestFilings"] == 4
-    assert by_app["Beta"]["deltaAbs"] == 3
-    assert by_app["Beta"]["deltaPct"] == 300.0
-    # Gamma: -75%.
-    assert by_app["Gamma"]["priorFilings"] == 4
-    assert by_app["Gamma"]["latestFilings"] == 1
-    assert by_app["Gamma"]["deltaPct"] == -75.0
-    # Sorted desc by deltaPct: Beta (+300), Acme (0), Gamma (-75).
-    assert [r["applicant"] for r in nfp] == ["Beta", "Acme", "Gamma"]
-    # Frontend uses head for growing, reverse-tail for slowing.
-    assert nfp[0]["applicant"] == "Beta"
-    assert list(reversed(nfp))[0]["applicant"] == "Gamma"
-    # All rows flagged isPartial since today is mid-year.
-    assert all(r["isPartial"] is True for r in nfp)
-
-
-def test_growth_leaders_excludes_applicants_with_no_prior_baseline() -> None:
-    """0 prior -> deltaPct undefined; ranking-pollution risk is real
-    (would sort to top of every panel as +infinity). Drop them."""
+def test_growth_leaders_emits_year_quarter_and_month_codes() -> None:
+    """Each filing increments the year, quarter, and month bucket in
+    one pass so the frontend can pick any grain without going back to
+    the server."""
     today = date(2026, 5, 2)
     rows = [
-        _gl_row("N1", applicant="NewKid", filing_date=date(2026, 1, 5)),
-        _gl_row("N2", applicant="NewKid", filing_date=date(2026, 2, 5)),
-        # Established applicant for contrast.
-        _gl_row("E1", applicant="Established", filing_date=date(2025, 2, 1)),
-        _gl_row("E2", applicant="Established", filing_date=date(2026, 2, 1)),
+        _gl_row("A1", applicant="Acme", filing_date=date(2025, 7, 15)),
+        _gl_row("A2", applicant="Acme", filing_date=date(2025, 8, 1)),
+        _gl_row("A3", applicant="Acme", filing_date=date(2026, 3, 10)),
     ]
     out = compute_growth_leaders(rows, today=today)
-    apps = {r["applicant"] for r in out["nonForeignPriority"]}
-    assert "NewKid" not in apps
-    assert "Established" in apps
+    assert len(out["applicants"]) == 1
+    a = out["applicants"][0]
+    assert a["applicant"] == "Acme"
+    assert a["hasForeignPriority"] is False
+    bp = a["byPeriod"]
+    # Year totals.
+    assert bp["Y2025"] == 2
+    assert bp["Y2026"] == 1
+    # Quarter totals — both 2025 filings land in Q3, the 2026 filing in Q1.
+    assert bp["Y2025Q3"] == 2
+    assert bp["Y2026Q1"] == 1
+    # Month totals — Jul + Aug 2025, Mar 2026.
+    assert bp["Y2025M07"] == 1
+    assert bp["Y2025M08"] == 1
+    assert bp["Y2026M03"] == 1
+    # Years dropdown source.
+    assert out["yearsAvailable"] == [2025, 2026]
+
+
+def test_growth_leaders_quarter_vs_quarter_rollup_handles_partial_filers() -> None:
+    """Q4-2025 vs Q1-2026 is the user's example. An applicant who
+    filed only in Q4-2025 and an applicant who filed only in Q1-2026
+    must both show their per-quarter counts so the client can compute
+    a meaningful delta (or correctly drop them when prior=0)."""
+    today = date(2026, 5, 2)
+    rows = (
+        # Acme — across both quarters.
+        [_gl_row("A1", applicant="Acme", filing_date=date(2025, 10, 1))]
+        + [_gl_row("A2", applicant="Acme", filing_date=date(2025, 11, 5))]
+        + [_gl_row("A3", applicant="Acme", filing_date=date(2025, 12, 20))]
+        + [_gl_row("A4", applicant="Acme", filing_date=date(2026, 1, 10))]
+        + [_gl_row("A5", applicant="Acme", filing_date=date(2026, 2, 15))]
+        # Q4-only filer.
+        + [_gl_row("Q4A", applicant="LegacyCo", filing_date=date(2025, 11, 1))]
+        + [_gl_row("Q4B", applicant="LegacyCo", filing_date=date(2025, 12, 1))]
+        # Q1-only filer.
+        + [_gl_row("Q1A", applicant="NewCo", filing_date=date(2026, 1, 5))]
+        + [_gl_row("Q1B", applicant="NewCo", filing_date=date(2026, 2, 5))]
+        + [_gl_row("Q1C", applicant="NewCo", filing_date=date(2026, 3, 5))]
+    )
+    out = compute_growth_leaders(rows, today=today)
+    by_name = {(a["applicant"], a["hasForeignPriority"]): a for a in out["applicants"]}
+    acme = by_name[("Acme", False)]
+    assert acme["byPeriod"]["Y2025Q4"] == 3
+    assert acme["byPeriod"]["Y2026Q1"] == 2
+    legacy = by_name[("LegacyCo", False)]
+    assert legacy["byPeriod"]["Y2025Q4"] == 2
+    # No Q1-2026 entry at all (absent key, not zero) — JS treats absent as 0.
+    assert "Y2026Q1" not in legacy["byPeriod"]
+    new = by_name[("NewCo", False)]
+    assert new["byPeriod"]["Y2026Q1"] == 3
+    assert "Y2025Q4" not in new["byPeriod"]
 
 
 def test_growth_leaders_splits_one_applicant_into_fp_and_nfp_buckets() -> None:
-    """An applicant who files in both FP and non-FP buckets shows up in
-    each list independently with the bucket-specific counts."""
+    """An applicant who files in both FP and non-FP buckets shows up
+    as two separate entries with independent counts; the JS picker
+    routes them to the FP / non-FP panel by ``hasForeignPriority``."""
     today = date(2026, 5, 2)
     rows = (
-        # Acme FP: 1 prior YTD -> 3 latest = +200%
         [_gl_row("AF1", applicant="Acme", filing_date=date(2025, 2, 1), has_foreign_priority=True)]
         + [_gl_row(f"AF-{i}", applicant="Acme", filing_date=date(2026, 2, 1), has_foreign_priority=True) for i in range(3)]
-        # Acme non-FP: 4 prior YTD -> 1 latest = -75%
         + [_gl_row(f"AN-{i}", applicant="Acme", filing_date=date(2025, 2, 1)) for i in range(4)]
         + [_gl_row("AN-CUR", applicant="Acme", filing_date=date(2026, 2, 1))]
     )
     out = compute_growth_leaders(rows, today=today)
-    fp = {r["applicant"]: r for r in out["foreignPriority"]}
-    nfp = {r["applicant"]: r for r in out["nonForeignPriority"]}
-    assert fp["Acme"]["priorFilings"] == 1
-    assert fp["Acme"]["latestFilings"] == 3
-    assert fp["Acme"]["deltaPct"] == 200.0
-    assert nfp["Acme"]["priorFilings"] == 4
-    assert nfp["Acme"]["latestFilings"] == 1
-    assert nfp["Acme"]["deltaPct"] == -75.0
+    by = {(a["applicant"], a["hasForeignPriority"]): a for a in out["applicants"]}
+    assert by[("Acme", True)]["byPeriod"]["Y2025"] == 1
+    assert by[("Acme", True)]["byPeriod"]["Y2026"] == 3
+    assert by[("Acme", False)]["byPeriod"]["Y2025"] == 4
+    assert by[("Acme", False)]["byPeriod"]["Y2026"] == 1
 
 
 def test_growth_leaders_skips_rows_without_applicant_or_filing_date() -> None:
@@ -1569,26 +1565,31 @@ def test_growth_leaders_skips_rows_without_applicant_or_filing_date() -> None:
         _gl_row("OK2", applicant="Acme", filing_date=date(2026, 2, 1)),
         _gl_row("NOAPP", applicant="", filing_date=date(2026, 3, 1)),
         _gl_row("NOAPP2", applicant=None, filing_date=date(2026, 3, 1)),  # type: ignore[arg-type]
-        # No filing date.
         {"application_number": "NODATE", "applicant_name": "Acme", "filing_date": None,
          "has_foreign_priority": False},
     ]
     out = compute_growth_leaders(rows, today=today)
-    nfp = out["nonForeignPriority"]
-    assert len(nfp) == 1
-    assert nfp[0]["applicant"] == "Acme"
-    assert nfp[0]["priorFilings"] == 1
-    assert nfp[0]["latestFilings"] == 1
+    assert len(out["applicants"]) == 1
+    a = out["applicants"][0]
+    assert a["applicant"] == "Acme"
+    assert a["byPeriod"]["Y2025"] == 1
+    assert a["byPeriod"]["Y2026"] == 1
 
 
-def test_growth_leaders_ignores_filings_outside_comparison_window() -> None:
-    """A 2023 filing for an applicant with no 2025/2026 activity should
-    not surface them in either list (no signal in the comparison
-    window)."""
+def test_growth_leaders_keeps_old_and_future_filings_for_arbitrary_window_pickers() -> None:
+    """With user-pickable windows, older filings (e.g. 2023) MUST stay
+    in the payload — the user might want to compare 2023 vs 2024.
+    Old behavior dropped anything outside (cur, prior); new behavior
+    keeps everything and lets the picker decide."""
     today = date(2026, 5, 2)
     rows = [
         _gl_row("OLD", applicant="Veteran", filing_date=date(2023, 4, 1)),
+        _gl_row("OLDER", applicant="Veteran", filing_date=date(2022, 4, 1)),
     ]
     out = compute_growth_leaders(rows, today=today)
-    assert out["nonForeignPriority"] == []
-    assert out["foreignPriority"] == []
+    assert len(out["applicants"]) == 1
+    a = out["applicants"][0]
+    assert a["applicant"] == "Veteran"
+    assert a["byPeriod"]["Y2022"] == 1
+    assert a["byPeriod"]["Y2023"] == 1
+    assert out["yearsAvailable"] == [2022, 2023]

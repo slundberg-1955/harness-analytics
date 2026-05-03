@@ -126,6 +126,13 @@
     // outrank a real 50->90 surge. Slider value, default 5; client-side
     // filter so adjusting feels instant.
     growthMinFilings: 5,
+    // Latest / Prior period pickers for Growth Leaders. Each picker is
+    // {year, grain} where grain is "Y" (full year), "Q1".."Q4", or
+    // "M01".."M12". null means "use the default the renderer derives
+    // from the payload" (current YTD vs same period last year). Client-
+    // side slicing means dropdown changes don't refetch.
+    growthLatest: null,
+    growthPrior: null,
     // Per-chart time-grain selector for the four YTD-projection charts.
     // One of "year" / "quarter" / "month". The grain toggle in each card-
     // head mutates this in place and re-renders only the affected chart;
@@ -1323,33 +1330,173 @@
 
   // ---------------------------------------------------------------------
   // Growth Leaders tab — fastest growing / slowing applicants split by
-  // foreign priority. Backend ships the full ranked lists; the
-  // min-filings slider applies a client-side filter so the UI feels
-  // instant. The render is idempotent per-tab so we can re-run it just
-  // for the slider change without re-rendering the rest of the page.
+  // foreign priority. Backend ships per-applicant per-period counts
+  // (year, quarter, month codes); the user picks any two periods with
+  // the Latest / Prior dropdowns and we compute the ranking client-side
+  // so dropdown changes feel instant.
   // ---------------------------------------------------------------------
 
   let _growthControlsWired = false;
   const GROWTH_TOP_N = 10;
+  const GROWTH_GRAIN_LABELS = {
+    Y: "Full year",
+    Q1: "Q1", Q2: "Q2", Q3: "Q3", Q4: "Q4",
+    M01: "Jan", M02: "Feb", M03: "Mar", M04: "Apr",
+    M05: "May", M06: "Jun", M07: "Jul", M08: "Aug",
+    M09: "Sep", M10: "Oct", M11: "Nov", M12: "Dec",
+  };
+
+  // Build the period code the backend emits for a given (year, grain)
+  // selection. Mirrors the `_year_code` / `_quarter_code` / `_month_code`
+  // helpers in portfolio_aggregates.py.
+  function periodCode(sel) {
+    if (!sel || !sel.year) return null;
+    const y = String(sel.year).padStart(4, "0");
+    if (!sel.grain || sel.grain === "Y") return `Y${y}`;
+    if (/^Q[1-4]$/.test(sel.grain)) return `Y${y}${sel.grain}`;
+    if (/^M(0[1-9]|1[0-2])$/.test(sel.grain)) return `Y${y}${sel.grain}`;
+    return `Y${y}`;
+  }
+
+  // Pretty label e.g. "Q4 2025", "Mar 2026", "2024".
+  function periodLabel(sel) {
+    if (!sel || !sel.year) return "—";
+    if (sel.grain === "Y" || !sel.grain) return String(sel.year);
+    return `${GROWTH_GRAIN_LABELS[sel.grain] || sel.grain} ${sel.year}`;
+  }
+
+  // Is the selected period current-or-future relative to ``asOf`` —
+  // i.e. partial coverage? Used to pin a "partial" pill on the picker.
+  function periodIsPartial(sel, data) {
+    if (!sel || !data) return false;
+    const cy = data.currentYear, cq = data.currentQuarter, cm = data.currentMonth;
+    if (sel.year > cy) return true;
+    if (sel.year < cy) return false;
+    // Same year as today.
+    if (!sel.grain || sel.grain === "Y") return true;
+    if (/^Q[1-4]$/.test(sel.grain)) return Number(sel.grain[1]) >= cq;
+    if (/^M(0[1-9]|1[0-2])$/.test(sel.grain)) return Number(sel.grain.slice(1)) >= cm;
+    return false;
+  }
+
+  // Pick the default (Latest, Prior) selection from a freshly arrived
+  // payload — current quarter of current year vs same quarter prior
+  // year, so the headline mirrors the previous "current YTD vs same
+  // period last year" feel. Falls back to full-year-vs-prior-year when
+  // we don't have a current quarter (shouldn't happen on the wire but
+  // belt-and-suspenders for empty payloads).
+  function defaultGrowthSelections(data) {
+    if (!data) return { latest: null, prior: null };
+    const cy = data.currentYear;
+    const cq = data.currentQuarter;
+    if (cy && cq) {
+      return {
+        latest: { year: cy,     grain: `Q${cq}` },
+        prior:  { year: cy - 1, grain: `Q${cq}` },
+      };
+    }
+    return {
+      latest: { year: cy,     grain: "Y" },
+      prior:  { year: cy - 1, grain: "Y" },
+    };
+  }
+
+  // Derive the ranked entry for a single applicant given the selected
+  // period codes. Returns null when prior <= 0 (no baseline → drop).
+  function buildRankingEntry(applicant, latestCode, priorCode) {
+    const bp = applicant.byPeriod || {};
+    const latest = bp[latestCode] || 0;
+    const prior  = bp[priorCode]  || 0;
+    if (prior <= 0) return null;
+    const deltaAbs = latest - prior;
+    const deltaPct = (deltaAbs / prior) * 100;
+    return {
+      applicant: applicant.applicant,
+      hasForeignPriority: !!applicant.hasForeignPriority,
+      latestFilings: latest,
+      priorFilings: prior,
+      deltaAbs,
+      deltaPct,
+    };
+  }
+
+  // Build the FP / non-FP ranking arrays for the current selections.
+  // Sort matches the previous server-side order: deltaPct desc, then
+  // deltaAbs desc, then applicant alpha — so the head is fastest
+  // growing and the tail (reversed) is fastest slowing.
+  function buildGrowthRankings(data) {
+    if (!data || !data.applicants) return { fp: [], nfp: [] };
+    const latestCode = periodCode(state.growthLatest);
+    const priorCode  = periodCode(state.growthPrior);
+    if (!latestCode || !priorCode) return { fp: [], nfp: [] };
+    const fp = [], nfp = [];
+    for (const a of data.applicants) {
+      const e = buildRankingEntry(a, latestCode, priorCode);
+      if (!e) continue;
+      (e.hasForeignPriority ? fp : nfp).push(e);
+    }
+    const sortKey = (a, b) => {
+      const ap = a.deltaPct == null ? 0 : a.deltaPct;
+      const bp = b.deltaPct == null ? 0 : b.deltaPct;
+      if (bp !== ap) return bp - ap;
+      const aa = a.deltaAbs || 0, bb = b.deltaAbs || 0;
+      if (bb !== aa) return bb - aa;
+      return a.applicant.toLowerCase().localeCompare(b.applicant.toLowerCase());
+    };
+    fp.sort(sortKey);
+    nfp.sort(sortKey);
+    return { fp, nfp };
+  }
 
   function renderGrowthLeadersTab() {
     const data = state.lastData && state.lastData.growthLeaders;
+    // Pick a default selection if this is the first render with data.
+    if (data && (!state.growthLatest || !state.growthPrior)) {
+      const def = defaultGrowthSelections(data);
+      state.growthLatest = def.latest;
+      state.growthPrior  = def.prior;
+    }
+
+    // Subtitle reflects the current pick.
     const sub = document.getElementById("growth-sub");
     if (sub && data) {
-      const cy = data.currentYear;
-      const py = cy - 1;
-      const partial = data.isPartial
-        ? `${cy} YTD VS ${py} THROUGH ${(data.asOf || "").slice(5).toUpperCase()}`
-        : `${cy} VS ${py}`;
-      sub.textContent = `YEAR-OVER-YEAR FILING GROWTH · ${partial} · MIN ${state.growthMinFilings} FILING${state.growthMinFilings === 1 ? "" : "S"}`;
+      const lp = periodLabel(state.growthLatest);
+      const pp = periodLabel(state.growthPrior);
+      const minTxt = `MIN ${state.growthMinFilings} FILING${state.growthMinFilings === 1 ? "" : "S"}`;
+      sub.textContent = `${lp.toUpperCase()} VS ${pp.toUpperCase()} · ${minTxt}`;
     }
-    const fp = (data && data.foreignPriority) || [];
-    const nfp = (data && data.nonForeignPriority) || [];
+
+    // Per-card subtitles — keep the FP / non-FP framing but reflect
+    // the picked window in the leading clause.
+    const winLabel = `${periodLabel(state.growthLatest)} vs ${periodLabel(state.growthPrior)}`.toUpperCase();
+    setGrowthCardSub("growth-fp-up-sub",   `TOP 10 BY % GROWTH · ${winLabel} · FOREIGN PRIORITY`);
+    setGrowthCardSub("growth-nfp-up-sub",  `TOP 10 BY % GROWTH · ${winLabel} · DOMESTIC-ONLY`);
+    setGrowthCardSub("growth-fp-down-sub", `TOP 10 BY % DECLINE · ${winLabel} · FOREIGN PRIORITY`);
+    setGrowthCardSub("growth-nfp-down-sub",`TOP 10 BY % DECLINE · ${winLabel} · DOMESTIC-ONLY`);
+
+    // Build rankings + render lists.
+    const { fp, nfp } = buildGrowthRankings(data);
     renderGrowthList("growth-fp-up",   topN(fp,  "growing"));
     renderGrowthList("growth-fp-down", topN(fp,  "slowing"));
     renderGrowthList("growth-nfp-up",  topN(nfp, "growing"));
     renderGrowthList("growth-nfp-down",topN(nfp, "slowing"));
-    wireGrowthControls();
+
+    // Reflect partial-pill state for each picker.
+    togglePartialPill("growth-latest-partial", periodIsPartial(state.growthLatest, data));
+    togglePartialPill("growth-prior-partial",  periodIsPartial(state.growthPrior,  data));
+
+    wireGrowthControls(data);
+  }
+
+  function setGrowthCardSub(id, text) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+  }
+
+  function togglePartialPill(id, on) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.hidden = !on;
   }
 
   // Apply the min-filings filter and slice the top N. Source list arrives
@@ -1369,7 +1516,7 @@
     const host = document.getElementById(hostId);
     if (!host) return;
     if (!items || !items.length) {
-      host.innerHTML = `<li class="growth-empty">No applicants meet the minimum filings threshold.</li>`;
+      host.innerHTML = `<li class="growth-empty">No applicants in this window meet the minimum filings threshold.</li>`;
       return;
     }
     host.innerHTML = items.map((r) => {
@@ -1385,15 +1532,20 @@
     }).join("");
   }
 
-  function wireGrowthControls() {
+  function wireGrowthControls(data) {
+    // Year dropdowns repopulate any time the payload's yearsAvailable
+    // shape changes (idempotent: if the option list already matches
+    // we no-op). The change-listener wiring is one-shot — the same
+    // <select> elements survive across re-renders.
+    populateGrowthYearSelects(data);
+
     if (_growthControlsWired) return;
     const range = document.getElementById("growth-min-filings-range");
     const input = document.getElementById("growth-min-filings-input");
     if (!range || !input) return;
-    // Reflect initial state.
     range.value = String(state.growthMinFilings);
     input.value = String(state.growthMinFilings);
-    const apply = (raw) => {
+    const applyMin = (raw) => {
       const n = Math.max(1, Math.min(50, Math.round(Number(raw) || 1)));
       if (n === state.growthMinFilings) return;
       state.growthMinFilings = n;
@@ -1401,10 +1553,60 @@
       input.value = String(n);
       renderGrowthLeadersTab();
     };
-    range.addEventListener("input", (e) => apply(e.target.value));
-    input.addEventListener("input", (e) => apply(e.target.value));
-    input.addEventListener("change", (e) => apply(e.target.value));
+    range.addEventListener("input", (e) => applyMin(e.target.value));
+    input.addEventListener("input", (e) => applyMin(e.target.value));
+    input.addEventListener("change", (e) => applyMin(e.target.value));
+
+    // Period pickers — 4 selects (latest/prior × year/grain).
+    wireGrowthPeriodSelect("growth-latest-year",  "growthLatest", "year");
+    wireGrowthPeriodSelect("growth-latest-grain", "growthLatest", "grain");
+    wireGrowthPeriodSelect("growth-prior-year",   "growthPrior",  "year");
+    wireGrowthPeriodSelect("growth-prior-grain",  "growthPrior",  "grain");
+
     _growthControlsWired = true;
+  }
+
+  function populateGrowthYearSelects(data) {
+    if (!data) return;
+    const years = (data.yearsAvailable || []).slice().sort((a, b) => b - a);
+    if (!years.length) return;
+    for (const id of ["growth-latest-year", "growth-prior-year"]) {
+      const sel = document.getElementById(id);
+      if (!sel) continue;
+      // Cheap idempotency check on the option list.
+      const desired = years.map(String).join(",");
+      const have = Array.from(sel.options).map((o) => o.value).join(",");
+      if (have !== desired) {
+        sel.innerHTML = years.map((y) => `<option value="${y}">${y}</option>`).join("");
+      }
+      // Reflect current state into the select.
+      const stKey = id === "growth-latest-year" ? "growthLatest" : "growthPrior";
+      const cur = state[stKey];
+      if (cur && cur.year != null) sel.value = String(cur.year);
+    }
+    // Also reflect grain into the grain selects.
+    for (const [id, stKey] of [["growth-latest-grain", "growthLatest"],
+                                ["growth-prior-grain",  "growthPrior"]]) {
+      const sel = document.getElementById(id);
+      if (!sel) continue;
+      const cur = state[stKey];
+      if (cur && cur.grain) sel.value = cur.grain;
+    }
+  }
+
+  function wireGrowthPeriodSelect(elementId, stateKey, field) {
+    const sel = document.getElementById(elementId);
+    if (!sel) return;
+    sel.addEventListener("change", (e) => {
+      const raw = e.target.value;
+      const cur = state[stateKey] || {};
+      const next = { year: cur.year, grain: cur.grain };
+      if (field === "year") next.year = Number(raw);
+      else next.grain = String(raw);
+      if (next.year === cur.year && next.grain === cur.grain) return;
+      state[stateKey] = next;
+      renderGrowthLeadersTab();
+    });
   }
 
   function fmtSignedInt(n) {

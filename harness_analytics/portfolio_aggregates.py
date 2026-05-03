@@ -1942,16 +1942,27 @@ def compute_foreign_priority_by_year(
 
 
 # ---------------------------------------------------------------------------
-# Growth Leaders — fastest growing / slowing applicants split by foreign
-# priority. Surfaces the applicants whose YoY filing volume is moving the
-# most in either direction, so partners can spot accelerating prospects
-# (or shrinking accounts) at a glance.
-#
-# Same YTD/YoY math as compute_applicant_trends so the numbers reconcile
-# with what the user already sees on the Applicant Trends tab. Bucket key
-# is (applicant, has_foreign_priority) — an applicant who files in both
-# camps lands in both panels with independent counts.
+# Growth Leaders — per-applicant filing counts bucketed by year, quarter,
+# and month so the frontend can compare any two windows the user picks
+# (Latest / Prior pickers in the Growth Leaders tab). Bucket key is
+# (applicant, has_foreign_priority) — an applicant who files in both
+# camps lands in both panels with independent counts. The actual ranking
+# (top N growing / slowing, min-filings filter, sort) is computed in JS
+# so dropdown changes don't require a server round-trip.
 # ---------------------------------------------------------------------------
+
+
+# Period codes — kept in sync with the JS picker values.
+def _year_code(y: int) -> str:
+    return f"Y{y:04d}"
+
+
+def _quarter_code(y: int, q: int) -> str:
+    return f"Y{y:04d}Q{q:d}"
+
+
+def _month_code(y: int, m: int) -> str:
+    return f"Y{y:04d}M{m:02d}"
 
 
 def compute_growth_leaders(
@@ -1959,42 +1970,34 @@ def compute_growth_leaders(
     *,
     today: Optional[date] = None,
 ) -> dict[str, Any]:
-    """Per-applicant year-over-year filing growth, split by foreign-priority
-    claim.
+    """Per-applicant filing counts bucketed by year/quarter/month.
 
-    Returns two ranked lists (``foreignPriority`` and ``nonForeignPriority``)
-    sorted by ``deltaPct`` descending so the frontend can slice
-    ``[:N]`` for fastest-growing and ``[::-1][:N]`` for fastest-slowing
-    using a single ordered list.
+    Returns a flat ``applicants`` list. Each entry has a ``byPeriod``
+    map keyed by canonical period codes that the JS picker emits:
 
-    Comparison window mirrors ``compute_applicant_trends``:
+    * ``Y2024``        — full calendar year 2024
+    * ``Y2024Q3``      — third quarter of 2024
+    * ``Y2024M07``     — July 2024
 
-    * Current calendar year (per ``today``) is YTD; prior is the prior
-      year's filings up to the same day-of-year. The whole payload is
-      flagged ``isPartial=True`` in this case so the UI can label the
-      headline "vs same period last year".
-    * After Dec 31 (post-rollover edge case), latest = full current
-      year, prior = full prior year and ``isPartial=False``.
+    The frontend picks two codes (Latest / Prior) and computes
+    ``latestFilings`` / ``priorFilings`` / ``deltaPct`` client-side, so
+    re-selecting a window is instantaneous (no API call). Applicants
+    with no filings in either window are dropped on the client; we
+    always emit every applicant who has at least one usable filing here
+    so the ranking is comparable across windows.
 
-    Applicants with ``priorFilings == 0`` are dropped — without a
-    baseline ``deltaPct`` is undefined, treating them as +infinity
-    pollutes the ranking, and any non-trivial min-filings filter the
-    UI applies would exclude them anyway.
+    ``yearsAvailable`` / ``currentYear`` / ``currentQuarter`` /
+    ``currentMonth`` / ``asOf`` are emitted so the picker can populate
+    its year dropdown and pick a sensible default (current YTD vs same
+    period last year — implemented client-side as ``Q{cur_quarter}``
+    of the current year vs the prior year).
     """
     if today is None:
         today = date.today()
-    cur_year = today.year
-    prior_year = cur_year - 1
-    cur_doy = _day_of_year(today)
-    is_partial = cur_doy < 366
 
-    # Per-applicant per-bucket counts. Two parallel dicts keyed by
-    # applicant name to avoid a tuple-key map (cheaper to iterate at the
-    # end and clearer when debugging).
-    fp_latest: dict[str, int] = {}
-    fp_prior: dict[str, int] = {}
-    nfp_latest: dict[str, int] = {}
-    nfp_prior: dict[str, int] = {}
+    # (applicant, has_foreign_priority) -> { period_code -> count }
+    counts: dict[tuple[str, bool], dict[str, int]] = {}
+    years_seen: set[int] = set()
 
     for r in rows:
         fd = _coerce_date(r.get("filing_date"))
@@ -2003,60 +2006,44 @@ def compute_growth_leaders(
         applicant = (r.get("applicant_name") or "").strip()
         if not applicant:
             continue
-        # Only filings that fall in the current or prior comparison year
-        # contribute; older / future filings don't affect this metric.
-        y = fd.year
-        if y not in (cur_year, prior_year):
-            continue
-        # Mirror compute_applicant_trends: when the current year is YTD,
-        # only count prior-year filings up to the same day-of-year as
-        # part of the prior baseline; later prior-year filings are
-        # outside the comparison window.
         is_fp = bool(r.get("has_foreign_priority"))
-        latest_bucket = fp_latest if is_fp else nfp_latest
-        prior_bucket = fp_prior if is_fp else nfp_prior
-        if y == cur_year:
-            latest_bucket[applicant] = latest_bucket.get(applicant, 0) + 1
-        else:  # y == prior_year
-            if is_partial:
-                if _day_of_year(fd) <= cur_doy:
-                    prior_bucket[applicant] = prior_bucket.get(applicant, 0) + 1
-            else:
-                prior_bucket[applicant] = prior_bucket.get(applicant, 0) + 1
+        key = (applicant, is_fp)
+        bucket = counts.get(key)
+        if bucket is None:
+            bucket = {}
+            counts[key] = bucket
 
-    def _build(latest_map: dict[str, int], prior_map: dict[str, int]) -> list[dict[str, Any]]:
-        out: list[dict[str, Any]] = []
-        applicants = set(latest_map) | set(prior_map)
-        for app in applicants:
-            latest = latest_map.get(app, 0)
-            prior = prior_map.get(app, 0)
-            if prior <= 0:
-                # No baseline — drop. (See module docstring.)
-                continue
-            delta_abs, delta_pct = _yoy_delta(latest, prior)
-            out.append({
-                "applicant": app,
-                "latestFilings": latest,
-                "priorFilings": prior,
-                "deltaAbs": delta_abs,
-                "deltaPct": delta_pct,
-                "isPartial": is_partial,
-            })
-        # Sort desc by deltaPct so head=growing, tail=slowing. Tie-break
-        # on absolute delta then alphabetically for stable ordering.
-        out.sort(
-            key=lambda r: (
-                -(r["deltaPct"] if r["deltaPct"] is not None else 0.0),
-                -(r["deltaAbs"] or 0),
-                r["applicant"].lower(),
-            )
+        y = fd.year
+        q = _quarter_of(fd)
+        m = fd.month
+        years_seen.add(y)
+
+        for code in (_year_code(y), _quarter_code(y, q), _month_code(y, m)):
+            bucket[code] = bucket.get(code, 0) + 1
+
+    applicants: list[dict[str, Any]] = []
+    for (name, is_fp), by_period in counts.items():
+        applicants.append(
+            {
+                "applicant": name,
+                "hasForeignPriority": is_fp,
+                "byPeriod": by_period,
+            }
         )
-        return out
+    # Stable, predictable ordering — sort doesn't matter for the
+    # ranking (JS re-sorts by deltaPct), but it makes diffs and tests
+    # deterministic.
+    applicants.sort(key=lambda a: (a["applicant"].lower(), a["hasForeignPriority"]))
+
+    cur_year = today.year
+    cur_quarter = _quarter_of(today)
+    cur_month = today.month
 
     return {
-        "foreignPriority": _build(fp_latest, fp_prior),
-        "nonForeignPriority": _build(nfp_latest, nfp_prior),
+        "applicants": applicants,
+        "yearsAvailable": sorted(years_seen),
         "currentYear": cur_year,
-        "isPartial": is_partial,
+        "currentQuarter": cur_quarter,
+        "currentMonth": cur_month,
         "asOf": today.isoformat(),
     }

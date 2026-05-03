@@ -548,12 +548,62 @@
           <div class="card-head">
             <div>
               <div class="card-title">Growth Leaders</div>
-              <div class="card-sub" id="growth-sub">YEAR-OVER-YEAR FILING GROWTH · CURRENT YEAR YTD VS SAME PERIOD LAST YEAR</div>
+              <div class="card-sub" id="growth-sub">FILING GROWTH BETWEEN ANY TWO PERIODS · DEFAULT: CURRENT YEAR YTD VS SAME PERIOD LAST YEAR</div>
             </div>
             <div class="growth-controls">
-              <label for="growth-min-filings-input">Min filings</label>
-              <input type="range"  id="growth-min-filings-range" min="1" max="50" step="1" value="5">
-              <input type="number" id="growth-min-filings-input" min="1" max="50" step="1" value="5">
+              <div class="growth-period-picker" data-role="latest">
+                <span class="growth-period-label">Latest</span>
+                <select id="growth-latest-year" aria-label="Latest period year"></select>
+                <select id="growth-latest-grain" aria-label="Latest period grain">
+                  <option value="Y">Full year</option>
+                  <option value="Q1">Q1</option>
+                  <option value="Q2">Q2</option>
+                  <option value="Q3">Q3</option>
+                  <option value="Q4">Q4</option>
+                  <option value="M01">Jan</option>
+                  <option value="M02">Feb</option>
+                  <option value="M03">Mar</option>
+                  <option value="M04">Apr</option>
+                  <option value="M05">May</option>
+                  <option value="M06">Jun</option>
+                  <option value="M07">Jul</option>
+                  <option value="M08">Aug</option>
+                  <option value="M09">Sep</option>
+                  <option value="M10">Oct</option>
+                  <option value="M11">Nov</option>
+                  <option value="M12">Dec</option>
+                </select>
+                <span class="growth-partial-pill" id="growth-latest-partial" hidden>partial</span>
+              </div>
+              <div class="growth-period-picker" data-role="prior">
+                <span class="growth-period-label">Prior</span>
+                <select id="growth-prior-year" aria-label="Prior period year"></select>
+                <select id="growth-prior-grain" aria-label="Prior period grain">
+                  <option value="Y">Full year</option>
+                  <option value="Q1">Q1</option>
+                  <option value="Q2">Q2</option>
+                  <option value="Q3">Q3</option>
+                  <option value="Q4">Q4</option>
+                  <option value="M01">Jan</option>
+                  <option value="M02">Feb</option>
+                  <option value="M03">Mar</option>
+                  <option value="M04">Apr</option>
+                  <option value="M05">May</option>
+                  <option value="M06">Jun</option>
+                  <option value="M07">Jul</option>
+                  <option value="M08">Aug</option>
+                  <option value="M09">Sep</option>
+                  <option value="M10">Oct</option>
+                  <option value="M11">Nov</option>
+                  <option value="M12">Dec</option>
+                </select>
+                <span class="growth-partial-pill" id="growth-prior-partial" hidden>partial</span>
+              </div>
+              <div class="growth-min-filings">
+                <label for="growth-min-filings-input">Min filings</label>
+                <input type="range"  id="growth-min-filings-range" min="1" max="50" step="1" value="5">
+                <input type="number" id="growth-min-filings-input" min="1" max="50" step="1" value="5">
+              </div>
             </div>
           </div>
         </div>
@@ -562,7 +612,7 @@
             <div class="card-head">
               <div>
                 <div class="card-title">Fastest Growing — Foreign Priority</div>
-                <div class="card-sub">TOP 10 BY YOY % GROWTH · FILINGS WITH FOREIGN PRIORITY</div>
+                <div class="card-sub" id="growth-fp-up-sub">TOP 10 BY % GROWTH · FILINGS WITH FOREIGN PRIORITY</div>
               </div>
             </div>
             <div class="card-body">
@@ -573,7 +623,7 @@
             <div class="card-head">
               <div>
                 <div class="card-title">Fastest Growing — No Foreign Priority</div>
-                <div class="card-sub">TOP 10 BY YOY % GROWTH · DOMESTIC-ONLY FILINGS</div>
+                <div class="card-sub" id="growth-nfp-up-sub">TOP 10 BY % GROWTH · DOMESTIC-ONLY FILINGS</div>
               </div>
             </div>
             <div class="card-body">
@@ -584,7 +634,7 @@
             <div class="card-head">
               <div>
                 <div class="card-title">Fastest Slowing — Foreign Priority</div>
-                <div class="card-sub">TOP 10 BY YOY % DECLINE · FILINGS WITH FOREIGN PRIORITY</div>
+                <div class="card-sub" id="growth-fp-down-sub">TOP 10 BY % DECLINE · FILINGS WITH FOREIGN PRIORITY</div>
               </div>
             </div>
             <div class="card-body">
@@ -595,7 +645,7 @@
             <div class="card-head">
               <div>
                 <div class="card-title">Fastest Slowing — No Foreign Priority</div>
-                <div class="card-sub">TOP 10 BY YOY % DECLINE · DOMESTIC-ONLY FILINGS</div>
+                <div class="card-sub" id="growth-nfp-down-sub">TOP 10 BY % DECLINE · DOMESTIC-ONLY FILINGS</div>
               </div>
             </div>
             <div class="card-body">
@@ -605,17 +655,19 @@
         </div>
         <div class="ext-method growth-method">
           <strong>Methodology.</strong>
-          Each applicant is bucketed by whether the filing claims foreign
-          priority (per <code>has_foreign_priority</code>); applicants who
-          file in both buckets appear in both panels with independent
-          counts. Latest period is the current calendar year YTD; prior
-          period is the prior year filings up to the same day-of-year so
-          January-3 doesn't read as a -98% collapse. Applicants with a
-          prior count of 0 are excluded (no baseline → percent is
-          undefined). The <em>Min filings</em> slider above filters out
-          applicants whose larger of the two counts is below the
-          threshold so a 1 → 4 jump (+300%) doesn't leapfrog a real
-          50 → 90 surge.
+          Pick any two periods with the <em>Latest</em> and <em>Prior</em>
+          dropdowns above — full calendar year, calendar quarter, or
+          calendar month. Each applicant is bucketed by whether the
+          filing claims foreign priority (per
+          <code>has_foreign_priority</code>); applicants who file in
+          both buckets appear in both panels with independent counts.
+          Periods that include today are labeled <em>partial</em> — a
+          full-year 2026 selection only sees filings through today.
+          Applicants with a prior count of 0 are excluded (no baseline
+          → percent is undefined). The <em>Min filings</em> slider
+          filters out applicants whose larger of the two counts is
+          below the threshold so a 1 → 4 jump (+300%) doesn't leapfrog
+          a real 50 → 90 surge.
         </div>
       </section>
 
