@@ -121,6 +121,11 @@
     aaRecency: "all",
     aaCustomStart: "",
     aaCustomEnd: "",
+    // Min-filings threshold for the Growth Leaders tab. Applies as
+    // ``max(latest, prior) >= growthMinFilings`` so a 1->4 spike doesn't
+    // outrank a real 50->90 surge. Slider value, default 5; client-side
+    // filter so adjusting feels instant.
+    growthMinFilings: 5,
     // Per-chart time-grain selector for the four YTD-projection charts.
     // One of "year" / "quarter" / "month". The grain toggle in each card-
     // head mutates this in place and re-renders only the affected chart;
@@ -307,7 +312,7 @@
     state.page = parseInt(params.get("page") || "1", 10) || 1;
     // Allowance Analytics v2 layout state.
     const tab = params.get("tab");
-    if (tab && ["overview", "charts", "allowance", "extensions", "applicants", "matters"].includes(tab)) {
+    if (tab && ["overview", "charts", "allowance", "extensions", "applicants", "growth", "matters"].includes(tab)) {
       state.tab = tab;
     }
     const axis = params.get("cohortAxis");
@@ -433,6 +438,7 @@
     renderAllowanceTab();
     renderExtensionsTab();
     renderApplicantTrendsTab();
+    renderGrowthLeadersTab();
     renderBody();
     renderFoot();
     renderMeta();
@@ -1313,6 +1319,92 @@
     renderAtApplicantTable(data);
     renderAtTypeChart(state.lastData && state.lastData.filingsByType);
     renderAtForeignPriorityChart(state.lastData && state.lastData.filingsByForeignPriority);
+  }
+
+  // ---------------------------------------------------------------------
+  // Growth Leaders tab — fastest growing / slowing applicants split by
+  // foreign priority. Backend ships the full ranked lists; the
+  // min-filings slider applies a client-side filter so the UI feels
+  // instant. The render is idempotent per-tab so we can re-run it just
+  // for the slider change without re-rendering the rest of the page.
+  // ---------------------------------------------------------------------
+
+  let _growthControlsWired = false;
+  const GROWTH_TOP_N = 10;
+
+  function renderGrowthLeadersTab() {
+    const data = state.lastData && state.lastData.growthLeaders;
+    const sub = document.getElementById("growth-sub");
+    if (sub && data) {
+      const cy = data.currentYear;
+      const py = cy - 1;
+      const partial = data.isPartial
+        ? `${cy} YTD VS ${py} THROUGH ${(data.asOf || "").slice(5).toUpperCase()}`
+        : `${cy} VS ${py}`;
+      sub.textContent = `YEAR-OVER-YEAR FILING GROWTH · ${partial} · MIN ${state.growthMinFilings} FILING${state.growthMinFilings === 1 ? "" : "S"}`;
+    }
+    const fp = (data && data.foreignPriority) || [];
+    const nfp = (data && data.nonForeignPriority) || [];
+    renderGrowthList("growth-fp-up",   topN(fp,  "growing"));
+    renderGrowthList("growth-fp-down", topN(fp,  "slowing"));
+    renderGrowthList("growth-nfp-up",  topN(nfp, "growing"));
+    renderGrowthList("growth-nfp-down",topN(nfp, "slowing"));
+    wireGrowthControls();
+  }
+
+  // Apply the min-filings filter and slice the top N. Source list arrives
+  // sorted by deltaPct desc, so growing = head, slowing = reversed tail.
+  function topN(list, direction) {
+    const min = state.growthMinFilings || 1;
+    const filtered = list.filter((r) =>
+      Math.max(r.latestFilings || 0, r.priorFilings || 0) >= min
+    );
+    if (direction === "slowing") {
+      return filtered.slice().reverse().slice(0, GROWTH_TOP_N);
+    }
+    return filtered.slice(0, GROWTH_TOP_N);
+  }
+
+  function renderGrowthList(hostId, items) {
+    const host = document.getElementById(hostId);
+    if (!host) return;
+    if (!items || !items.length) {
+      host.innerHTML = `<li class="growth-empty">No applicants meet the minimum filings threshold.</li>`;
+      return;
+    }
+    host.innerHTML = items.map((r) => {
+      const dCls = growthClass(r.deltaPct);
+      const pct = fmtSignedPct(r.deltaPct);
+      const counts = `${(r.priorFilings || 0).toLocaleString()}<span class="growth-arrow">→</span>${(r.latestFilings || 0).toLocaleString()}`;
+      return `<li class="growth-row">`
+        + `<span class="growth-rank"></span>`
+        + `<span class="growth-applicant" title="${escapeAttr(r.applicant)}">${escapeHtml(r.applicant)}</span>`
+        + `<span class="growth-counts">${counts}</span>`
+        + `<span class="growth-delta ${dCls}">${pct}</span>`
+        + `</li>`;
+    }).join("");
+  }
+
+  function wireGrowthControls() {
+    if (_growthControlsWired) return;
+    const range = document.getElementById("growth-min-filings-range");
+    const input = document.getElementById("growth-min-filings-input");
+    if (!range || !input) return;
+    // Reflect initial state.
+    range.value = String(state.growthMinFilings);
+    input.value = String(state.growthMinFilings);
+    const apply = (raw) => {
+      const n = Math.max(1, Math.min(50, Math.round(Number(raw) || 1)));
+      if (n === state.growthMinFilings) return;
+      state.growthMinFilings = n;
+      range.value = String(n);
+      input.value = String(n);
+      renderGrowthLeadersTab();
+    };
+    range.addEventListener("input", (e) => apply(e.target.value));
+    input.addEventListener("input", (e) => apply(e.target.value));
+    input.addEventListener("change", (e) => apply(e.target.value));
+    _growthControlsWired = true;
   }
 
   function fmtSignedInt(n) {

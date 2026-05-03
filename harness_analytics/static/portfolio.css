@@ -1634,3 +1634,81 @@ tbody tr:focus-visible {
 .at-delta-up   { color: var(--emerald-600, #059669); font-weight: 600; }
 .at-delta-down { color: var(--rose-600, #e11d48);    font-weight: 600; }
 .at-delta-flat { color: var(--slate-400);            font-weight: 500; }
+
+/* Growth Leaders tab — 2x2 grid of fastest-growing / slowing applicant
+   panels with a shared min-filings slider in the controls card. */
+.growth-controls-card { margin-bottom: 16px; }
+.growth-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--slate-600);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.growth-controls input[type="range"] { width: 160px; }
+.growth-controls input[type="number"] {
+  width: 60px;
+  padding: 3px 6px;
+  border: 1px solid var(--slate-200);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-align: right;
+}
+.growth-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.growth-card .card-body { padding: 8px 16px 12px; }
+.growth-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  counter-reset: growth-rank;
+}
+.growth-row {
+  display: grid;
+  grid-template-columns: 24px 1fr auto auto;
+  align-items: baseline;
+  gap: 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--slate-100);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.growth-row:last-child { border-bottom: 0; }
+.growth-rank {
+  counter-increment: growth-rank;
+  color: var(--slate-400);
+  font-size: 11px;
+  text-align: right;
+}
+.growth-rank::before { content: counter(growth-rank); }
+.growth-applicant {
+  font-family: var(--font-sans, inherit);
+  font-size: 13px;
+  color: var(--slate-900);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.growth-counts { color: var(--slate-500); white-space: nowrap; }
+.growth-counts .growth-arrow { color: var(--slate-300); margin: 0 4px; }
+.growth-delta { font-weight: 600; min-width: 64px; text-align: right; white-space: nowrap; }
+.growth-empty {
+  padding: 24px 8px;
+  text-align: center;
+  color: var(--slate-400);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.growth-method { margin-top: 4px; }

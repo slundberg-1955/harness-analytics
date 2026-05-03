@@ -19,6 +19,7 @@ from harness_analytics.portfolio_aggregates import (
     compute_family_yield,
     compute_filings_by_type,
     compute_foreign_priority_by_year,
+    compute_growth_leaders,
     compute_allowances_by_rejection_count,
     compute_first_action_allowance,
     compute_interviews_per_allowance_by_year,
@@ -1442,3 +1443,152 @@ def test_filings_by_foreign_priority_empty_returns_empty_payload() -> None:
     assert out["totalFilings"] == 0
     assert out["totals"]["withForeignPct"] is None
     assert out["currentYear"] == 2026
+
+
+# ---------------------------------------------------------------------------
+# compute_growth_leaders — fastest growing / slowing applicants.
+# ---------------------------------------------------------------------------
+
+
+def _gl_row(
+    app_no: str,
+    *,
+    applicant: str,
+    filing_date: date,
+    has_foreign_priority: bool = False,
+) -> dict:
+    """Minimal row factory for the growth-leaders aggregate (only reads
+    filing_date, applicant_name, and has_foreign_priority)."""
+    r = _row(app_no, filing_date=filing_date, has_foreign_priority=has_foreign_priority)
+    r["applicant_name"] = applicant
+    return r
+
+
+def test_growth_leaders_returns_four_lists_keyed_correctly() -> None:
+    out = compute_growth_leaders([], today=date(2026, 5, 2))
+    assert out["foreignPriority"] == []
+    assert out["nonForeignPriority"] == []
+    assert out["currentYear"] == 2026
+    assert out["isPartial"] is True
+    assert out["asOf"] == "2026-05-02"
+
+
+def test_growth_leaders_ranks_by_yoy_pct_with_ytd_baseline() -> None:
+    """Mid-year today: latest = current-year YTD filings, prior = prior-year
+    filings up to the same day-of-year. Late-year prior-year filings
+    after today's day-of-year are NOT in the baseline (matches
+    compute_applicant_trends semantics, so the two views reconcile)."""
+    today = date(2026, 5, 2)
+    rows = (
+        # Acme: prior YTD (Jan 5 + Mar 1) = 2; latest (Feb 1 + Apr 1) = 2 -> 0%
+        # Plus a Sept filing in 2025 that's OUTSIDE the YTD prior baseline.
+        [_gl_row("A1", applicant="Acme", filing_date=date(2025, 1, 5))]
+        + [_gl_row("A2", applicant="Acme", filing_date=date(2025, 3, 1))]
+        + [_gl_row("A3", applicant="Acme", filing_date=date(2025, 9, 1))]
+        + [_gl_row("A4", applicant="Acme", filing_date=date(2026, 2, 1))]
+        + [_gl_row("A5", applicant="Acme", filing_date=date(2026, 4, 1))]
+        # Beta: prior YTD = 1, latest = 4 -> +300%
+        + [_gl_row("B1", applicant="Beta", filing_date=date(2025, 4, 1))]
+        + [_gl_row(f"B-{i}", applicant="Beta", filing_date=date(2026, 3, 1)) for i in range(4)]
+        # Gamma: prior YTD = 4, latest = 1 -> -75%
+        + [_gl_row(f"G-{i}", applicant="Gamma", filing_date=date(2025, 2, 1)) for i in range(4)]
+        + [_gl_row("G-CUR", applicant="Gamma", filing_date=date(2026, 1, 5))]
+    )
+    out = compute_growth_leaders(rows, today=today)
+
+    # All three are non-FP filings; FP list is empty.
+    assert out["foreignPriority"] == []
+    nfp = out["nonForeignPriority"]
+    by_app = {r["applicant"]: r for r in nfp}
+    # Acme: Sept-2025 row is excluded from prior baseline (after May 2 doy).
+    assert by_app["Acme"]["priorFilings"] == 2
+    assert by_app["Acme"]["latestFilings"] == 2
+    assert by_app["Acme"]["deltaPct"] == 0.0
+    # Beta: +300%.
+    assert by_app["Beta"]["priorFilings"] == 1
+    assert by_app["Beta"]["latestFilings"] == 4
+    assert by_app["Beta"]["deltaAbs"] == 3
+    assert by_app["Beta"]["deltaPct"] == 300.0
+    # Gamma: -75%.
+    assert by_app["Gamma"]["priorFilings"] == 4
+    assert by_app["Gamma"]["latestFilings"] == 1
+    assert by_app["Gamma"]["deltaPct"] == -75.0
+    # Sorted desc by deltaPct: Beta (+300), Acme (0), Gamma (-75).
+    assert [r["applicant"] for r in nfp] == ["Beta", "Acme", "Gamma"]
+    # Frontend uses head for growing, reverse-tail for slowing.
+    assert nfp[0]["applicant"] == "Beta"
+    assert list(reversed(nfp))[0]["applicant"] == "Gamma"
+    # All rows flagged isPartial since today is mid-year.
+    assert all(r["isPartial"] is True for r in nfp)
+
+
+def test_growth_leaders_excludes_applicants_with_no_prior_baseline() -> None:
+    """0 prior -> deltaPct undefined; ranking-pollution risk is real
+    (would sort to top of every panel as +infinity). Drop them."""
+    today = date(2026, 5, 2)
+    rows = [
+        _gl_row("N1", applicant="NewKid", filing_date=date(2026, 1, 5)),
+        _gl_row("N2", applicant="NewKid", filing_date=date(2026, 2, 5)),
+        # Established applicant for contrast.
+        _gl_row("E1", applicant="Established", filing_date=date(2025, 2, 1)),
+        _gl_row("E2", applicant="Established", filing_date=date(2026, 2, 1)),
+    ]
+    out = compute_growth_leaders(rows, today=today)
+    apps = {r["applicant"] for r in out["nonForeignPriority"]}
+    assert "NewKid" not in apps
+    assert "Established" in apps
+
+
+def test_growth_leaders_splits_one_applicant_into_fp_and_nfp_buckets() -> None:
+    """An applicant who files in both FP and non-FP buckets shows up in
+    each list independently with the bucket-specific counts."""
+    today = date(2026, 5, 2)
+    rows = (
+        # Acme FP: 1 prior YTD -> 3 latest = +200%
+        [_gl_row("AF1", applicant="Acme", filing_date=date(2025, 2, 1), has_foreign_priority=True)]
+        + [_gl_row(f"AF-{i}", applicant="Acme", filing_date=date(2026, 2, 1), has_foreign_priority=True) for i in range(3)]
+        # Acme non-FP: 4 prior YTD -> 1 latest = -75%
+        + [_gl_row(f"AN-{i}", applicant="Acme", filing_date=date(2025, 2, 1)) for i in range(4)]
+        + [_gl_row("AN-CUR", applicant="Acme", filing_date=date(2026, 2, 1))]
+    )
+    out = compute_growth_leaders(rows, today=today)
+    fp = {r["applicant"]: r for r in out["foreignPriority"]}
+    nfp = {r["applicant"]: r for r in out["nonForeignPriority"]}
+    assert fp["Acme"]["priorFilings"] == 1
+    assert fp["Acme"]["latestFilings"] == 3
+    assert fp["Acme"]["deltaPct"] == 200.0
+    assert nfp["Acme"]["priorFilings"] == 4
+    assert nfp["Acme"]["latestFilings"] == 1
+    assert nfp["Acme"]["deltaPct"] == -75.0
+
+
+def test_growth_leaders_skips_rows_without_applicant_or_filing_date() -> None:
+    today = date(2026, 5, 2)
+    rows = [
+        _gl_row("OK1", applicant="Acme", filing_date=date(2025, 2, 1)),
+        _gl_row("OK2", applicant="Acme", filing_date=date(2026, 2, 1)),
+        _gl_row("NOAPP", applicant="", filing_date=date(2026, 3, 1)),
+        _gl_row("NOAPP2", applicant=None, filing_date=date(2026, 3, 1)),  # type: ignore[arg-type]
+        # No filing date.
+        {"application_number": "NODATE", "applicant_name": "Acme", "filing_date": None,
+         "has_foreign_priority": False},
+    ]
+    out = compute_growth_leaders(rows, today=today)
+    nfp = out["nonForeignPriority"]
+    assert len(nfp) == 1
+    assert nfp[0]["applicant"] == "Acme"
+    assert nfp[0]["priorFilings"] == 1
+    assert nfp[0]["latestFilings"] == 1
+
+
+def test_growth_leaders_ignores_filings_outside_comparison_window() -> None:
+    """A 2023 filing for an applicant with no 2025/2026 activity should
+    not surface them in either list (no signal in the comparison
+    window)."""
+    today = date(2026, 5, 2)
+    rows = [
+        _gl_row("OLD", applicant="Veteran", filing_date=date(2023, 4, 1)),
+    ]
+    out = compute_growth_leaders(rows, today=today)
+    assert out["nonForeignPriority"] == []
+    assert out["foreignPriority"] == []

@@ -98,6 +98,7 @@
         <button type="button" class="tab" data-tab="allowance" role="tab" aria-selected="false">Allowance Analytics</button>
         <button type="button" class="tab" data-tab="extensions" role="tab" aria-selected="false">Extensions</button>
         <button type="button" class="tab" data-tab="applicants" role="tab" aria-selected="false">Applicant Trends</button>
+        <button type="button" class="tab" data-tab="growth" role="tab" aria-selected="false">Growth Leaders</button>
         <button type="button" class="tab" data-tab="matters" role="tab" aria-selected="false">Matters</button>
       </nav>
 
@@ -538,6 +539,83 @@
               prior year had zero filings for that applicant).
             </div>
           </div>
+        </div>
+      </section>
+
+      <!-- ============== Growth Leaders tab ============== -->
+      <section class="tab-pane" data-tab="growth" role="tabpanel" hidden>
+        <div class="card growth-controls-card">
+          <div class="card-head">
+            <div>
+              <div class="card-title">Growth Leaders</div>
+              <div class="card-sub" id="growth-sub">YEAR-OVER-YEAR FILING GROWTH · CURRENT YEAR YTD VS SAME PERIOD LAST YEAR</div>
+            </div>
+            <div class="growth-controls">
+              <label for="growth-min-filings-input">Min filings</label>
+              <input type="range"  id="growth-min-filings-range" min="1" max="50" step="1" value="5">
+              <input type="number" id="growth-min-filings-input" min="1" max="50" step="1" value="5">
+            </div>
+          </div>
+        </div>
+        <div class="growth-grid">
+          <div class="card growth-card">
+            <div class="card-head">
+              <div>
+                <div class="card-title">Fastest Growing — Foreign Priority</div>
+                <div class="card-sub">TOP 10 BY YOY % GROWTH · FILINGS WITH FOREIGN PRIORITY</div>
+              </div>
+            </div>
+            <div class="card-body">
+              <ol class="growth-list" id="growth-fp-up"></ol>
+            </div>
+          </div>
+          <div class="card growth-card">
+            <div class="card-head">
+              <div>
+                <div class="card-title">Fastest Growing — No Foreign Priority</div>
+                <div class="card-sub">TOP 10 BY YOY % GROWTH · DOMESTIC-ONLY FILINGS</div>
+              </div>
+            </div>
+            <div class="card-body">
+              <ol class="growth-list" id="growth-nfp-up"></ol>
+            </div>
+          </div>
+          <div class="card growth-card">
+            <div class="card-head">
+              <div>
+                <div class="card-title">Fastest Slowing — Foreign Priority</div>
+                <div class="card-sub">TOP 10 BY YOY % DECLINE · FILINGS WITH FOREIGN PRIORITY</div>
+              </div>
+            </div>
+            <div class="card-body">
+              <ol class="growth-list" id="growth-fp-down"></ol>
+            </div>
+          </div>
+          <div class="card growth-card">
+            <div class="card-head">
+              <div>
+                <div class="card-title">Fastest Slowing — No Foreign Priority</div>
+                <div class="card-sub">TOP 10 BY YOY % DECLINE · DOMESTIC-ONLY FILINGS</div>
+              </div>
+            </div>
+            <div class="card-body">
+              <ol class="growth-list" id="growth-nfp-down"></ol>
+            </div>
+          </div>
+        </div>
+        <div class="ext-method growth-method">
+          <strong>Methodology.</strong>
+          Each applicant is bucketed by whether the filing claims foreign
+          priority (per <code>has_foreign_priority</code>); applicants who
+          file in both buckets appear in both panels with independent
+          counts. Latest period is the current calendar year YTD; prior
+          period is the prior year filings up to the same day-of-year so
+          January-3 doesn't read as a -98% collapse. Applicants with a
+          prior count of 0 are excluded (no baseline → percent is
+          undefined). The <em>Min filings</em> slider above filters out
+          applicants whose larger of the two counts is below the
+          threshold so a 1 → 4 jump (+300%) doesn't leapfrog a real
+          50 → 90 surge.
         </div>
       </section>
 

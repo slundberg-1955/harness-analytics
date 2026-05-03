@@ -36,6 +36,7 @@ from harness_analytics.portfolio_aggregates import (
     compute_breakdowns,
     compute_filings_by_type,
     compute_foreign_priority_by_year,
+    compute_growth_leaders,
     compute_interviews_per_allowance_by_year,
     compute_interviews_per_non_first_action_allowance_by_year,
     compute_rce_per_allowance_by_year,
@@ -802,6 +803,10 @@ def portfolio(
     # trajectory.
     filings_by_type = compute_filings_by_type(all_rows)
     filings_by_foreign_priority = compute_foreign_priority_by_year(all_rows)
+    # Growth Leaders sits on its own tab but reuses the chip-filtered
+    # selection (same scope as Applicant Trends) — recency would skew
+    # the YoY math.
+    growth_leaders = compute_growth_leaders(all_rows)
 
     breakdowns = compute_breakdowns(windowed_rows)
     cohort_trend = compute_cohort_trend(windowed_rows, axis)
@@ -909,6 +914,7 @@ def portfolio(
             # match the existing compute_foreign_priority_share semantics
             # while the XML backfill is in flight.
             "filingsByForeignPriority": filings_by_foreign_priority,
+            "growthLeaders": growth_leaders,
             # #region agent log — DEBUG-MODE per-request diagnostics. Tells us
             # which cohort axis is in play (hyp C), whether `has_analytics_row`
             # came back from the view at all (hyp B/E), and the headline FAA
