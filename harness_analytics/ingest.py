@@ -96,6 +96,12 @@ def _ingest_one_file(
     app.noa_mailed_date = data.get("noa_mailed_date")
     app.family_root_app_no = data.get("family_root_app_no")
     app.has_foreign_priority = data.get("has_foreign_priority")
+    # Seed `originated_as_foreign_priority` from the row's own claim. The
+    # boot-time backfill in `schema_migrations.py` propagates the flag
+    # across family chains, so a US-domestic continuation of a foreign-
+    # rooted family eventually inherits TRUE even though its own XML
+    # doesn't directly claim foreign priority.
+    app.originated_as_foreign_priority = data.get("has_foreign_priority")
     app.application_type = data.get("application_type")
     app.xml_raw = xml_text if store_xml_raw else None
     session.flush()

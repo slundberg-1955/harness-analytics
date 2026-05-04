@@ -1403,6 +1403,12 @@
 
   // Derive the ranked entry for a single applicant given the selected
   // period codes. Returns null when prior <= 0 (no baseline → drop).
+  //
+  // The bucket flag is the *family-rolled-up* foreign-priority signal
+  // (`originatedAsForeignPriority`) — populated by the boot-time backfill
+  // in `schema_migrations.py`. We fall back to the legacy
+  // `hasForeignPriority` field on the same payload so an older API
+  // response still renders correctly during a rolling deploy.
   function buildRankingEntry(applicant, latestCode, priorCode) {
     const bp = applicant.byPeriod || {};
     const latest = bp[latestCode] || 0;
@@ -1410,9 +1416,12 @@
     if (prior <= 0) return null;
     const deltaAbs = latest - prior;
     const deltaPct = (deltaAbs / prior) * 100;
+    const isFp = applicant.originatedAsForeignPriority != null
+      ? !!applicant.originatedAsForeignPriority
+      : !!applicant.hasForeignPriority;
     return {
       applicant: applicant.applicant,
-      hasForeignPriority: !!applicant.hasForeignPriority,
+      hasForeignPriority: isFp,
       latestFilings: latest,
       priorFilings: prior,
       deltaAbs,

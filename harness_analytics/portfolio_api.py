@@ -127,6 +127,12 @@ _ROW_COLUMNS: list[str] = [
     "final_rejection_count",
     "family_root_app_no",
     "has_foreign_priority",
+    # Family-rolled-up FP signal — TRUE when any application in this
+    # row's family chain (linked via `family_root_app_no`) directly
+    # claims foreign priority. Used by Growth Leaders to bucket US
+    # continuations of foreign-rooted families with the rest of the
+    # family. See `schema_migrations.py` for the iterative backfill.
+    "originated_as_foreign_priority",
     # Application-type bucket for the Applicant Trends "Filings by Type"
     # stacked-bar chart. Populated at ingest from XML + app-no prefix and
     # backfilled for legacy rows (see schema_migrations).
@@ -487,6 +493,10 @@ def _row_to_json(row: dict[str, Any]) -> dict[str, Any]:
         "finalRejectionCount": row.get("final_rejection_count") or 0,
         "familyRootAppNo": row.get("family_root_app_no"),
         "hasForeignPriority": bool(row.get("has_foreign_priority")) if row.get("has_foreign_priority") is not None else None,
+        # Family-rolled-up FP signal. The Growth Leaders panels bucket
+        # by this; surfaced on each row so the matters table / future
+        # filters can use it directly.
+        "originatedAsForeignPriority": bool(row.get("originated_as_foreign_priority")) if row.get("originated_as_foreign_priority") is not None else None,
         "applicationType": row.get("application_type"),
         "hasAnalyticsRow": bool(row.get("has_analytics_row")) if row.get("has_analytics_row") is not None else None,
         # M7: timeline summary projected straight from the view.

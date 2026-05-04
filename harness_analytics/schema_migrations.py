@@ -175,7 +175,14 @@ SELECT
     -- design / other. Populated at ingest by parse_biblio_xml's classifier
     -- and backfilled from xml_raw + application_number prefix for legacy
     -- rows. Appended at the tail to satisfy CREATE OR REPLACE VIEW rules.
-    a.application_type
+    a.application_type,
+    -- Family-rolled-up foreign-priority signal: TRUE when any application
+    -- in this row's family chain (linked via family_root_app_no) claims
+    -- foreign priority on its own XML. Lets the Growth Leaders panels
+    -- (and any future chart) bucket US-domestic continuations of a
+    -- foreign-rooted family with the rest of that family. Appended at
+    -- the tail per CREATE OR REPLACE VIEW rules.
+    a.originated_as_foreign_priority
 FROM applications a
 LEFT JOIN application_analytics aa ON aa.application_id = a.id
 """
@@ -1222,6 +1229,281 @@ def _recompute_has_foreign_priority_once(engine) -> None:
     logger.info("has_foreign_priority recompute thread started (daemon)")
 
 
+# Recompute `family_root_app_no` from `xml_raw` for every row. The
+# original Allowance Analytics v2 backfill (in `_ALLOWANCE_BACKFILL_SQL`
+# above) tried to pass the row's application number into the XPath via
+# the `xpath(text, xml, text[][])` third argument, but PostgreSQL's
+# `xpath()` third argument is a NAMESPACE-mapping table — it doesn't
+# support runtime XPath variables. Every row therefore raised
+# "Undefined variable" inside the per-row EXCEPTION handler, which set
+# `family_root_app_no = application_number` as a fallback. The column
+# was effectively unpopulated.
+#
+# This recompute runs once per database (gated by
+# :data:`_FAMILY_ROOT_RECOMPUTE_FLAG` in `app_settings`) and overwrites
+# the value for every row using `format()` to embed the application
+# number directly in the XPath string per row, which is the working
+# pattern. When the XPath returns no match (no `ParentContinuity` entry
+# names this row as the child) we fall back to the application number
+# itself — same convention as the Python parser.
+_FAMILY_ROOT_RECOMPUTE_FLAG = "schema.familyRootAppNoRecomputed"
+_FAMILY_ROOT_RECOMPUTE_SQL = """
+DO $$
+DECLARE
+  r RECORD;
+  v_doc xml;
+  v_parents xml[];
+  v_family TEXT;
+  v_done INTEGER := 0;
+BEGIN
+  FOR r IN
+    SELECT id, application_number, xml_raw
+      FROM applications
+     WHERE xml_raw IS NOT NULL AND xml_raw <> ''
+  LOOP
+    BEGIN
+      v_doc := xmlparse(content r.xml_raw);
+      -- Match entries where this row's application_number IS the child.
+      -- Using format() to interpolate the literal because xpath()'s
+      -- third argument is namespace-mapping, not variable bindings.
+      v_parents := xpath(
+        format(
+          '//Continuity/ParentContinuityList/ParentContinuity['
+          ' ChildApplicationNumber/text()=%L'
+          ' and not(starts-with(ParentApplicationNumber/text(), %L))'
+          ']/ParentApplicationNumber/text()',
+          r.application_number, 'PCT'
+        ),
+        v_doc
+      );
+      IF array_length(v_parents, 1) IS NOT NULL THEN
+        v_family := NULLIF(BTRIM(v_parents[1]::text), '');
+      ELSE
+        v_family := NULL;
+      END IF;
+      IF v_family IS NULL THEN
+        v_family := r.application_number;
+      END IF;
+      UPDATE applications
+         SET family_root_app_no = v_family
+       WHERE id = r.id;
+      v_done := v_done + 1;
+    EXCEPTION WHEN OTHERS THEN
+      -- Leave the existing fallback value in place if anything goes
+      -- wrong with this specific row's XML.
+      NULL;
+    END;
+  END LOOP;
+  RAISE NOTICE 'family_root_app_no recompute: % rows updated', v_done;
+END $$;
+"""
+
+
+def _set_family_root_recompute_flag(engine) -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO app_settings (key, value, updated_at) "
+                "VALUES (:k, '1', now()) "
+                "ON CONFLICT (key) DO UPDATE SET value = '1', updated_at = now()"
+            ),
+            {"k": _FAMILY_ROOT_RECOMPUTE_FLAG},
+        )
+
+
+def _run_family_root_recompute_worker(database_url: str) -> None:
+    engine = create_engine(database_url, pool_pre_ping=True)
+    try:
+        logger.info("Recomputing family_root_app_no from xml_raw (background)…")
+        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            conn.execute(text(_FAMILY_ROOT_RECOMPUTE_SQL))
+        _set_family_root_recompute_flag(engine)
+        logger.info("family_root_app_no recompute complete")
+    except Exception:
+        logger.exception(
+            "family_root_app_no recompute failed; will retry on next startup"
+        )
+    finally:
+        engine.dispose()
+
+
+def _recompute_family_root_once(engine) -> None:
+    """Schedule the one-time family_root_app_no recompute in a daemon thread."""
+    insp = inspect(engine)
+    if not insp.has_table("applications") or not insp.has_table("app_settings"):
+        return
+    cols = {c["name"] for c in insp.get_columns("applications")}
+    if "family_root_app_no" not in cols or "xml_raw" not in cols:
+        return
+    with engine.connect() as conn:
+        already = conn.execute(
+            text("SELECT value FROM app_settings WHERE key = :k"),
+            {"k": _FAMILY_ROOT_RECOMPUTE_FLAG},
+        ).first()
+        if already and (already[0] or "").strip() in ("1", "true", "yes"):
+            return
+
+    database_url = get_database_url()
+    if not database_url:
+        return
+    t = threading.Thread(
+        target=_run_family_root_recompute_worker,
+        args=(database_url,),
+        name="family-root-app-no-recompute",
+        daemon=True,
+    )
+    t.start()
+    logger.info("family_root_app_no recompute thread started (daemon)")
+
+
+# Backfill `originated_as_foreign_priority` from `has_foreign_priority` +
+# `family_root_app_no`. The signal is the family-rolled-up version of the
+# 35-USC-119 claim: TRUE when any application in this row's family chain
+# (linked through `family_root_app_no`) claims foreign priority directly.
+#
+# Two-direction propagation is necessary because the family graph is a
+# parent-pointer tree (each row stores a single edge to its earliest
+# visible parent), and a foreign-priority claim can sit anywhere on the
+# branch. We iterate two updates per pass:
+#
+#   1. Downward: a row inherits TRUE when its parent (the row whose
+#      application_number equals this row's `family_root_app_no`) is
+#      already TRUE.
+#   2. Upward: a row inherits TRUE when any child (a row whose
+#      `family_root_app_no` equals this row's application_number) is
+#      already TRUE.
+#
+# Each pass propagates one hop in each direction; any reasonable family
+# chain converges in a handful of passes. The 20-pass cap is a safety
+# valve against pathological cycles in the graph.
+_ORIGINATED_FP_BACKFILL_FLAG = "schema.originatedForeignPriorityBackfilled"
+_ORIGINATED_FP_BACKFILL_SQL = """
+DO $$
+DECLARE
+  v_down INTEGER;
+  v_up INTEGER;
+  v_pass INTEGER := 0;
+BEGIN
+  -- Seed: every row that directly claims foreign priority on its own XML
+  -- is, by definition, originated as foreign priority.
+  UPDATE applications
+     SET originated_as_foreign_priority = TRUE
+   WHERE has_foreign_priority IS TRUE
+     AND COALESCE(originated_as_foreign_priority, FALSE) = FALSE;
+
+  LOOP
+    -- Downward: child inherits from its parent in the DB.
+    UPDATE applications a
+       SET originated_as_foreign_priority = TRUE
+      WHERE COALESCE(a.originated_as_foreign_priority, FALSE) = FALSE
+        AND a.family_root_app_no IS NOT NULL
+        AND a.family_root_app_no <> a.application_number
+        AND EXISTS (
+          SELECT 1 FROM applications p
+           WHERE p.application_number = a.family_root_app_no
+             AND p.originated_as_foreign_priority IS TRUE
+        );
+    GET DIAGNOSTICS v_down = ROW_COUNT;
+
+    -- Upward: parent inherits from any child that points at it.
+    UPDATE applications a
+       SET originated_as_foreign_priority = TRUE
+      WHERE COALESCE(a.originated_as_foreign_priority, FALSE) = FALSE
+        AND EXISTS (
+          SELECT 1 FROM applications c
+           WHERE c.family_root_app_no = a.application_number
+             AND c.application_number <> a.application_number
+             AND c.originated_as_foreign_priority IS TRUE
+        );
+    GET DIAGNOSTICS v_up = ROW_COUNT;
+
+    v_pass := v_pass + 1;
+    EXIT WHEN (v_down + v_up) = 0 OR v_pass >= 20;
+  END LOOP;
+
+  -- Any row still NULL belongs to a family with no foreign-priority
+  -- claimant anywhere — flip to FALSE so the column is fully resolved
+  -- and the aggregator's bucket key is well-defined.
+  UPDATE applications
+     SET originated_as_foreign_priority = FALSE
+   WHERE originated_as_foreign_priority IS NULL;
+
+  RAISE NOTICE
+    'originated_as_foreign_priority backfill: % propagation passes', v_pass;
+END $$;
+"""
+
+
+def _set_originated_fp_backfill_flag(engine) -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO app_settings (key, value, updated_at) "
+                "VALUES (:k, '1', now()) "
+                "ON CONFLICT (key) DO UPDATE SET value = '1', updated_at = now()"
+            ),
+            {"k": _ORIGINATED_FP_BACKFILL_FLAG},
+        )
+
+
+def _run_originated_fp_backfill_worker(database_url: str) -> None:
+    engine = create_engine(database_url, pool_pre_ping=True)
+    try:
+        logger.info(
+            "Backfilling originated_as_foreign_priority from family rollup (background)…"
+        )
+        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            conn.execute(text(_ORIGINATED_FP_BACKFILL_SQL))
+        _set_originated_fp_backfill_flag(engine)
+        logger.info("originated_as_foreign_priority backfill complete")
+    except Exception:
+        logger.exception(
+            "originated_as_foreign_priority backfill failed; will retry on next startup"
+        )
+    finally:
+        engine.dispose()
+
+
+def _backfill_originated_fp_once(engine) -> None:
+    """Schedule the one-time originated_as_foreign_priority backfill.
+
+    Depends on `has_foreign_priority` being already populated, so the
+    caller MUST schedule this AFTER `_recompute_has_foreign_priority_once`
+    finishes its first pass. In practice both are gated on
+    `app_settings` flags so a stale ordering doesn't break correctness —
+    the next boot just retries whichever flag isn't set yet.
+    """
+    insp = inspect(engine)
+    if not insp.has_table("applications") or not insp.has_table("app_settings"):
+        return
+    cols = {c["name"] for c in insp.get_columns("applications")}
+    if (
+        "originated_as_foreign_priority" not in cols
+        or "has_foreign_priority" not in cols
+        or "family_root_app_no" not in cols
+    ):
+        return
+    with engine.connect() as conn:
+        already = conn.execute(
+            text("SELECT value FROM app_settings WHERE key = :k"),
+            {"k": _ORIGINATED_FP_BACKFILL_FLAG},
+        ).first()
+        if already and (already[0] or "").strip() in ("1", "true", "yes"):
+            return
+
+    database_url = get_database_url()
+    if not database_url:
+        return
+    t = threading.Thread(
+        target=_run_originated_fp_backfill_worker,
+        args=(database_url,),
+        name="originated-foreign-priority-backfill",
+        daemon=True,
+    )
+    t.start()
+    logger.info("originated_as_foreign_priority backfill thread started (daemon)")
+
+
 def _backfill_application_type_once(engine) -> None:
     insp = inspect(engine)
     if not insp.has_table("applications") or not insp.has_table("app_settings"):
@@ -1341,6 +1623,16 @@ def ensure_schema_migrations() -> None:
             "has_foreign_priority",
             "BOOLEAN",
         )
+        # Family-rolled-up FP signal: TRUE when any app in this row's
+        # family chain (linked through family_root_app_no) claims foreign
+        # priority. Set at ingest from has_foreign_priority and propagated
+        # iteratively across families by _backfill_originated_fp_once.
+        _add_column_if_missing(
+            engine,
+            "applications",
+            "originated_as_foreign_priority",
+            "BOOLEAN",
+        )
         _add_column_if_missing(
             engine,
             "applications",
@@ -1391,6 +1683,20 @@ def ensure_schema_migrations() -> None:
         _backfill_allowance_metrics_once(engine)
         _backfill_application_type_once(engine)
         _recompute_has_foreign_priority_once(engine)
+        # The original Allowance Analytics v2 backfill silently failed to
+        # populate `family_root_app_no` because it tried to use an
+        # unsupported XPath variable binding (see
+        # `_FAMILY_ROOT_RECOMPUTE_SQL` for full context). MUST run before
+        # `_backfill_originated_fp_once` so the family graph the rollup
+        # walks over actually has edges in it.
+        _recompute_family_root_once(engine)
+        # MUST come after both has_foreign_priority and family_root_app_no
+        # are populated. All three workers run as independent daemon
+        # threads gated on separate app_settings flags, so if any
+        # prerequisite is still mid-recompute when we get here, the
+        # rollup just under-flags a few rows on this boot and converges
+        # on the next deploy.
+        _backfill_originated_fp_once(engine)
     finally:
         engine.dispose()
 

@@ -1945,10 +1945,24 @@ def compute_foreign_priority_by_year(
 # Growth Leaders — per-applicant filing counts bucketed by year, quarter,
 # and month so the frontend can compare any two windows the user picks
 # (Latest / Prior pickers in the Growth Leaders tab). Bucket key is
-# (applicant, has_foreign_priority) — an applicant who files in both
-# camps lands in both panels with independent counts. The actual ranking
-# (top N growing / slowing, min-filings filter, sort) is computed in JS
-# so dropdown changes don't require a server round-trip.
+# (applicant, originated_as_foreign_priority) — the family-rolled-up FP
+# signal. An app that doesn't directly claim foreign priority but is a
+# continuation of a foreign-rooted family is grouped with the FP bucket
+# so families don't get sliced across panels generation-by-generation.
+# An applicant who files in both camps still lands in both panels with
+# independent counts.
+#
+# Why originated, not has_foreign_priority: the strict 35 USC 119 claim
+# is a per-application property — a US continuation of a foreign-priority
+# parent often only carries the domestic benefit forward, even though
+# the technology family genuinely originated abroad. Bucketing by the
+# rolled-up flag is the more meaningful "where did this work come from?"
+# split for the leaders view. The headline FP-share metric and the
+# Filings-by-Foreign-Priority chart still use the strict signal so the
+# established 35-USC-119 statistic is unchanged.
+#
+# The actual ranking (top N growing / slowing, min-filings filter, sort)
+# is computed in JS so dropdown changes don't require a server round-trip.
 # ---------------------------------------------------------------------------
 
 
@@ -1995,7 +2009,13 @@ def compute_growth_leaders(
     if today is None:
         today = date.today()
 
-    # (applicant, has_foreign_priority) -> { period_code -> count }
+    # (applicant, originated_as_foreign_priority) -> { period_code -> count }.
+    # `originated_as_foreign_priority` is the family-rolled-up flag set by
+    # the boot-time backfill in `schema_migrations.py`. When that column
+    # hasn't been backfilled yet (first deploy after the migration) it
+    # falls back to the row's own `has_foreign_priority`, so the panels
+    # never silently empty out — they just temporarily match the strict
+    # 35-USC-119 split until the rollup catches up.
     counts: dict[tuple[str, bool], dict[str, int]] = {}
     years_seen: set[int] = set()
 
@@ -2006,7 +2026,10 @@ def compute_growth_leaders(
         applicant = (r.get("applicant_name") or "").strip()
         if not applicant:
             continue
-        is_fp = bool(r.get("has_foreign_priority"))
+        originated = r.get("originated_as_foreign_priority")
+        if originated is None:
+            originated = r.get("has_foreign_priority")
+        is_fp = bool(originated)
         key = (applicant, is_fp)
         bucket = counts.get(key)
         if bucket is None:
@@ -2026,7 +2049,13 @@ def compute_growth_leaders(
         applicants.append(
             {
                 "applicant": name,
+                # Kept as `hasForeignPriority` on the wire for backwards
+                # compatibility with the JS picker; carries the
+                # `originated_as_foreign_priority` value now. A new
+                # `originatedAsForeignPriority` alias makes the new
+                # semantics explicit for any future caller.
                 "hasForeignPriority": is_fp,
+                "originatedAsForeignPriority": is_fp,
                 "byPeriod": by_period,
             }
         )

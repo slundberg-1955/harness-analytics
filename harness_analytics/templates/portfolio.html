@@ -657,17 +657,26 @@
           <strong>Methodology.</strong>
           Pick any two periods with the <em>Latest</em> and <em>Prior</em>
           dropdowns above — full calendar year, calendar quarter, or
-          calendar month. Each applicant is bucketed by whether the
-          filing claims foreign priority (per
-          <code>has_foreign_priority</code>); applicants who file in
-          both buckets appear in both panels with independent counts.
-          Periods that include today are labeled <em>partial</em> — a
-          full-year 2026 selection only sees filings through today.
-          Applicants with a prior count of 0 are excluded (no baseline
-          → percent is undefined). The <em>Min filings</em> slider
-          filters out applicants whose larger of the two counts is
-          below the threshold so a 1 → 4 jump (+300%) doesn't leapfrog
-          a real 50 → 90 surge.
+          calendar month. Each filing is bucketed by
+          <code>originated_as_foreign_priority</code>: TRUE when the
+          application directly claims foreign priority (35 USC 119) or
+          when any application in the same family chain (linked through
+          <code>family_root_app_no</code>) does. This rolls up
+          US-domestic continuations of foreign-rooted families into the
+          <em>Foreign Priority</em> panel instead of splitting one
+          family across both panels generation-by-generation. The
+          headline foreign-priority share metric and the
+          Filings-by-Foreign-Priority chart still use the strict
+          per-application <code>has_foreign_priority</code> flag, so
+          the established 35-USC-119 statistic is unchanged. Applicants
+          who file in both buckets still appear in both panels with
+          independent counts. Periods that include today are labeled
+          <em>partial</em> — a full-year 2026 selection only sees
+          filings through today. Applicants with a prior count of 0
+          are excluded (no baseline → percent is undefined). The
+          <em>Min filings</em> slider filters out applicants whose
+          larger of the two counts is below the threshold so a 1 → 4
+          jump (+300%) doesn't leapfrog a real 50 → 90 surge.
         </div>
       </section>
 

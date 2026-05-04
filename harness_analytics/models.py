@@ -63,6 +63,15 @@ class Application(Base):
     noa_mailed_date: Mapped[Optional[date]] = mapped_column(Date)
     family_root_app_no: Mapped[Optional[str]] = mapped_column(Text)
     has_foreign_priority: Mapped[Optional[bool]] = mapped_column(Boolean)
+    # `has_foreign_priority` is per-row (35 USC 119 claim or PCT national-stage
+    # parent on this application's own XML). `originated_as_foreign_priority`
+    # is the family-rolled-up version: TRUE when any application in the same
+    # family chain (linked via `family_root_app_no`) claims foreign priority,
+    # so US-domestic continuations of a foreign-rooted family are flagged
+    # without requiring the child to re-state the foreign claim. Populated
+    # by an iterative boot-time backfill in `schema_migrations.py` and
+    # initialized at ingest from the row's own `has_foreign_priority`.
+    originated_as_foreign_priority: Mapped[Optional[bool]] = mapped_column(Boolean)
     application_type: Mapped[Optional[str]] = mapped_column(Text)
     tenant_id: Mapped[str] = mapped_column(Text, nullable=False, default="global")
     imported_at: Mapped[datetime] = mapped_column(

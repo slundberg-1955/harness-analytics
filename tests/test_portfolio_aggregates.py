@@ -62,6 +62,7 @@ def _row(
     final_rejection_count: int = 0,
     family_root_app_no: str | None = None,
     has_foreign_priority: bool | None = False,
+    originated_as_foreign_priority: bool | None = None,
     art_unit: str | None = None,
     has_analytics_row: bool = True,
     application_type: str | None = None,
@@ -90,6 +91,16 @@ def _row(
         "final_rejection_count": final_rejection_count,
         "family_root_app_no": family_root_app_no,
         "has_foreign_priority": has_foreign_priority,
+        # Family-rolled-up FP signal used by Growth Leaders. Defaults to
+        # the row's own `has_foreign_priority` so legacy tests that don't
+        # set it continue to exercise pre-rollup behavior; new tests can
+        # override it explicitly to simulate a continuation that inherits
+        # FP from its family even though its own XML doesn't claim it.
+        "originated_as_foreign_priority": (
+            originated_as_foreign_priority
+            if originated_as_foreign_priority is not None
+            else has_foreign_priority
+        ),
         "group_art_unit": art_unit,
         # Data-quality flag for FAA. Defaults True so legacy tests behave
         # exactly like before (rce/final-rejection ints are trusted). New
@@ -1456,10 +1467,23 @@ def _gl_row(
     applicant: str,
     filing_date: date,
     has_foreign_priority: bool = False,
+    originated_as_foreign_priority: bool | None = None,
 ) -> dict:
     """Minimal row factory for the growth-leaders aggregate (only reads
-    filing_date, applicant_name, and has_foreign_priority)."""
-    r = _row(app_no, filing_date=filing_date, has_foreign_priority=has_foreign_priority)
+    filing_date, applicant_name, and the originated/has FP flags).
+
+    `originated_as_foreign_priority` defaults to mirroring
+    `has_foreign_priority`. The new bucket key for Growth Leaders is the
+    `originated` flag, so tests that want to simulate a US-domestic
+    continuation of a foreign-rooted family pass
+    `has_foreign_priority=False, originated_as_foreign_priority=True`.
+    """
+    r = _row(
+        app_no,
+        filing_date=filing_date,
+        has_foreign_priority=has_foreign_priority,
+        originated_as_foreign_priority=originated_as_foreign_priority,
+    )
     r["applicant_name"] = applicant
     return r
 
@@ -1555,6 +1579,94 @@ def test_growth_leaders_splits_one_applicant_into_fp_and_nfp_buckets() -> None:
     assert by[("Acme", True)]["byPeriod"]["Y2025"] == 1
     assert by[("Acme", True)]["byPeriod"]["Y2026"] == 3
     assert by[("Acme", False)]["byPeriod"]["Y2025"] == 4
+    assert by[("Acme", False)]["byPeriod"]["Y2026"] == 1
+
+
+def test_growth_leaders_uses_originated_flag_for_family_rollup() -> None:
+    """Growth Leaders buckets by the family-rolled-up FP signal, not
+    the strict per-row 35-USC-119 claim. So a US-domestic continuation
+    that inherits ``originated_as_foreign_priority=True`` from a
+    foreign-rooted parent lands in the FP panel, even though the child
+    application itself doesn't directly claim foreign priority. The
+    legacy ``hasForeignPriority`` field on the emitted entry mirrors the
+    new bucket key so the existing JS picker continues to route correctly.
+    """
+    today = date(2026, 5, 2)
+    rows = [
+        # Foreign-rooted parent: claims FP directly. The boot-time
+        # backfill (or in this synthesized payload, the helper default)
+        # sets originated=True for this row.
+        _gl_row(
+            "PARENT", applicant="GlobalCo",
+            filing_date=date(2025, 2, 1),
+            has_foreign_priority=True,
+        ),
+        # Two US-domestic continuations: their own XML doesn't claim
+        # foreign priority, but the family-rolled-up flag inherits TRUE
+        # from the parent. Growth Leaders must put them in the FP panel.
+        _gl_row(
+            "CHILD-A", applicant="GlobalCo",
+            filing_date=date(2026, 1, 15),
+            has_foreign_priority=False,
+            originated_as_foreign_priority=True,
+        ),
+        _gl_row(
+            "CHILD-B", applicant="GlobalCo",
+            filing_date=date(2026, 2, 10),
+            has_foreign_priority=False,
+            originated_as_foreign_priority=True,
+        ),
+        # A genuinely domestic-only filing under the same applicant —
+        # neither the row nor its family claims foreign priority. Lands
+        # in the non-FP panel.
+        _gl_row(
+            "DOMESTIC", applicant="GlobalCo",
+            filing_date=date(2026, 3, 5),
+            has_foreign_priority=False,
+            originated_as_foreign_priority=False,
+        ),
+    ]
+    out = compute_growth_leaders(rows, today=today)
+    by = {(a["applicant"], a["hasForeignPriority"]): a for a in out["applicants"]}
+
+    fp_entry = by[("GlobalCo", True)]
+    assert fp_entry["originatedAsForeignPriority"] is True
+    assert fp_entry["byPeriod"]["Y2025"] == 1  # PARENT
+    assert fp_entry["byPeriod"]["Y2026"] == 2  # CHILD-A + CHILD-B
+
+    nfp_entry = by[("GlobalCo", False)]
+    assert nfp_entry["originatedAsForeignPriority"] is False
+    assert nfp_entry["byPeriod"]["Y2026"] == 1  # DOMESTIC only
+    assert "Y2025" not in nfp_entry["byPeriod"]
+
+
+def test_growth_leaders_falls_back_to_has_foreign_priority_when_originated_missing() -> None:
+    """During a rolling deploy, rows may arrive before the boot-time
+    backfill has populated `originated_as_foreign_priority`. The
+    aggregator falls back to the row's own `has_foreign_priority` in
+    that window so the panels never silently empty out — they just
+    temporarily match the strict 35-USC-119 split.
+    """
+    today = date(2026, 5, 2)
+    fp_row = _row(
+        "FP1",
+        filing_date=date(2026, 1, 1),
+        has_foreign_priority=True,
+    )
+    fp_row["applicant_name"] = "Acme"
+    fp_row["originated_as_foreign_priority"] = None  # mid-backfill
+
+    nfp_row = _row(
+        "DOM1",
+        filing_date=date(2026, 1, 2),
+        has_foreign_priority=False,
+    )
+    nfp_row["applicant_name"] = "Acme"
+    nfp_row["originated_as_foreign_priority"] = None
+
+    out = compute_growth_leaders([fp_row, nfp_row], today=today)
+    by = {(a["applicant"], a["hasForeignPriority"]): a for a in out["applicants"]}
+    assert by[("Acme", True)]["byPeriod"]["Y2026"] == 1
     assert by[("Acme", False)]["byPeriod"]["Y2026"] == 1
 
 
